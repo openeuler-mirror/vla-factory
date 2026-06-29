@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vla-factory"
+version = "0.1.0"
+description = "A recipe-driven fine-tuning framework for robot Vision-Language-Action (VLA) models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "VLA Factory Contributors" },
+]
+keywords = [
+    "robotics",
+    "vla",
+    "vision-language-action",
+    "fine-tuning",
+    "lerobot",
+    "act",
+    "imitation-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # torch 上限与 lerobot 对齐，避免 [act] 安装时触发降级
+    "torch>=2.7,<2.11.0",
+    "torchvision>=0.22.0,<0.26.0",
+    "numpy>=1.24",
+    "transformers>=4.40",
+    "pyyaml>=6.0",
+    "av>=12.0",
+    "pyzmq>=25.0",
+    "safetensors>=0.4",
+    # 配置层：模型默认 profile 的合并 + 点路径/插值（Hydra 底层，未引入 Hydra 运行时）
+    "omegaconf>=2.3",
+    # 图像 resize（ResizeImages transform）与 lerobot host JPEG 解码
+    "opencv-python-headless>=4.5",
+    # 数据格式读取（LeRobot v3 parquet 解析）
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    # 视频预处理进度条
+    "tqdm>=4.60",
+]
+
+[project.scripts]
+vlafactory-cli = "vla_factory.cli:main"
+
+[project.optional-dependencies]
+# 按模型选装的生态依赖：ACT 是 lerobot ACTPolicy 的纯 adapter，硬依赖 lerobot
+act = ["lerobot>=0.5"]
+all = ["lerobot>=0.5"]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "tensorboard>=2.14",
+]
+
+[project.urls]
+Homepage = "https://gitcode.com/openeuler/vla-factory"
+Repository = "https://gitcode.com/openeuler/vla-factory"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vla_factory*"]
+
+# 让模型默认 profile (act.yaml 等) 随包发布
+[tool.setuptools.package-data]
+"vla_factory.config.model" = ["*.yaml"]

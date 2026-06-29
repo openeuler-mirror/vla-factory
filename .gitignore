@@ -1,0 +1,21 @@
+# Python bytecode and caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Generated dataset/frame caches
+*.frame_cache/
+**/*.frame_cache/
+
+# Local training outputs
+outputs/
+
+# AI Coding
+.claude/
