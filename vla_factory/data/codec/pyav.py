@@ -45,7 +45,11 @@ class _VideoFrameCache:
         if self._container is not None:
             return
 
-        self._container = av.open(str(self.video_path))
+        try:
+            self._container = av.open(str(self.video_path))
+        except Exception as e:
+            self._container = None
+            raise RuntimeError(f'Failed to open video {self.video_path}: {e}') from e
         self._stream = self._container.streams.video[0]
         self._stream.codec_context.skip_frame = "NONKEY"
         # Re-enable all frames after the initial seek setup

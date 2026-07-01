@@ -98,17 +98,7 @@ Parameter access, device transfer, training mode, and similar capabilities are e
 
 The data module outputs unified observation/action samples. The model module only consumes the abstracted `Observation` and action tensor. Field paths, video encoding, episode indices, statistics, and vector key ordering from the source data format should not leak into model implementations.
 
-### 2.5 Training Artifacts Are Deployable
-
-Metadata required for inference is written before training starts, so any intermediate checkpoint can be deployed. At minimum, this includes:
-
-- recipe: describes the model, action space, data source, fine-tuning strategy, training parameters, and output conventions.
-- dataset schema: describes the data structure contract, including camera list, state/action dimensions, fps, episode/frame statistics, and state/action key ordering. The state/action key order is part of the schema and ensures that vector dimensions can be mapped back to the correct robot joints or control fields during deployment.
-- norm stats: describes state/action normalization statistics and ensures training and inference use the same numerical scale.
-
-The inference engine prefers reading this metadata from the checkpoint directory instead of requiring the user to pass the full training context again.
-
-### 2.6 Dependencies Are Installed On Demand
+### 2.5 Dependencies Are Installed On Demand
 
 The core package stays lightweight. Upstream ecosystem dependencies such as ACT, OpenPI, and GR00T should be introduced through optional extras. If a model is not used, missing dependencies for that model should not affect registration, training, or deployment of other models.
 

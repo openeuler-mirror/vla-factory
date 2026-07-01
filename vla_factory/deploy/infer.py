@@ -180,8 +180,8 @@ def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, Norm
             state_keys=tuple(schema_d.get("state_keys", ())),
             action_keys=tuple(schema_d.get("action_keys", ())),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning('Failed to load schema from %s: %s', schema_file, e)
 
     try:
         with open(norm_file) as f:
@@ -191,15 +191,15 @@ def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, Norm
             action=_parse_feature_stats(ns_d.get("action")),
             method=ns_d.get("method", "zscore"),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning('Failed to load norm_stats from %s: %s', norm_file, e)
 
     try:
         recipe_file = meta_dir / RECIPE_FILE
         if recipe_file.exists():
             recipe = parse_recipe(recipe_file)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning('Failed to load recipe from %s: %s', recipe_file, e)
 
     return schema, norm_stats, recipe
 

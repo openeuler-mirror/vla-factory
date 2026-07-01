@@ -35,7 +35,19 @@ After installation, a `vlafactory-cli` command is registered (e.g. `vlafactory-c
 
 ## Quick Start
 
-### 0. List registered models
+### 0. Prepare data
+
+VLA Factory expects datasets in **LeRobot v3** format. Place your dataset at the path specified by `data.source.path` in the recipe YAML. The expected directory structure is:
+
+```
+<dataset_path>/meta/info.json   # Dataset metadata
+<dataset_path>/data/            # Parquet episode files
+<dataset_path>/videos/          # MP4 video files
+```
+
+Adjust `data.source.path` in the recipe YAML to point to your own data.
+
+### 1. List registered models
 
 ```bash
 vlafactory-cli list
@@ -109,7 +121,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | Data | Model | Algorithm | Deployment |
 |------|-------|-------|------|
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
-| ⬜ **RLDS** | ⬜ **π₀ / π-FAST / π₀.₅** | ⬜ **LoRA SFT** |  |
+| ⬜ **RLDS** | ⬜ **π₀ / π-FAST / π₀.₅** | 🚧 **LoRA SFT** *(config ready, impl WIP)* |  |
 | ⬜ **ROS bags** | ⬜ **GR00T** | ⬜ **Selective SFT** | |
 | ⬜ **HDF5** | ⬜ **OpenVLA** | | |
 
