@@ -156,8 +156,18 @@ class VLADataset(torch.utils.data.Dataset):
                 actions_list.append(frames[i].action)
                 is_pad.append(False)
             else:
-                # Repeat-last padding
-                actions_list.append(frames[-1].action)
+                # Repeat-last padding — must have at least one valid action
+                last_valid = None
+                for f in reversed(frames):
+                    if f.action is not None:
+                        last_valid = f.action
+                        break
+                if last_valid is None:
+                    raise ValueError(
+                        f"All actions in episode {loc.episode_index} are None; "
+                        "cannot pad action horizon without at least one valid action."
+                    )
+                actions_list.append(last_valid)
                 is_pad.append(True)
 
         if actions_list:

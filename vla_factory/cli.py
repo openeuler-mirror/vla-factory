@@ -132,7 +132,7 @@ def main():
     )
     serve_parser.add_argument(
         "--max-loop-freq-hz", type=float, default=60.0,
-        help="Client loop frequency cap.",
+        help="Client loop frequency cap (must be positive).",
     )
     serve_parser.add_argument(
         "--polling-timeout-ms", type=int, default=1000,
@@ -300,6 +300,8 @@ def main():
         import torch
         from vla_factory.deploy.infer import InferenceEngine
         from vla_factory.deploy.transport import ZMQTransport
+        if args.max_loop_freq_hz <= 0:
+            parser.error("--max-loop-freq-hz must be a positive number")
         device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
         engine = InferenceEngine(
             checkpoint_path=args.checkpoint,

@@ -40,7 +40,7 @@ class LeRobotV3Reader:
             # Accept both "v3.0" and "3.0" formats
             v = version.lstrip("v")
             return v >= "3.0"
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, IOError, OSError):
             return False
 
     # ── Schema & stats (from meta/ JSON files) ────────────────────

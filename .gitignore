@@ -19,3 +19,16 @@ outputs/
 
 # AI Coding
 .claude/
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Node (skill scripts)
+skills/**/node_modules/

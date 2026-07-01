@@ -1,8 +1,7 @@
 """Transport layer for InferenceEngine — ZMQ and in-process (§12.5, §12.6).
 
 The Transport abstraction decouples inference logic from the communication
-protocol.  Concrete implementations wrap the existing ZMQ infrastructure
-from ``pipelines/evaluate/policy_zmq.py``.
+protocol.  The ZMQ implementation uses :mod:`vla_factory.deploy.zmq_client`.
 """
 
 from __future__ import annotations
@@ -14,6 +13,11 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 from vla_factory.deploy.infer import InferenceEngine, ObsDict
+from vla_factory.deploy.zmq_client import (
+    ZmqPolicyClient,
+    ZmqPolicyClientConfig,
+    encode_observation_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +48,8 @@ class Transport(Protocol):
 class ZMQTransport:
     """ZMQ transport using the LeKiwi-style PUSH/PULL protocol.
 
-    This wraps the existing ``ZmqPolicyClient`` / ``ZmqPolicyHost`` from
-    ``pipelines/evaluate/policy_zmq.py`` rather than reimplementing from
+    This wraps :class:`ZmqPolicyClient` / :class:`ZmqPolicyClientConfig`
+    from :mod:`vla_factory.deploy.zmq_client` rather than reimplementing from
     scratch.  The transport operates in *client mode*: it connects to a
     simulator host that PUSHes observations and PULLs actions.
 
@@ -84,11 +88,6 @@ class ZMQTransport:
 
         This is a blocking loop: receive observation → predict → send action.
         """
-        from pipelines.evaluate.policy_zmq import (
-            ZmqPolicyClient,
-            ZmqPolicyClientConfig,
-        )
-
         config = ZmqPolicyClientConfig(
             remote_ip=self.remote_ip or host,
             port_zmq_cmd=self.port_zmq_cmd or port,
@@ -195,10 +194,6 @@ class PolicyClient:
         self._client: object | None = None
 
         if transport_type == "zmq":
-            from pipelines.evaluate.policy_zmq import (
-                ZmqPolicyClient,
-                ZmqPolicyClientConfig,
-            )
             config = ZmqPolicyClientConfig(
                 remote_ip=host,
                 port_zmq_cmd=port,
@@ -210,7 +205,6 @@ class PolicyClient:
         """Send observation, receive action array."""
         if self._client is None:
             raise RuntimeError("PolicyClient not connected.")
-        from pipelines.evaluate.policy_zmq import encode_observation_json
 
         if isinstance(obs, ObsDict):
             # Convert ObsDict → flat ZMQ dict

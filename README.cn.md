@@ -36,7 +36,19 @@ pip install -e ".[dev]"      # 开发依赖：pytest / pytest-cov / tensorboard
 
 ## 快速开始
 
-### 0. 列出已注册模型
+### 0. 准备数据
+
+VLA Factory 使用 **LeRobot v3** 格式的数据集。将数据集放置在 recipe YAML 中 `data.source.path` 所指定的路径。期望的目录结构为：
+
+```
+<dataset_path>/meta/info.json   # 数据集元数据
+<dataset_path>/data/            # Parquet episode 文件
+<dataset_path>/videos/          # MP4 视频文件
+```
+
+在 recipe YAML 中修改 `data.source.path` 即可指向自己的数据。
+
+### 1. 列出已注册模型
 
 ```bash
 vlafactory-cli list
@@ -110,7 +122,7 @@ vlafactory-cli serve --checkpoint outputs/act_so101_banana \
 | 数据 | 模型 | 算法 | 部署 |
 |------|------|-------|------|
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
-| ⬜ **RLDS** | ⬜ **π₀ / π-FAST / π₀.₅** | ⬜ **LoRA SFT** |  |
+| ⬜ **RLDS** | ⬜ **π₀ / π-FAST / π₀.₅** | 🚧 **LoRA SFT** *(配置模板已就绪，实现规划中)* |  |
 | ⬜ **ROS bags** | ⬜ **GR00T** | ⬜ **Selective SFT** | |
 | ⬜ **HDF5** | ⬜ **OpenVLA** | | |
 
