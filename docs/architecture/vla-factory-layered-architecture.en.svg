@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="780" viewBox="0 0 960 780" role="img" aria-labelledby="title desc">
+  <title id="title">VLA Factory Layered Architecture Diagram</title>
+  <desc id="desc">The five-layer architecture of VLA Factory: user expression, external data parsing, data intermediate representation, model training, and deployment.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-10%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .layer { stroke-width: 1.5; filter: url(#shadow); }
+      .user { fill: #eff6ff; stroke: #60a5fa; }
+      .parse { fill: #f0fdf4; stroke: #4ade80; }
+      .ir { fill: #fff7ed; stroke: #fb923c; }
+      .train { fill: #fefce8; stroke: #eab308; }
+      .deploy { fill: #ecfeff; stroke: #22d3ee; }
+      .title { font: 700 26px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .layer-title { font: 700 21px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .code { font: 600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #334155; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="960" height="780"/>
+
+  <text x="480" y="48" text-anchor="middle" class="title">VLA Factory Layered Architecture</text>
+  <text x="480" y="75" text-anchor="middle" class="subtitle">An end-to-end loop from user expression, data parsing, intermediate representation, and training to deployment services</text>
+
+  <!-- Layer 1 -->
+  <rect x="55" y="112" width="850" height="82" rx="14" class="layer user"/>
+  <text x="480" y="146" text-anchor="middle" class="layer-title">User Expression Layer</text>
+  <text x="480" y="172" text-anchor="middle" class="code">vlafactory-cli | YAML recipe | API</text>
+
+  <!-- Layer 2 -->
+  <rect x="55" y="238" width="850" height="82" rx="14" class="layer parse"/>
+  <text x="480" y="272" text-anchor="middle" class="layer-title">External Data Parsing Layer</text>
+  <text x="480" y="298" text-anchor="middle" class="code">LeRobot v2 / v3 | RLDS | ROS bags | HDF5</text>
+
+  <!-- Layer 3 -->
+  <rect x="55" y="364" width="850" height="96" rx="14" class="layer ir"/>
+  <text x="480" y="399" text-anchor="middle" class="layer-title">Data Intermediate Representation Layer</text>
+  <text x="480" y="425" text-anchor="middle" class="code">Episode &amp; Frame | Manifest | Sampler | Transform pipeline</text>
+  <text x="480" y="448" text-anchor="middle" class="small">Unified sample indexes, statistics, window sampling, and model preprocessing</text>
+
+  <!-- Layer 4 -->
+  <rect x="55" y="510" width="850" height="96" rx="14" class="layer train"/>
+  <text x="480" y="545" text-anchor="middle" class="layer-title">Model Training Layer</text>
+  <text x="480" y="571" text-anchor="middle" class="code">Registry | Protocol | Patch | Trainer | Engine</text>
+  <text x="480" y="594" text-anchor="middle" class="small">Thin model adapters, fine-tuning strategies, training orchestration, and checkpoint artifacts</text>
+
+  <!-- Layer 5 -->
+  <rect x="55" y="656" width="850" height="96" rx="14" class="layer deploy"/>
+  <text x="480" y="691" text-anchor="middle" class="layer-title">Deployment Layer</text>
+  <text x="480" y="717" text-anchor="middle" class="code">Inference engine | Evaluate | Transport | Adapter</text>
+  <text x="480" y="740" text-anchor="middle" class="small">Load checkpoint metadata, execute action chunks, and connect to simulators or real robots</text>
+
+  <!-- Main vertical arrows -->
+  <path d="M480 194 L480 231" class="arrow"/>
+  <path d="M480 320 L480 357" class="arrow"/>
+  <path d="M480 460 L480 503" class="arrow"/>
+  <path d="M480 606 L480 649" class="arrow"/>
+</svg>

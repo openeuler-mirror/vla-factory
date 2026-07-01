@@ -1,0 +1,26 @@
+# ACT default profile for VLA Factory.
+#
+# This is the framework's recommended baseline for running ACT — the profile
+# VLA Factory ships and evolves, not a mechanical copy of lerobot's
+# ACTConfig defaults. Per-run overrides go in the recipe's `model.config`
+# block, which is deep-merged on top of this file (recipe wins).
+#
+# Only pure model hyperparameters live here. Data-derived fields
+# (chunk_size / n_action_steps / input_features / output_features) are
+# computed by the factory from the recipe + schema and never appear here;
+# any the profile/recipe omits fall back to lerobot's own ACTConfig defaults.
+
+# ── Transformer / CVAE ──
+dim_model: 512
+n_heads: 8
+dim_feedforward: 3200
+n_encoder_layers: 4
+n_decoder_layers: 1
+latent_dim: 32
+n_vae_encoder_layers: 4
+kl_weight: 10.0
+dropout: 0.1
+
+# ── Input ──
+# Sizes the camera feature shapes (not passed through to ACTConfig directly).
+image_size: [224, 224]

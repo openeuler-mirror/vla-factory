@@ -1,0 +1,67 @@
+# ACT from-scratch training on so101 pick-up task (LeRobot data)
+# Usage: python -m vla_factory train --config examples/act_lekiwi.yaml
+#
+# Source: lerobot official ACT train_config.json + config.json
+# Key differences from default:
+#   - dim_model: 1024 (vs 512), n_decoder_layers: 7 (vs 1)
+#   - dual camera: front + wrist
+#   - image_size: 480x640 (native resolution, no resize)
+#   - lr: 1e-5 (lower than default 1e-4)
+
+model:
+  name: act
+  path: null                         # from scratch, no pretrained weights
+  config:
+    dim_model: 1024
+    n_heads: 8
+    dim_feedforward: 3200
+    n_encoder_layers: 4
+    n_decoder_layers: 7
+    latent_dim: 32
+    n_vae_encoder_layers: 4
+    kl_weight: 10.0
+    dropout: 0.1
+    image_size: [480, 640]             # native resolution, matches lerobot
+
+action_spec:
+  action_dim: 9
+  action_horizon: 100                # chunk_size
+  action_type: joint_pos
+
+data:
+  source:
+    path: data/lerobot/vla-factory/banana
+    format: lerobot-v3
+  sampler:
+    type: sliding_window
+    n_obs_steps: 1
+    action_horizon: 100
+  split:
+    strategy: episode
+    train_ratio: 0.9
+    val_ratio: 0.1
+    seed: 1000
+
+finetuning:
+  strategy: full                     # ACT trains from scratch
+
+training:
+  backend: pytorch
+  lr: 1e-5
+  lr_backbone: 1e-5
+  batch_size: 8
+  total_steps: 160000
+  gradient_checkpointing: false
+  inference_steps: 1
+  num_workers: 4
+  augmentation:
+    random_crop: false
+    color_jitter: 0.0
+
+output:
+  output_dir: outputs/act_only_banana
+  report_to: none                    # none | tensorboard | wandb
+  logging_steps: 200
+  save_steps: 20000
+  save_total_limit: 3
+  overwrite_output_dir: true

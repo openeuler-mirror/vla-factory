@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="840" viewBox="0 0 960 840" role="img" aria-labelledby="title desc">
+  <title id="title">VLA Factory 部署推理流</title>
+  <desc id="desc">部署推理流从 checkpoint 加载和平台观测适配开始，经过模型预测、动作后处理、执行策略和动作适配，最终输出平台动作命令。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-10%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .node { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; filter: url(#shadow); }
+      .artifact { fill: #f5f3ff; stroke: #a78bfa; }
+      .load { fill: #eff6ff; stroke: #60a5fa; }
+      .adapter { fill: #f0fdf4; stroke: #4ade80; }
+      .transform { fill: #fff7ed; stroke: #fb923c; }
+      .infer { fill: #fefce8; stroke: #eab308; }
+      .action { fill: #ecfeff; stroke: #22d3ee; }
+      .title { font: 700 26px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .label { font: 700 18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .code { font: 600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #334155; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="960" height="840"/>
+
+  <text x="480" y="46" text-anchor="middle" class="title">部署 / 推理流</text>
+  <text x="480" y="73" text-anchor="middle" class="subtitle">部署链路复用训练产物和数据语义，再输出目标平台的动作命令。</text>
+
+  <rect x="105" y="105" width="750" height="72" rx="12" class="node artifact"/>
+  <text x="480" y="134" text-anchor="middle" class="label">Checkpoint 路径</text>
+  <text x="480" y="158" text-anchor="middle" class="code">checkpoint directory with recipe.yaml, schema, norm stats, and weights</text>
+
+  <path d="M480 177 L480 210" class="arrow"/>
+
+  <rect x="105" y="215" width="750" height="82" rx="12" class="node load"/>
+  <text x="480" y="247" text-anchor="middle" class="label">推理引擎加载</text>
+  <text x="480" y="272" text-anchor="middle" class="code">load recipe + schema + norm stats + model weights</text>
+
+  <path d="M480 297 L480 330" class="arrow"/>
+
+  <rect x="105" y="335" width="750" height="82" rx="12" class="node adapter"/>
+  <text x="480" y="367" text-anchor="middle" class="label">观测适配</text>
+  <text x="480" y="392" text-anchor="middle" class="code">platform observation -&gt; platform adapter -&gt; ObsDict</text>
+
+  <path d="M480 417 L480 450" class="arrow"/>
+
+  <rect x="105" y="455" width="750" height="82" rx="12" class="node transform"/>
+  <text x="480" y="487" text-anchor="middle" class="label">共享前处理</text>
+  <text x="480" y="512" text-anchor="middle" class="code">TransformPipeline -&gt; Observation</text>
+
+  <path d="M480 537 L480 570" class="arrow"/>
+
+  <rect x="105" y="575" width="750" height="82" rx="12" class="node infer"/>
+  <text x="480" y="607" text-anchor="middle" class="label">模型推理</text>
+  <text x="480" y="632" text-anchor="middle" class="code">model.predict_actions -&gt; normalized action chunk</text>
+
+  <path d="M480 657 L480 690" class="arrow"/>
+
+  <rect x="105" y="695" width="750" height="82" rx="12" class="node action"/>
+  <text x="480" y="727" text-anchor="middle" class="label">动作后处理与执行</text>
+  <text x="480" y="752" text-anchor="middle" class="code">postprocessor -&gt; raw action chunk -&gt; strategy + adapter -&gt; platform command</text>
+</svg>

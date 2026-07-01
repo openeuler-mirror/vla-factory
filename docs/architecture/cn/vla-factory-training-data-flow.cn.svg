@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="760" viewBox="0 0 960 760" role="img" aria-labelledby="title desc">
+  <title id="title">VLA Factory 训练数据流</title>
+  <desc id="desc">训练数据流从数据集路径开始，经过格式读取、schema 和统计量、样本索引、样本构造、批处理、loss 计算，最终产出 checkpoint 和推理元数据。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-10%" width="116%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f8fafc; }
+      .node { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.4; filter: url(#shadow); }
+      .source { fill: #eff6ff; stroke: #60a5fa; }
+      .parse { fill: #f0fdf4; stroke: #4ade80; }
+      .ir { fill: #fff7ed; stroke: #fb923c; }
+      .sample { fill: #fefce8; stroke: #eab308; }
+      .train { fill: #ecfeff; stroke: #22d3ee; }
+      .artifact { fill: #f5f3ff; stroke: #a78bfa; }
+      .title { font: 700 26px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .label { font: 700 18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .code { font: 600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #334155; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="960" height="760"/>
+
+  <text x="480" y="46" text-anchor="middle" class="title">训练数据流</text>
+  <text x="480" y="73" text-anchor="middle" class="subtitle">训练链路把异构数据集转换为模型可消费 batch，并产出可部署的训练产物。</text>
+
+  <rect x="105" y="105" width="750" height="72" rx="12" class="node source"/>
+  <text x="480" y="134" text-anchor="middle" class="label">数据集路径</text>
+  <text x="480" y="158" text-anchor="middle" class="code">local path | remote path | dataset root</text>
+
+  <path d="M480 177 L480 210" class="arrow"/>
+
+  <rect x="105" y="215" width="750" height="82" rx="12" class="node parse"/>
+  <text x="480" y="247" text-anchor="middle" class="label">外部格式读取</text>
+  <text x="480" y="272" text-anchor="middle" class="code">FormatReader: LeRobot v2 / v3 | RLDS | ROS bags | HDF5</text>
+
+  <path d="M480 297 L480 330" class="arrow"/>
+
+  <rect x="105" y="335" width="750" height="82" rx="12" class="node ir"/>
+  <text x="480" y="367" text-anchor="middle" class="label">规范化数据契约</text>
+  <text x="480" y="392" text-anchor="middle" class="code">DataSchema | NormStats | Episode &amp; Frame</text>
+
+  <path d="M480 417 L480 450" class="arrow"/>
+
+  <rect x="105" y="455" width="750" height="82" rx="12" class="node sample"/>
+  <text x="480" y="487" text-anchor="middle" class="label">样本索引</text>
+  <text x="480" y="512" text-anchor="middle" class="code">Manifest + Sampler -&gt; train / val sample index</text>
+
+  <path d="M480 537 L480 570" class="arrow"/>
+
+  <rect x="105" y="575" width="750" height="82" rx="12" class="node sample"/>
+  <text x="480" y="607" text-anchor="middle" class="label">样本构造与变换</text>
+  <text x="480" y="632" text-anchor="middle" class="code">VLADataset -&gt; raw sample -&gt; TransformPipeline -&gt; model-ready sample</text>
+
+  <path d="M480 657 L480 690" class="arrow"/>
+
+  <rect x="105" y="695" width="360" height="44" rx="12" class="node train"/>
+  <text x="285" y="722" text-anchor="middle" class="code">collate_fn -&gt; batch -&gt; model.compute_loss</text>
+
+  <rect x="495" y="695" width="360" height="44" rx="12" class="node artifact"/>
+  <text x="675" y="722" text-anchor="middle" class="code">loss / metrics / checkpoint + inference_metadata</text>
+
+  <path d="M465 717 L488 717" class="arrow"/>
+</svg>
