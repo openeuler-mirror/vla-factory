@@ -13,10 +13,13 @@ The ``vla_factory/config/model/`` directory follows Hydra's group convention
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 import yaml
+from omegaconf import OmegaConf
 
 from vla_factory.utils.constants import MODEL_CONFIG_DIR
+from vla_factory.config.recipe import TrainRecipe
 
 # vla_factory/config/model/ — this file lives in vla_factory/config/.
 _MODEL_CONFIG_DIR = Path(__file__).resolve().parent / MODEL_CONFIG_DIR
@@ -45,3 +48,18 @@ def load_model_defaults(model_name: str) -> dict:
             f"got {type(data).__name__}"
         )
     return data
+
+
+def resolve_recipe(recipe: TrainRecipe) -> TrainRecipe:
+    """Return a fully resolved recipe.
+
+    This is an entrypoint operation for authoring recipes: model default
+    profile values are deep-merged into ``model_config`` and user recipe values
+    win. Transforms are part of that same model config tree under
+    ``model_config["transforms"]``.
+    """
+    merged = OmegaConf.merge(load_model_defaults(recipe.model_name), recipe.model_config or {})
+    return replace(
+        recipe,
+        model_config=OmegaConf.to_container(merged, resolve=True),
+    )

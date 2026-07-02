@@ -52,10 +52,11 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_components=None):
     """Create an ACT model wrapper and matching TrainRecipe (requires lerobot)."""
     from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+    from vla_factory.config.defaults import resolve_recipe
     from vla_factory.data.manifest import DataSchema
     from vla_factory.model.registry import get_entry
 
-    recipe = TrainRecipe(
+    recipe = resolve_recipe(TrainRecipe(
         model_name="act",
         action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
         finetuning_strategy=strategy,
@@ -65,8 +66,8 @@ def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_co
         total_steps=3,
         batch_size=2,
         output=OutputConfig(output_dir=tempfile.mkdtemp()),
-    )
-    schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",))
+    ))
+    schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
 
     entry = get_entry("act")
     model = entry.factory(recipe=recipe, schema=schema)
@@ -210,11 +211,12 @@ class TestCPUTrainingLoop:
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
         from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.config.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
 
         # 1. Create model
         entry = get_entry("act")
-        recipe = TrainRecipe(
+        recipe = resolve_recipe(TrainRecipe(
             model_name="act",
             action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
             finetuning_strategy="full",
@@ -222,8 +224,8 @@ class TestCPUTrainingLoop:
             total_steps=3,
             batch_size=2,
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
-        )
-        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",))
+        ))
+        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
         model = entry.factory(recipe=recipe, schema=schema)
         apply_strategy(model, recipe, entry.metadata)
 
@@ -293,11 +295,12 @@ class TestCPUTrainingLoop:
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
         from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.config.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
         from transformers import TrainingArguments
 
         entry = get_entry("act")
-        recipe = TrainRecipe(
+        recipe = resolve_recipe(TrainRecipe(
             model_name="act",
             action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
             finetuning_strategy="freeze",
@@ -306,8 +309,8 @@ class TestCPUTrainingLoop:
             total_steps=2,
             batch_size=2,
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
-        )
-        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",))
+        ))
+        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
         model = entry.factory(recipe=recipe, schema=schema)
         apply_strategy(model, recipe, entry.metadata)
 

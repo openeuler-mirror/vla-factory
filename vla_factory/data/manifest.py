@@ -53,6 +53,7 @@ class DataSchema:
     state_dim: int = 0
     action_dim: int = 0
     cameras: tuple[str, ...] = ()
+    image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
     fps: int = 30
     has_language: bool = False
     total_episodes: int = 0

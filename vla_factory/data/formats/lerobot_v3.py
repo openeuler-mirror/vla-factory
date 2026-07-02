@@ -53,6 +53,7 @@ class LeRobotV3Reader:
         state_dim = 0
         action_dim = 0
         cameras: list[str] = []
+        image_sizes: dict[str, tuple[int, int]] = {}
         state_keys: list[str] = []
         action_keys: list[str] = []
 
@@ -71,6 +72,14 @@ class LeRobotV3Reader:
             elif dtype == "video" or ("image" in key.lower() and len(shape) == 3):
                 cam_name = key.split(".")[-1]
                 cameras.append(cam_name)
+                if len(shape) >= 2 and isinstance(shape[0], int) and isinstance(shape[1], int):
+                    image_sizes[cam_name] = (int(shape[0]), int(shape[1]))
+                else:
+                    video_info = spec.get("video_info") or spec.get("info") or {}
+                    height = video_info.get("video.height")
+                    width = video_info.get("video.width")
+                    if height is not None and width is not None:
+                        image_sizes[cam_name] = (int(height), int(width))
 
         # Check language
         has_language = (
@@ -82,6 +91,7 @@ class LeRobotV3Reader:
             state_dim=state_dim,
             action_dim=action_dim,
             cameras=tuple(cameras),
+            image_sizes=image_sizes,
             fps=info.get("fps", 30),
             has_language=has_language,
             total_episodes=info.get("total_episodes", 0),

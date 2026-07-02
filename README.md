@@ -8,7 +8,7 @@ VLA Factory is a **recipe-driven** fine-tuning framework for robot Vision-Langua
 
 ## Architecture & Key Features
 
-![VLA Factory layered architecture](./docs/architecture/vla-factory-layered-architecture.en.svg)
+![VLA Factory layered architecture](./docs/graph/vla-factory-layered-architecture.en.svg)
 
 Architecture overview: VLA Factory's core goal is to unify the data, model, training artifact, and deployment-entry contracts in a VLA fine-tuning workflow. Users describe experiment intent with a recipe; the framework turns external datasets into unified sample semantics, calls upstream model ecosystems through adapters, and produces reusable, verifiable training results.
 
@@ -39,7 +39,7 @@ After installation, a `vlafactory-cli` command is registered (e.g. `vlafactory-c
 
 VLA Factory expects datasets in **LeRobot v3** format. Place your dataset at the path specified by `data.source.path` in the recipe YAML. The expected directory structure is:
 
-```
+```text
 <dataset_path>/meta/info.json   # Dataset metadata
 <dataset_path>/data/            # Parquet episode files
 <dataset_path>/videos/          # MP4 video files

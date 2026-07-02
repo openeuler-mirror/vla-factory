@@ -36,8 +36,7 @@ YAML recipe
 - [2. 设计原则](#2-设计原则)
 - [3. 全局架构](#3-全局架构)
   - [3.1 分层架构图](#31-分层架构图)
-  - [3.2 数据流](#32-数据流)
-  - [3.3 代码目录结构](#33-代码目录结构)
+  - [3.2 代码目录结构](#32-代码目录结构)
 - [4. 配置系统](#4-配置系统)
 - [5. 核心模块设计](#5-核心模块设计)
 - [6. 依赖管理策略](#6-依赖管理策略)
@@ -71,6 +70,10 @@ VLA Factory 的核心诉求是提供一个统一框架，解决机器人 VLA 模
 ### 2.1 Recipe 驱动
 
 一次训练应由 recipe 完整描述。模型选择、数据路径、采样窗口、动作空间、微调策略、训练步数、输出目录等都来自配置，而不是散落在脚本里。
+
+authoring recipe 是用户最高优先级的配置入口。VLA Factory 暴露的所有可配置行为，都应能从 recipe 表达出来：通用能力放在顶层字段，模型专属能力放在 `model.config` 子树中。这样实验配置是可审计的，用户能在一份文件里看到本次实验主动覆盖了什么，而不是到脚本和隐式默认值里追踪行为来源。
+
+`vla_factory/config/model/<name>.yaml` 这类模型默认 profile 是 `model.config` 子树的默认值来源，不是运行时并行存在的另一份配置。它承载模型相关的基线设置，例如上游模型超参和默认 transform pipeline。训练入口会把选中的模型 profile 与 recipe 中的 `model.config` 做深度合并；recipe 中显式写出的字段优先于 profile 默认值，如果 CLI 对相关字段提供临时覆盖，则 CLI 优先级最高。合并后的 `model.config` 是数据 transform、模型 adapter、训练和部署共同消费的唯一模型配置。
 
 CLI 可以提供少量临时 override，例如 `--steps`、`--batch-size`、`--output-dir`，用于 smoke test 或调试，但 recipe 仍是主契约。
 
@@ -108,42 +111,14 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 
 ### 3.1 分层架构图
 
-![VLA Factory 分层架构图，根据 ../architecture-text.md 生成](./vla-factory-layered-architecture.cn.svg)
+![VLA Factory 分层架构图，根据 ../graph/architecture-text.md 生成](../graph/vla-factory-layered-architecture.cn.svg)
 
 五个分层：**用户表达层（recipe）→ 外部数据解析层 → 数据中间表示层 → 训练层 → 部署层**。
 recipe 是中心枢纽，其余四层都消费它。
 
-### 3.2 数据流
+数据模块的训练数据流、部署推理流以及对应图示详见 [数据模块设计](../modules/data-module.cn.md#1-数据流全景)。
 
-核心数据流分为训练数据流和部署推理流。两条链路共享 recipe、schema、norm stats 和 transform 定义，保证训练阶段看到的数据语义能够在部署阶段被复用。
-
-训练数据流：
-
-![VLA Factory 训练数据流，根据 ../architecture-text.md 生成](./vla-factory-training-data-flow.cn.svg)
-
-| 阶段 | 输入 | 处理 | 输出 |
-|---|---|---|---|
-| 数据解析 | dataset path | `FormatReader` 读取 schema、norm stats、episode 信息 | `DataSchema` / `NormStats` / `Episode` |
-| 样本索引 | episode 信息 | `Manifest` + `Sampler` 构造滑窗样本索引 | train / val sample index |
-| 样本构造 | sample index | `VLADataset` 读取帧、解码图像、组装 observation/action | raw sample |
-| 数据变换 | raw sample | `TransformPipeline` 执行归一化、resize、padding | model-ready sample |
-| 批处理 | model-ready sample | `collate_fn` 聚合 batch | Trainer batch |
-| 训练前向 | Trainer batch | `VLATrainer` 调用 `model.compute_loss` | loss / metrics / checkpoint + inference metadata |
-
-部署推理流：
-
-![VLA Factory 部署推理流，根据 ../architecture-text.md 生成](./vla-factory-deployment-inference-flow.cn.svg)
-
-| 阶段 | 输入 | 处理 | 输出 |
-|---|---|---|---|
-| 产物加载 | checkpoint path | 读取 recipe、schema、norm stats，加载模型权重 | `InferenceEngine` |
-| 观测适配 | platform observation | platform adapter 转换线协议 | `ObsDict` |
-| 前处理 | `ObsDict` | 复用训练侧 transform 逻辑 | `Observation` |
-| 模型推理 | `Observation` | `model.predict_actions` | normalized action chunk |
-| 后处理 | action chunk | postprocessor 反归一化、裁剪维度 | raw action chunk |
-| 动作执行 | raw action chunk | execution strategy + action adapter | platform action command |
-
-### 3.3 代码目录结构
+### 3.2 代码目录结构
 
 当前核心代码位于 `vla_factory/`。该结构只描述相对稳定的目录边界和模块职责；具体文件名会随着实现演进新增或调整，架构文档不维护文件级清单。
 
@@ -195,10 +170,14 @@ model:
   name: act
   path: null
   config:
-    image_size: [224, 224]
-    preprocessing:
-      normalize: true
-      resize_images: true
+    transforms:
+      inputs:
+        - type: image_to_float
+          range: [0, 1]
+        - type: image_layout
+          to: CHW
+        - type: image_normalize
+          mode: imagenet
 
 action_spec:
   action_dim: 6
@@ -245,7 +224,7 @@ recipe schema 应覆盖框架允许定制的主要能力，包括模型选择、
 |---|---|---|---|
 | 1 | CLI 显式指定 | 本次运行的临时覆盖 | 最高优先级，用于 smoke test、调参和临时改输出目录。 |
 | 2 | YAML recipe | 本次实验配置 | 用户主要配置入口，描述模型、数据、动作空间、训练策略和输出。 |
-| 3 | 模型默认 profile | 模型专属默认值 | 位于 `vla_factory/config/model/<name>.yaml`，例如 `act.yaml`。用于承载不同模型的默认超参、输入尺寸、预处理偏好等。 |
+| 3 | 模型默认 profile | 模型专属默认值 | 位于 `vla_factory/config/model/<name>.yaml`，例如 `act.yaml`。用于承载不同模型的默认超参、transform pipeline、预处理偏好等。 |
 | 4 | 通用默认值 | 框架级兜底 | 来自 `TrainRecipe` 及子 dataclass 的默认值，保证最小 recipe 仍可解析。 |
 
 训练入口 `train()` 当前支持覆盖：
@@ -254,7 +233,7 @@ recipe schema 应覆盖框架允许定制的主要能力，包括模型选择、
 - `override_batch_size`
 - `override_output_dir`
 
-模型专属超参放在 `model.config` 字段中。不同模型可能有不同的默认值和处理细节，例如图像输入尺寸、默认 transform 列表、动作 horizon、backbone 学习率或上游模型 config 参数。为了避免把这些差异塞进通用 recipe schema，模型 entry 可以读取对应的模型默认 profile，例如 `vla_factory/config/model/act.yaml`，再与 recipe 中的 `model.config` 做深度合并。
+模型专属超参放在 `model.config` 字段中。不同模型可能有不同的默认值和处理细节，例如默认 transform 列表、动作 horizon、backbone 学习率或上游模型 config 参数。为了避免把这些差异塞进通用 recipe schema，模型 entry 可以读取对应的模型默认 profile，例如 `vla_factory/config/model/act.yaml`，再与 recipe 中的 `model.config` 做深度合并。
 
 当前设计中，模型默认 profile 是“模型级实验基线”，不是不可变协议。它的作用是给某个模型提供合理默认值；一旦 YAML recipe 明确指定同名字段，应以 recipe 为准；如果 CLI 对相关字段提供覆盖，则以 CLI 为准。这样可以同时支持简单开箱配置和精确实验复现。
 
@@ -264,10 +243,17 @@ recipe schema 应覆盖框架允许定制的主要能力，包括模型选择、
 model:
   name: act
   config:
-    image_size: [320, 240]
-    preprocessing:
-      resize_images: true
-      normalize: true
+    transforms:
+      inputs:
+        - type: image_to_float
+          range: [0, 1]
+        - type: image_layout
+          to: CHW
+        - type: image_normalize
+          mode: imagenet
+        - type: resize_images
+          height: 320
+          width: 240
 ```
 
 这种方式保留了 authoring recipe 的可读性：用户能清楚看到本次实验真正改了什么；训练产物中的 `recipe.yaml` 会记录完整展开后的最终配置，满足复现和排查需求。
@@ -299,78 +285,14 @@ model:
 
 ### 5.1 数据模块
 
-数据模块的目标是把外部数据集转成模型无关的训练样本。
+数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR，并进一步通过 transform pipeline、训练样本构建与批处理形成训练 batch；视频解码作为样本读取过程中的可替换能力使用。它同时为部署侧保存并复用 schema、norm stats 和 resolved recipe，保证训练与推理使用同一套数据契约。
 
-主要职责包括：
+详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明：
 
-- 读取外部数据格式。
-- 解码或缓存视频帧。
-- 计算或读取 schema 与 norm stats。
-- 构造 episode 级 train/val split。
-- 用滑窗把 episode 切成训练样本。
-- 执行模型需要的 transform pipeline。
-- 输出 PyTorch DataLoader。
-
-#### 5.1.1 FormatReader
-
-`data/formats/` 定义数据格式 reader。reader 对外提供统一能力：
-
-- `get_schema(path)`
-- `get_norm_stats(path)`
-- `get_episode_ranges(path)`
-- `get_episode_lengths(path)`
-- `read_episode(path, episode_index, codec)`
-
-当前主实现是 LeRobot v3。后续新增 HDF5、RLDS、Zarr 时，应优先扩展 reader，而不是改训练模块。
-
-#### 5.1.2 VideoCodec
-
-`data/codec/` 抽象视频解码。PyAV codec 负责读取视频帧，并支持 `.npy` 帧缓存。训练前可以通过：
-
-```bash
-python -m vla_factory preprocess --config <recipe.yaml>
-```
-
-预先建立帧缓存，降低训练时重复解码开销。
-
-#### 5.1.3 DataSchema 与 NormStats
-
-schema 描述数据集结构，例如：
-
-- state 维度
-- action 维度
-- camera 列表
-- fps
-- episode 数量
-- frame 数量
-- state/action key 顺序
-
-norm stats 描述 state/action 的均值、方差、最小值、最大值等统计量。训练和部署必须使用同一套统计量，否则模型输出的动作尺度会不一致。
-
-#### 5.1.4 TransformPipeline
-
-transform pipeline 负责归一化、图像 resize、动作维度 padding 等处理。transform 的构建由模型 metadata 与数据统计共同决定。
-
-当前数据加载入口 `_build_transforms()` 会读取 `model_metadata["default_transforms"]`，再结合：
-
-- norm stats
-- image size
-- model action dim
-- dataset action dim
-
-构造实际 transform。每个 transform 应在前置条件不满足时自跳过，例如没有 norm stats 时不做归一化。
-
-#### 5.1.5 Manifest 与 Sampling
-
-manifest 是样本索引层。它把 episode 范围、episode 长度、观测窗口、动作 horizon 和 split 配置转成可索引的训练/验证样本列表。
-
-默认 split 应以 episode 为单位，避免同一条 episode 的相邻帧同时出现在 train 和 val 中造成泄漏。
-
-#### 5.1.6 VLADataset
-
-`VLADataset` 在 `__getitem__` 时根据 manifest 定位样本，读取帧，应用 transform，并输出 batch 需要的数据结构。`collate_fn` 负责把单样本聚合为 Trainer 可消费的 batch。
-
-数据模块不关心模型内部结构，只保证输出满足 `VLATrainer` 和 `VLAModel` 的输入契约。
+- 外部数据解析层和数据中间表示层的职责边界。
+- `FormatReader`、`DataSchema`、`NormStats`、`Episode`、`Frame`、`VideoRef`、`DatasetManifest` 等核心对象。
+- 数据变换流水线、训练样本构建与批处理的设计，包括样本读取过程中的视频解码策略。
+- 新增数据格式、视频解码策略和 transform step 的扩展方式。
 
 ### 5.2 模型抽象模块
 

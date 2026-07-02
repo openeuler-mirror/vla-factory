@@ -14,24 +14,30 @@ Public surface:
 
 from .base import TransformStep
 from .registry import TransformRegistry
-from .pipeline import TransformPipeline, BuildContext, build_preprocessor, build_transforms
+from .pipeline import TransformPipeline, TransformContext, build_preprocessor, build_transforms
 
 # Importing the step modules registers them with TransformRegistry.
-from .normalize import Normalize, UnnormalizeActionStep, IMAGENET_MEAN, IMAGENET_STD
+from .normalize import Normalize, NormalizeVector, UnnormalizeActionStep, IMAGENET_MEAN, IMAGENET_STD
 from .resize_images import ResizeImages
-from .pad_dimensions import PadDimensions
+from .pad_dimensions import PadDimensions, UnpadAction
+from .images import ImageToFloat, ImageLayout, ImageNormalize
 
 __all__ = [
     "TransformStep",
     "TransformRegistry",
     "TransformPipeline",
-    "BuildContext",
+    "TransformContext",
     "build_preprocessor",
     "build_transforms",
     "Normalize",
+    "NormalizeVector",
     "UnnormalizeActionStep",
     "ResizeImages",
     "PadDimensions",
+    "UnpadAction",
+    "ImageToFloat",
+    "ImageLayout",
+    "ImageNormalize",
     "IMAGENET_MEAN",
     "IMAGENET_STD",
 ]

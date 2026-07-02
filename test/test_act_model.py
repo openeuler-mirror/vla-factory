@@ -35,16 +35,18 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 def _make_recipe_and_schema(action_dim=6, action_horizon=10, cameras=("front",), state_dim=6):
     """Create a minimal TrainRecipe + DataSchema pair for factory calls."""
     from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig
+    from vla_factory.config.defaults import resolve_recipe
     from vla_factory.data.manifest import DataSchema
 
-    recipe = TrainRecipe(
+    recipe = resolve_recipe(TrainRecipe(
         model_name="act",
         action_spec=ActionSpecConfig(action_dim=action_dim, action_horizon=action_horizon),
-    )
+    ))
     schema = DataSchema(
         state_dim=state_dim,
         action_dim=action_dim,
         cameras=tuple(cameras),
+        image_sizes={cam: (224, 224) for cam in cameras},
     )
     return recipe, schema
 
@@ -251,23 +253,42 @@ class TestDefaultProfile:
 
         d = load_model_defaults("act")
         assert "dim_model" in d
-        assert "image_size" in d
+        assert not any(x["type"] == "resize_images" for x in d["transforms"]["inputs"])
 
     def test_resolve_uses_profile_defaults(self):
-        from vla_factory.model.registry.entries.act import _resolve_act_config
+        from vla_factory.model.registry.entries.act import _resolve_act_config, _resolve_resize_image_size
 
         cfg = _resolve_act_config({})
         assert cfg["dim_model"] == 512
-        assert cfg["image_size"] == [224, 224]
+        assert _resolve_resize_image_size(cfg) is None
 
     def test_recipe_overrides_profile(self):
         from vla_factory.model.registry.entries.act import _resolve_act_config
 
-        cfg = _resolve_act_config({"dim_model": 1024, "image_size": [480, 640]})
+        cfg = _resolve_act_config({
+            "dim_model": 1024,
+            "transforms": {"inputs": [{"type": "resize_images", "height": 480, "width": 640}]},
+        })
         assert cfg["dim_model"] == 1024
-        assert cfg["image_size"] == [480, 640]
+        assert cfg["transforms"]["inputs"][0]["height"] == 480
+        assert cfg["transforms"]["inputs"][0]["width"] == 640
         # Non-overridden keys still come from the profile.
         assert cfg["n_decoder_layers"] == 1
+
+    def test_image_size_comes_from_resize_transform(self):
+        from vla_factory.model.registry.entries.act import _resolve_resize_image_size
+
+        size = _resolve_resize_image_size({
+            "transforms": {"inputs": [{"type": "resize_images", "height": 480, "width": 640}]}
+        })
+        assert size == (480, 640)
+
+    def test_image_size_falls_back_to_schema(self):
+        from vla_factory.data.manifest import DataSchema
+        from vla_factory.model.registry.entries.act import _schema_image_size
+
+        schema = DataSchema(cameras=("front",), image_sizes={"front": (480, 640)})
+        assert _schema_image_size(schema, "front") == (480, 640)
 
     def test_unknown_model_returns_empty(self):
         from vla_factory.config.defaults import load_model_defaults
@@ -281,7 +302,9 @@ class TestDefaultProfile:
 
         entry = get_entry("act")
         recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        recipe.model_config = {"dim_model": 256}
+        from vla_factory.config.defaults import resolve_recipe
+        recipe.model_config = {**recipe.model_config, "dim_model": 256}
+        recipe = resolve_recipe(recipe)
         wrapper = entry.factory(recipe=recipe, schema=schema)
         assert wrapper.model.config.dim_model == 256
 

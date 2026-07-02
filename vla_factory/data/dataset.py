@@ -1,13 +1,13 @@
 """VLA training dataset — converts canonical IR to numpy training samples.
 
-Each sample is a **flat dict of numpy arrays** so that PyTorch's
+Each sample is a **flat dict of raw numpy arrays** so that PyTorch's
 ``default_collate`` can automatically stack them into tensors::
 
     {
-        "images.front":       ndarray[C, H, W],   # float32 [0,1]
-        "images.wrist":       ndarray[C, H, W],
-        "image_masks.front":  ndarray[C],          # bool, all True
-        "image_masks.wrist":  ndarray[C],
+        "images.front":       ndarray[H, W, C],   # uint8 raw image
+        "images.wrist":       ndarray[H, W, C],
+        "image_masks.front":  ndarray[],           # bool, True if valid
+        "image_masks.wrist":  ndarray[],
         "state":              ndarray[state_dim],  # float32
         "actions":            ndarray[horizon, dim],
         "action_is_pad":      ndarray[horizon],    # bool, True for padded steps
@@ -128,13 +128,13 @@ class VLADataset(torch.utils.data.Dataset):
 
         sample: dict[str, Any] = {}
 
-        # Decode images via VideoCodec: VideoRef → numpy HWC uint8 → CHW float32 [0,1]
+        # Decode images via VideoCodec: VideoRef → numpy HWC uint8.
+        # Model-specific transforms decide layout, scaling, resizing and
+        # normalisation. The dataset layer intentionally stays raw.
         for cam_name, ref in obs_frame.images.items():
             img = self.codec.decode_frame(ref)  # numpy HWC uint8
-            img = img.astype(np.float32) / 255.0
-            img = img.transpose(2, 0, 1)  # HWC → CHW
             sample[f"images.{cam_name}"] = img
-            sample[f"image_masks.{cam_name}"] = np.ones(img.shape[0], dtype=bool)
+            sample[f"image_masks.{cam_name}"] = np.array(True, dtype=bool)
 
         # State vector
         if obs_frame.state is not None:

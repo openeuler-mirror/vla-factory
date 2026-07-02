@@ -21,6 +21,21 @@ n_vae_encoder_layers: 4
 kl_weight: 10.0
 dropout: 0.1
 
-# ── Input ──
-# Sizes the camera feature shapes (not passed through to ACTConfig directly).
-image_size: [224, 224]
+# ── Data transforms ──
+# Dataset images are raw HWC uint8. This pipeline turns them into the tensor
+# contract expected by lerobot ACT: CHW float32 and ImageNet-normalized.
+# ACT does not resize by default; image feature shapes come from DataSchema.
+# Add resize_images with height/width only when an experiment explicitly wants it.
+transforms:
+  inputs:
+    - type: image_to_float
+      range: [0, 1]
+    - type: image_layout
+      to: CHW
+    - type: image_normalize
+      mode: imagenet
+    - type: normalize_vector
+      fields: ["state", "actions"]
+      method: zscore
+    - type: pad_dimensions
+      fields: ["actions"]

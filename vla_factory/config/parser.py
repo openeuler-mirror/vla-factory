@@ -50,6 +50,12 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     model_path = model_block.get("path") if isinstance(model_block, dict) else None
     model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
 
+    # ── Transform extensions ──
+    transforms_block = raw.get("transforms", {})
+    transform_imports = []
+    if isinstance(transforms_block, dict):
+        transform_imports = list(transforms_block.get("imports", []) or [])
+
     # ── Action spec ──
     action_spec = _pop_dataclass(raw.get("action_spec", {}), ActionSpecConfig)
 
@@ -64,7 +70,7 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     # ── Fine-tuning ──
     ft_block = raw.get("finetuning", {})
     strategy = ft_block.get("strategy", "full")
-    lora_config = _pop_dataclass(ft_block.get("lora", {}), LoraConfig) if "lora" in ft_block else None
+    lora_config = _pop_dataclass(ft_block.get("lora", {}), LoraConfig) if isinstance(ft_block.get("lora"), dict) else None
     freeze_components = ft_block.get("freeze_components")
     trainable_components = ft_block.get("trainable_components")
 
@@ -81,6 +87,7 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         model_name=model_name,
         model_path=model_path,
         model_config=model_config,
+        transform_imports=transform_imports,
         action_spec=action_spec,
         data=data_config,
         finetuning_strategy=strategy,

@@ -26,7 +26,7 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-@TransformRegistry.register("normalize", paired_reverse="unnormalize_action")
+@TransformRegistry.register("normalize")
 class Normalize(TransformStep):
     """Apply Z-score normalisation: ``(x - mean) / (std + eps)``.
 
@@ -104,20 +104,6 @@ class Normalize(TransformStep):
 
         return sample
 
-    def state_dict(self) -> dict:
-        # NormStats is shared and stored separately (norm_stats.json); only the
-        # step type + the image-normalisation choice are recorded here.
-        return {"type": "normalize", "use_imagenet_stats": self._use_imagenet_stats}
-
-    @classmethod
-    def from_state_dict(cls, d: dict, **shared) -> "Normalize":
-        stats = shared.get("stats")
-        if stats is None:
-            raise ValueError(
-                "Normalize.from_state_dict requires shared `stats=NormStats(...)`"
-            )
-        return cls(stats=stats, use_imagenet_stats=d.get("use_imagenet_stats", True))
-
 
 @TransformRegistry.register("unnormalize_action")
 class UnnormalizeActionStep(TransformStep):
@@ -144,14 +130,47 @@ class UnnormalizeActionStep(TransformStep):
         sample["actions"] = actions * std + mean
         return sample
 
-    def state_dict(self) -> dict:
-        return {"type": "unnormalize_action"}
+
+@TransformRegistry.register("normalize_vector")
+class NormalizeVector(TransformStep):
+    """Normalize selected vector fields with dataset z-score statistics."""
+
+    def __init__(
+        self,
+        stats: NormStats,
+        fields: list[str] | tuple[str, ...] = ("state", "actions"),
+        method: str = "zscore",
+    ) -> None:
+        if method != "zscore":
+            raise ValueError(f"Unsupported normalize_vector method: {method!r}")
+        self._stats = stats
+        self.fields = tuple(fields)
+        self.method = method
 
     @classmethod
-    def from_state_dict(cls, d: dict, **shared) -> "UnnormalizeActionStep":
-        stats = shared.get("stats")
+    def from_config(cls, cfg: dict, ctx=None) -> "NormalizeVector | None":
+        stats = getattr(ctx, "norm_stats", None)
         if stats is None:
-            raise ValueError(
-                "UnnormalizeActionStep.from_state_dict requires shared `stats=NormStats(...)`"
-            )
-        return cls(stats=stats)
+            return None
+        return cls(
+            stats=stats,
+            fields=tuple(cfg.get("fields", ("state", "actions"))),
+            method=cfg.get("method", "zscore"),
+        )
+
+    def __call__(self, sample: dict) -> dict:
+        if "state" in self.fields and self._stats.state is not None and sample.get("state") is not None:
+            mean = np.array(self._stats.state.mean, dtype=np.float32)
+            std = np.array(self._stats.state.std, dtype=np.float32) + _EPS
+            sample["state"] = (sample["state"] - mean) / std
+
+        if "actions" in self.fields and self._stats.action is not None and sample.get("actions") is not None:
+            mean = np.array(self._stats.action.mean, dtype=np.float32)
+            std = np.array(self._stats.action.std, dtype=np.float32) + _EPS
+            sample["actions"] = (sample["actions"] - mean) / std
+        return sample
+
+    def inverse_for_output(self, ctx=None) -> TransformStep | None:
+        if "actions" not in self.fields or self._stats.action is None:
+            return None
+        return UnnormalizeActionStep(self._stats)
