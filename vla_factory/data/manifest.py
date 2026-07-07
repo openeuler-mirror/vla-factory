@@ -53,6 +53,7 @@ class DataSchema:
     state_dim: int = 0
     action_dim: int = 0
     cameras: tuple[str, ...] = ()
+    image_sizes: dict[str, tuple[int, int]] = field(default_factory=dict)
     fps: int = 30
     has_language: bool = False
     total_episodes: int = 0
@@ -98,19 +99,21 @@ class DatasetManifest:
     # "train" | "val" -> list of episode indices
     splits: dict[str, list[int]] = field(default_factory=dict)
 
-    # Convenience indices built from ``locators`` + ``splits``
-    _train_indices: list[int] = field(default_factory=list, repr=False)
-    _val_indices: list[int] = field(default_factory=list, repr=False)
+    # Convenience indices built from ``locators`` + ``splits``. Public (no leading
+    # underscore): callers like VLADataset need the raw indices, not only the
+    # locator views exposed by train_locators / val_locators.
+    train_indices: list[int] = field(default_factory=list, repr=False)
+    val_indices: list[int] = field(default_factory=list, repr=False)
 
     @property
     def train_locators(self) -> list[SampleLocator]:
         """Locators belonging to training episodes."""
-        return [self.locators[i] for i in self._train_indices]
+        return [self.locators[i] for i in self.train_indices]
 
     @property
     def val_locators(self) -> list[SampleLocator]:
         """Locators belonging to validation episodes."""
-        return [self.locators[i] for i in self._val_indices]
+        return [self.locators[i] for i in self.val_indices]
 
 
 def build_manifest(
@@ -185,8 +188,8 @@ def build_manifest(
             "train": sorted(train_eps),
             "val": sorted(val_eps),
         },
-        _train_indices=train_indices,
-        _val_indices=val_indices,
+        train_indices=train_indices,
+        val_indices=val_indices,
     )
     return manifest
 

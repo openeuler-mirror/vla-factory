@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import importlib
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -16,7 +17,7 @@ import torch
 from vla_factory.config.parser import parse_recipe
 from vla_factory.config.recipe import TrainRecipe
 from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
-from vla_factory.data.transforms import build_transforms, BuildContext
+from vla_factory.data.transforms import build_transforms, TransformContext
 from vla_factory.data.formats import get_reader
 from vla_factory.data.codec import resolve_codec
 from vla_factory.model.protocols.observation import Observation
@@ -172,6 +173,7 @@ def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, Norm
             state_dim=schema_d.get("state_dim", 0),
             action_dim=schema_d.get("action_dim", 0),
             cameras=tuple(schema_d.get("cameras", ())),
+            image_sizes={k: tuple(v) for k, v in schema_d.get("image_sizes", {}).items()},
             fps=schema_d.get("fps", 30),
             has_language=schema_d.get("has_language", False),
             total_episodes=schema_d.get("total_episodes", 0),
@@ -186,9 +188,17 @@ def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, Norm
     try:
         with open(norm_file) as f:
             ns_d = json.load(f)
+        images_raw = ns_d.get("images")
+        images_stats = None
+        if isinstance(images_raw, dict):
+            images_stats = {
+                k: _parse_feature_stats(v)
+                for k, v in images_raw.items()
+            }
         norm_stats = NormStats(
             state=_parse_feature_stats(ns_d.get("state")),
             action=_parse_feature_stats(ns_d.get("action")),
+            images=images_stats,
             method=ns_d.get("method", "zscore"),
         )
     except Exception as e:
@@ -356,6 +366,8 @@ class InferenceEngine:
         self.recipe = recipe
         self.norm_stats = norm_stats
         self.schema = schema
+        for module_name in recipe.transform_imports:
+            importlib.import_module(module_name)
 
         # ── 1.1 Clear model_path for inference ─────────────────────
         # The factory would try to load recipe.model_path (e.g. a pretrained
@@ -403,20 +415,24 @@ class InferenceEngine:
         self.action_dim = recipe.action_spec.action_dim
 
         # ── 3.5 Forward + reverse transform pipelines ────────────
-        # Built from the model's declared transforms; both share the loaded
-        # norm_stats. ``preprocessor`` normalises the observation (state/images);
-        # ``postprocessor`` reverses the action-affecting steps on the model's
-        # output (un-normalise, and in future delta→absolute).
-        yaml_image_size = recipe.model_config.get("image_size")
-        image_size = tuple(yaml_image_size) if yaml_image_size else entry.metadata.image_size
-        tctx = BuildContext(
+        # Built solely from the resolved recipe saved in inference_metadata.
+        transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
+        if transform_inputs is None:
+            raise ValueError(
+                f"Resolved recipe at {checkpoint_path} does not contain "
+                "`model.config.transforms.inputs`; checkpoint metadata is incomplete."
+            )
+        tctx = TransformContext(
             norm_stats=norm_stats,
-            image_size=image_size,
             model_action_dim=entry.metadata.action_dim or recipe.action_spec.action_dim,
             dataset_action_dim=schema.action_dim,
+            recipe=recipe,
+            schema=schema,
+            model_config=recipe.model_config,
+            split="infer",
         )
         self.preprocessor, self.postprocessor = build_transforms(
-            entry.metadata.default_transforms, tctx
+            transform_inputs, tctx
         )
 
         # ── 4. Chunking state ─────────────────────────────────────
@@ -468,7 +484,7 @@ class InferenceEngine:
     def _obs_to_observation(self, obs: ObsDict) -> Observation:
         """Convert ObsDict → Observation via the forward preprocessor pipeline.
 
-        Builds a flat numpy sample (CHW ``[0,1]`` images, raw state) and runs
+        Builds a flat numpy sample (raw HWC images, raw state) and runs
         ``self.preprocessor`` — the *same* transform pipeline training uses
         (Normalize / ResizeImages / ...). All normalisation lives in the
         transforms; there is no inline math here. The normalised numpy arrays
@@ -481,10 +497,7 @@ class InferenceEngine:
         sample: dict[str, Any] = {}
         for cam_name in self.camera_keys:
             img = obs.video[cam_name]
-            if img.dtype == np.uint8:
-                img = img.astype(np.float32) / 255.0
-            # HWC → CHW float32 [0,1]
-            sample[f"images.{cam_name}"] = np.ascontiguousarray(img.transpose(2, 0, 1))
+            sample[f"images.{cam_name}"] = np.ascontiguousarray(img)
         if obs.state is not None:
             sample["state"] = obs.state.astype(np.float32)
 
@@ -496,9 +509,7 @@ class InferenceEngine:
             arr = normalized[f"images.{cam_name}"]
             tensor = torch.as_tensor(np.ascontiguousarray(arr)).unsqueeze(0).to(self.device)
             images[cam_name] = tensor
-            image_masks[cam_name] = torch.ones(
-                arr.shape[0], dtype=torch.bool, device=self.device
-            ).unsqueeze(0)
+            image_masks[cam_name] = torch.ones((), dtype=torch.bool, device=self.device).unsqueeze(0)
 
         state: torch.Tensor | None = None
         if normalized.get("state") is not None:
@@ -546,11 +557,17 @@ class InferenceEngine:
         if len(self._chunk_buffer) > max_buffer:
             self._chunk_buffer.popleft()
 
-        # Weighted average: most recent predictions weighted more
+        # Temporal ensembling of overlapping chunks (à la lerobot ACT): each call
+        # advances time by one step, so every buffered chunk has a prediction that
+        # corresponds to the *current* timestep. Chunk i (i steps old) reaches that
+        # timestep at index `step_idx - i` within its own H-step horizon.
         buf_len = len(self._chunk_buffer)
-        weights = np.array([1.0 / (buf_len - i) for i in range(buf_len)])
         step_idx = buf_len - 1
         predictions = [self._chunk_buffer[i][step_idx - i] for i in range(buf_len)]
+        # Recency weighting (harmonic): the freshest chunk (i = buf_len-1) gets
+        # weight 1/1, the oldest gets 1/buf_len — emphasise the most recent
+        # prediction while still smoothing across the overlapping chunks.
+        weights = np.array([1.0 / (buf_len - i) for i in range(buf_len)])
         result = np.average(predictions, weights=weights, axis=0)
         return result.astype(np.float32)
 

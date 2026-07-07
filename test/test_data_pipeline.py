@@ -65,6 +65,8 @@ class TestLeRobotV3Reader(unittest.TestCase):
         self.assertEqual(schema.total_episodes, NUM_EPISODES)
         self.assertEqual(schema.total_frames, TOTAL_FRAMES)
         self.assertEqual(schema.robot_type, "so101_follower")
+        self.assertEqual(schema.image_sizes["front"], (IMAGE_H, IMAGE_W))
+        self.assertEqual(schema.image_sizes["wrist"], (IMAGE_H, IMAGE_W))
 
     def test_norm_stats(self):
         stats = self.reader.get_norm_stats(DATASET_PATH)
@@ -323,6 +325,19 @@ class TestTransforms(unittest.TestCase):
         result = resize(sample)
         self.assertEqual(result["images.front"].shape, (3, IMAGE_H, IMAGE_W))
 
+    def test_resize_images_without_size_is_noop(self):
+        from vla_factory.data.transforms import TransformContext
+        from vla_factory.data.transforms.resize_images import ResizeImages
+
+        self.assertIsNone(ResizeImages.from_config({"type": "resize_images"}, TransformContext(model_config={})))
+
+    def test_resize_images_requires_height_and_width_together(self):
+        from vla_factory.data.transforms import TransformContext
+        from vla_factory.data.transforms.resize_images import ResizeImages
+
+        with self.assertRaisesRegex(ValueError, "height.*width"):
+            ResizeImages.from_config({"type": "resize_images", "height": 224}, TransformContext(model_config={}))
+
     def test_pad_dimensions(self):
         from vla_factory.data.transforms.pad_dimensions import PadDimensions
         pad = PadDimensions(target_dim=32)
@@ -401,15 +416,13 @@ class TestVLADataset(unittest.TestCase):
         self.assertIsInstance(sample["images.front"], np.ndarray)
 
     def test_image_format(self):
-        """Images should be CHW float32 in [0, 1]."""
+        """Dataset images should stay raw HWC uint8; transforms own model formatting."""
         sample = self.dataset[0]
         for key in ("images.front", "images.wrist"):
             img = sample[key]
             self.assertEqual(img.ndim, 3)
-            self.assertEqual(img.shape[0], 3)  # channels first
-            self.assertEqual(img.dtype, np.float32)
-            self.assertGreaterEqual(img.min(), 0.0)
-            self.assertLessEqual(img.max(), 1.0)
+            self.assertEqual(img.shape, (IMAGE_H, IMAGE_W, 3))
+            self.assertEqual(img.dtype, np.uint8)
 
     def test_state_format(self):
         sample = self.dataset[0]
@@ -498,7 +511,7 @@ class TestDataLoaderBatching(unittest.TestCase):
         self.assertIsNotNone(obs.state)
         self.assertEqual(obs.state.shape, (batch_size, STATE_DIM))
         for cam_name in obs.images:
-            self.assertEqual(obs.images[cam_name].shape, (batch_size, 3, IMAGE_H, IMAGE_W))
+            self.assertEqual(obs.images[cam_name].shape, (batch_size, IMAGE_H, IMAGE_W, 3))
 
     def test_batch_is_tensor(self):
         """Verify collate_fn converts numpy → torch.Tensor."""
@@ -529,8 +542,8 @@ class TestBuildTransforms(unittest.TestCase):
 
     def test_empty(self):
         from vla_factory.data.loader import _build_transforms
-        transforms = _build_transforms()
-        self.assertEqual(len(transforms), 0)
+        with self.assertRaises(ValueError):
+            _build_transforms()
 
     def test_normalize_only(self):
         from vla_factory.data.loader import _build_transforms
@@ -538,10 +551,20 @@ class TestBuildTransforms(unittest.TestCase):
         norm_stats = NormStats(
             action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
         )
-        transforms = _build_transforms(norm_stats=norm_stats)
+        with self.assertRaises(ValueError):
+            _build_transforms(norm_stats=norm_stats)
+
+        transforms = _build_transforms(
+            norm_stats=norm_stats,
+            model_metadata={
+                "transform_inputs": [
+                    {"type": "normalize_vector", "fields": ["actions"]},
+                ],
+            },
+        )
         self.assertEqual(len(transforms), 1)
-        from vla_factory.data.transforms.normalize import Normalize
-        self.assertIsInstance(transforms[0], Normalize)
+        from vla_factory.data.transforms.normalize import NormalizeVector
+        self.assertIsInstance(transforms[0], NormalizeVector)
 
     def test_normalize_and_pad(self):
         from vla_factory.data.loader import _build_transforms
@@ -551,10 +574,47 @@ class TestBuildTransforms(unittest.TestCase):
         )
         transforms = _build_transforms(
             norm_stats=norm_stats,
-            model_metadata={"action_dim": 32},
+            model_metadata={
+                "action_dim": 32,
+                "transform_inputs": [
+                    {"type": "normalize_vector", "fields": ["actions"]},
+                    {"type": "pad_dimensions", "fields": ["actions"]},
+                ],
+            },
             action_dim=ACTION_DIM,
         )
         self.assertEqual(len(transforms), 2)
+
+    def test_act_profile_image_pipeline(self):
+        from vla_factory.config.parser import parse_recipe_from_string
+        from vla_factory.data.loader import _build_transforms
+        from vla_factory.data.manifest import DataSchema, NormStats, FeatureStats
+        from vla_factory.config.defaults import resolve_recipe
+
+        recipe = parse_recipe_from_string("model:\n  name: act\n")
+        recipe = resolve_recipe(recipe)
+        transforms = _build_transforms(
+            norm_stats=NormStats(
+                state=FeatureStats(mean=[0.0] * STATE_DIM, std=[1.0] * STATE_DIM),
+                action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
+            ),
+            model_metadata={
+                "action_dim": ACTION_DIM,
+                "profile": recipe.model_config,
+                "transform_inputs": recipe.model_config["transforms"]["inputs"],
+            },
+            action_dim=ACTION_DIM,
+            recipe=recipe,
+            schema=DataSchema(state_dim=STATE_DIM, action_dim=ACTION_DIM, cameras=("front",)),
+        )
+        sample = {
+            "images.front": np.zeros((IMAGE_H, IMAGE_W, 3), dtype=np.uint8),
+            "state": np.zeros(STATE_DIM, dtype=np.float32),
+            "actions": np.zeros((ACTION_HORIZON, ACTION_DIM), dtype=np.float32),
+        }
+        out = transforms(sample)
+        self.assertEqual(out["images.front"].shape, (3, IMAGE_H, IMAGE_W))
+        self.assertEqual(out["images.front"].dtype, np.float32)
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -565,6 +625,7 @@ class TestEndToEnd(unittest.TestCase):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.config.parser import parse_recipe
+        from vla_factory.config.defaults import resolve_recipe
         from vla_factory.data.loader import create_dataloaders
 
         yaml_path = Path(_project_root) / "vla_factory" / "examples" / "act_aloha.yaml"
@@ -574,6 +635,7 @@ class TestEndToEnd(unittest.TestCase):
         # Override dataset path and batch_size for the small test dataset
         cls.recipe.data.source.path = str(DATASET_PATH)
         cls.recipe.batch_size = 2
+        cls.recipe = resolve_recipe(cls.recipe)
         cls.train_loader, cls.val_loader = create_dataloaders(cls.recipe)
 
     def test_train_loader_nonempty(self):

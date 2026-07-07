@@ -30,6 +30,7 @@ from vla_factory.model.protocols.model import ModelMetadata
 from vla_factory.model.protocols.observation import Observation
 from vla_factory.model.registry.registry import register_vla
 from vla_factory.config.defaults import load_model_defaults
+from vla_factory.config.recipe import TrainRecipe
 
 logger = logging.getLogger(__name__)
 
@@ -258,16 +259,10 @@ _ACT_METADATA = ModelMetadata(
     training_paradigm="from_scratch",
     requires_prompt=False,
     requires_augmentation=True,
-    image_size=(224, 224),
     support_lora=False,
     support_full=True,
     support_freeze=True,
     inference_num_steps=1,
-    # Ordered preprocessor pipeline declared on the model entry.  Each step
-    # self-skips when its precondition isn't met (no stats / zero image_size
-    # / no padding needed), so this list is correct for both resized and
-    # native-resolution ACT runs.
-    default_transforms=("normalize", "resize_images", "pad_dimensions"),
     install_hint='pip install -e ".[act]"',
     # Trainable-component name patterns.  The wrapper holds the lerobot policy
     # as ``self.model`` and the policy holds the ACT network as ``self.model``,
@@ -303,20 +298,60 @@ def load_act(recipe, schema) -> ACTModelWrapper:
     return _load_lerobot(recipe, schema)
 
 
-def _resolve_act_config(model_config: dict) -> dict:
-    """Merge ACT's default profile with per-run overrides; return a plain dict.
+def _resolve_act_config(recipe_or_config) -> dict:
+    """Resolve ACT config for adapter construction.
 
-    The profile (``vla_factory/config/model/act.yaml``) is the baseline; *model_config*
-    (the recipe's ``model.config``) deep-merges on top (recipe wins).
-    OmegaConf resolves any ``${...}`` interpolations. The returned dict holds
-    only model hyperparameters plus ``image_size``; framework-managed keys are
-    stripped by the caller before constructing ``ACTConfig``.
+    Normal training/deployment passes a ``TrainRecipe`` whose ``model_config``
+    has already been prepared by the entrypoint or loaded from checkpoint
+    metadata. The dict fallback is retained for direct unit tests and low-level
+    adapter calls that pass an authoring-style override dictionary.
     """
-    merged = OmegaConf.merge(
-        load_model_defaults("act"),
-        model_config or {},
-    )
+    if isinstance(recipe_or_config, TrainRecipe):
+        return OmegaConf.to_container(
+            OmegaConf.create(recipe_or_config.model_config or {}),
+            resolve=True,
+        )
+    else:
+        model_config = recipe_or_config or {}
+
+    merged = OmegaConf.merge(load_model_defaults("act"), model_config)
     return OmegaConf.to_container(merged, resolve=True)
+
+
+def _resolve_resize_image_size(cfg: dict) -> tuple[int, int] | None:
+    """Return the configured resize target, or None for dataset-native size."""
+    transform_inputs = (cfg.get("transforms") or {}).get("inputs") or []
+    for item in transform_inputs:
+        if not isinstance(item, dict) or item.get("type") != "resize_images":
+            continue
+        height = item.get("height")
+        width = item.get("width")
+        if height is None and width is None:
+            return None
+        if height is None or width is None:
+            raise ValueError("resize_images requires both `height` and `width`.")
+        height = int(height)
+        width = int(width)
+        if height <= 0 or width <= 0:
+            raise ValueError("resize_images target height and width must be positive.")
+        return height, width
+    return None
+
+
+def _schema_image_size(schema, camera_name: str) -> tuple[int, int]:
+    image_sizes = getattr(schema, "image_sizes", {}) or {}
+    size = image_sizes.get(camera_name)
+    if size is None and len(image_sizes) == 1:
+        size = next(iter(image_sizes.values()))
+    if size is None:
+        raise ValueError(
+            f"Cannot infer image size for camera `{camera_name}`. "
+            "Set `height` and `width` on the resize_images transform, or use "
+            "a dataset reader that provides DataSchema.image_sizes."
+        )
+    if len(size) != 2:
+        raise ValueError(f"DataSchema.image_sizes[{camera_name!r}] must be (height, width).")
+    return int(size[0]), int(size[1])
 
 
 def _load_lerobot(recipe, schema) -> ACTModelWrapper:
@@ -332,12 +367,13 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
     # the baseline; the recipe's per-run model.config deep-merges on top
     # (recipe wins). Unknown keys surface as a TypeError from ACTConfig rather
     # than being silently dropped — the upstream config object is the schema.
-    cfg = _resolve_act_config(recipe.model_config)
+    cfg = _resolve_act_config(recipe)
 
     # Framework-managed keys are computed from the recipe/schema and must not
-    # pass through to ACTConfig. image_size only sizes the camera features.
-    image_size = tuple(cfg.pop("image_size", (224, 224)))
-    for fw_key in ("chunk_size", "n_action_steps", "input_features", "output_features"):
+    # pass through to ACTConfig. Image feature sizes come from resize_images
+    # when configured, otherwise from the dataset schema's native image size.
+    resize_image_size = _resolve_resize_image_size(cfg)
+    for fw_key in ("chunk_size", "n_action_steps", "input_features", "output_features", "transforms"):
         cfg.pop(fw_key, None)
 
     # Build input_features dynamically from dataset cameras
@@ -348,6 +384,7 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
         ),
     }
     for cam in camera_names:
+        image_size = resize_image_size or _schema_image_size(schema, cam)
         input_features[f"observation.images.{cam}"] = PolicyFeature(
             type=FeatureType.VISUAL,
             shape=(3, *image_size),

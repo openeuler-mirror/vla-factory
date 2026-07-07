@@ -272,6 +272,7 @@ class TrainRecipe:
     model_name: str = ""
     model_path: str | None = None
     model_config: dict = field(default_factory=dict)  # free-form, adapter-specific
+    transform_imports: list[str] = field(default_factory=list)  # modules that register custom transforms
 
     # Action space
     action_spec: ActionSpecConfig = field(default_factory=ActionSpecConfig)

@@ -60,7 +60,6 @@ class ModelMetadata:
     # ── Capabilities ──
     requires_prompt: bool = True
     requires_augmentation: bool = False
-    image_size: tuple[int, int] = (224, 224)
 
     # ── Fine-tuning support ──
     support_lora: bool = True
@@ -73,13 +72,6 @@ class ModelMetadata:
 
     # ── Patcher ──
     patcher: str | None = None
-
-    # ── Data transforms ──
-    # Ordered list of registered transform type names this model expects as its
-    # preprocessor pipeline (e.g. ("normalize", "resize_images", "pad_dimensions")).
-    # Empty tuple = fall back to the framework default list.  Declared on the
-    # entry so the data pipeline is model-driven rather than hardcoded.
-    default_transforms: tuple[str, ...] = ()
 
     # ── Dependencies / install ──
     install_hint: str = ""   # e.g. 'pip install -e ".[act]"'; "" = no extra needed

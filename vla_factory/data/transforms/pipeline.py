@@ -1,16 +1,4 @@
-"""TransformPipeline + the preprocessor builder.
-
-``TransformPipeline`` is an ordered list of forward-only :class:`TransformStep`
-instances.  ``build_preprocessor`` turns a model's declared transform list
-(e.g. ACT's ``("normalize", "resize_images", "pad_dimensions")``) into a
-concrete pipeline, injecting runtime parameters (image_size, action dims,
-norm_stats) per step and skipping a step when its preconditions aren't met.
-
-The pre/postprocessor split (auto-deriving a reverse pipeline from
-``paired_reverse`` metadata) and full ``transforms.json`` round-tripping land in
-a later phase; this module establishes the forward-only pipeline + the
-registry-driven builder they will build on.
-"""
+"""TransformPipeline and YAML-driven builders."""
 
 from __future__ import annotations
 
@@ -18,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .base import TransformStep
-from .registry import TransformRegistry, _accepted_kwargs
+from .registry import TransformRegistry
 
 
 class TransformPipeline:
@@ -35,18 +23,6 @@ class TransformPipeline:
     @property
     def steps(self) -> list[TransformStep]:
         return self._steps
-
-    def state_dict(self) -> list[dict]:
-        return [step.state_dict() for step in self._steps]
-
-    @classmethod
-    def from_state_dict(cls, d: list[dict], **shared) -> "TransformPipeline":
-        """Reconstruct a pipeline from a list of step ``state_dict``s.
-
-        ``shared`` (e.g. ``stats=norm_stats``) is forwarded to every step that
-        needs it.
-        """
-        return cls([TransformRegistry.create(item, **shared) for item in d])
 
     def __len__(self) -> int:
         return len(self._steps)
@@ -70,130 +46,45 @@ class TransformPipeline:
 
 
 @dataclass
-class BuildContext:
+class TransformContext:
     """Runtime context used to instantiate a model's default transform list.
 
     Fields are sourced from model metadata + dataset schema.  Each transform
-    type draws only what it needs: Normalize → ``norm_stats``, ResizeImages →
-    ``image_size``, PadDimensions → ``model_action_dim`` / ``dataset_action_dim``.
+    type draws only what it needs: Normalize -> ``norm_stats``,
+    ResizeImages -> its own ``height`` / ``width`` config, PadDimensions ->
+    ``model_action_dim`` / ``dataset_action_dim``.
     """
 
     norm_stats: Any | None = None
-    image_size: tuple[int, int] | None = None
     model_action_dim: int = 0
     dataset_action_dim: int = 0
-
-
-# Default ordered transform list when a model declares no ``default_transforms``.
-# Keeps behaviour identical to the legacy hardcoded ``_build_transforms``: every
-# step is present, and each one self-skips when its precondition isn't met.
-_DEFAULT_TRANSFORM_TYPES: tuple[str, ...] = (
-    "normalize",
-    "resize_images",
-    "pad_dimensions",
-)
-
+    recipe: Any | None = None
+    schema: Any | None = None
+    model_config: dict[str, Any] | None = None
+    split: str = "train"
 
 def build_preprocessor(
-    transform_types: Iterable[str] | None,
-    ctx: BuildContext,
+    transform_types: Iterable[dict] | None,
+    ctx: TransformContext,
 ) -> TransformPipeline:
-    """Build a forward preprocessor pipeline from a model's declared transforms.
-
-    Parameters
-    ----------
-    transform_types
-        Ordered iterable of registered transform type names.  ``None`` or empty
-        falls back to :data:`_DEFAULT_TRANSFORM_TYPES` (legacy behaviour).
-    ctx
-        Runtime parameters used to instantiate each step.
-
-    Each name is resolved through the registry.  Steps whose preconditions
-    aren't satisfied (no stats, zero image_size, no padding needed) are skipped
-    — exactly matching the legacy ``_build_transforms`` behaviour.
-    """
-    if not transform_types:
-        transform_types = _DEFAULT_TRANSFORM_TYPES
-
+    """Build a forward preprocessor pipeline from YAML transform configs."""
     steps: list[TransformStep] = []
-    for name in transform_types:
-        step = _instantiate(name, ctx)
+    for item in transform_types:
+        step = TransformRegistry.create_from_config(item, ctx)
         if step is not None:
             steps.append(step)
     return TransformPipeline(steps)
 
 
-def _instantiate(name: str, ctx: BuildContext) -> TransformStep | None:
-    """Construct one step from runtime context, or ``None`` to skip it.
-
-    resize_images / pad_dimensions branch here because their parameters are
-    runtime-resolved (image_size, action dims) rather than carried in a static
-    config.  Self-contained step types (Phase 3's ``delta_actions`` with its
-    mask, etc.) are built generically via the registry.
-    """
-    if name == "normalize":
-        if ctx.norm_stats is None:
-            return None
-        return TransformRegistry.create({"type": "normalize"}, stats=ctx.norm_stats)
-
-    if name == "resize_images":
-        if not ctx.image_size or ctx.image_size[0] <= 0 or ctx.image_size[1] <= 0:
-            return None
-        h, w = ctx.image_size
-        return TransformRegistry.create(
-            {"type": "resize_images", "height": int(h), "width": int(w)}
-        )
-
-    if name == "pad_dimensions":
-        if ctx.model_action_dim <= 0 or ctx.model_action_dim <= ctx.dataset_action_dim:
-            return None
-        return TransformRegistry.create(
-            {"type": "pad_dimensions", "target_dim": ctx.model_action_dim}
-        )
-
-    # Self-contained registered type — build generically, passing shared stats.
-    try:
-        return TransformRegistry.create({"type": name}, stats=ctx.norm_stats)
-    except (KeyError, TypeError):
-        return None
-
-
 def build_transforms(
-    transform_types: Iterable[str] | None,
-    ctx: BuildContext,
+    transform_types: Iterable[dict] | None,
+    ctx: TransformContext,
 ) -> tuple[TransformPipeline, TransformPipeline]:
-    """Build ``(preprocessor, postprocessor)`` from a model's declared transforms.
-
-    The postprocessor is **derived from the built preprocessor**: walk its steps
-    in reverse, and for each step that has a registered ``paired_reverse``, build
-    that reverse step. The reverse step shares ``ctx.norm_stats`` and inherits
-    the forward step's config (filtered to the kwargs the reverse ``__init__``
-    accepts — e.g. a future delta mask is forwarded, while normalize's
-    ``use_imagenet_stats`` is dropped for ``UnnormalizeAction``).
-
-    Forward-only steps (ResizeImages, PadDimensions) have no ``paired_reverse``
-    and contribute nothing to the postprocessor — they have no inverse at
-    inference (you never un-resize or un-pad an action).
-
-    Examples:
-      ACT       pre=[Normalize, ResizeImages?, PadDimensions?]  post=[UnnormalizeAction]
-      Future δ  pre=[DeltaActions, Normalize]                   post=[UnnormalizeAction, AbsoluteActions]
-    """
+    """Build ``(preprocessor, postprocessor)`` from YAML transform configs."""
     pre = build_preprocessor(transform_types, ctx)
     post_steps: list[TransformStep] = []
     for step in reversed(pre.steps):
-        name = TransformRegistry.name_of(step)
-        if name is None:
-            continue
-        rev_name = TransformRegistry.get_reverse(name)
-        if rev_name is None:
-            continue
-        rev_cls = TransformRegistry.get(rev_name)
-        fwd_cfg = {k: v for k, v in step.state_dict().items() if k != "type"}
-        accepted = _accepted_kwargs(rev_cls)
-        if accepted is not None:
-            fwd_cfg = {k: v for k, v in fwd_cfg.items() if k in accepted}
-        post_steps.append(
-            TransformRegistry.create({"type": rev_name, **fwd_cfg}, stats=ctx.norm_stats)
-        )
+        inverse = step.inverse_for_output(ctx)
+        if inverse is not None:
+            post_steps.append(inverse)
     return pre, TransformPipeline(post_steps)

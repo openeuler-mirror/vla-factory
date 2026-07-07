@@ -62,6 +62,7 @@ def _make_schema(
         state_dim=state_dim,
         action_dim=action_dim,
         cameras=cameras,
+        image_sizes={cam: (224, 224) for cam in cameras},
         has_language=has_language,
     )
 

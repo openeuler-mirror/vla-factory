@@ -30,6 +30,7 @@ import yaml
 from transformers import TrainingArguments
 
 from vla_factory.config.parser import parse_recipe
+from vla_factory.config.defaults import resolve_recipe
 from vla_factory.config.recipe import TrainRecipe
 from vla_factory.data.loader import create_dataloaders
 from vla_factory.data.formats import get_reader
@@ -83,6 +84,8 @@ def train(
     if override_output_dir is not None:
         recipe.output.output_dir = override_output_dir
 
+    recipe = resolve_recipe(recipe)
+
     logger.info("Recipe: model=%s, strategy=%s, lr=%s, steps=%d",
                 recipe.model_name, recipe.finetuning_strategy,
                 recipe.lr, recipe.total_steps)
@@ -131,7 +134,7 @@ def train(
 
     # 2.5 Save inference metadata BEFORE training starts.
     # Any intermediate checkpoint can then be used for inference.
-    _save_inference_metadata(output_path, recipe, schema, norm_stats, config)
+    _save_inference_metadata(output_path, recipe, schema, norm_stats)
 
     # 3. Create model — adapter extracts what it needs from recipe + schema
     entry = get_entry(recipe.model_name)
@@ -142,15 +145,8 @@ def train(
     apply_strategy(model, recipe, metadata)
 
     # 5. Create DataLoaders
-    # Use image_size from YAML config (recipe.model_config), not the hardcoded
-    # ModelMetadata default — the YAML value is what the user actually intends.
-    yaml_image_size = recipe.model_config.get("image_size")
     model_metadata_dict = {
         "action_dim": metadata.action_dim or recipe.action_spec.action_dim,
-        "image_size": tuple(yaml_image_size) if yaml_image_size else metadata.image_size,
-        # Forward the model entry's declared preprocessor pipeline so the data
-        # loader builds it via the registry instead of hardcoding the chain.
-        "default_transforms": metadata.default_transforms,
     }
     train_loader, val_loader = create_dataloaders(recipe, model_metadata=model_metadata_dict)
 
@@ -249,7 +245,6 @@ def _save_inference_metadata(
     recipe: TrainRecipe,
     schema: object,
     norm_stats: object,
-    original_config: str | Path | TrainRecipe,
 ) -> None:
     """Save recipe, schema, and norm_stats to output_dir for inference.
 
@@ -257,23 +252,16 @@ def _save_inference_metadata(
     starts so that any intermediate checkpoint can be used for inference.
 
     Saves:
-      - ``recipe.yaml``: the original YAML config (if config was a file path)
+      - ``recipe.yaml``: resolved recipe used by this run
       - ``schema.json``: dataset feature schema (cameras, dims, etc.)
       - ``norm_stats.json``: normalisation mean/std for state and action
     """
     meta_dir = output_path / INFERENCE_META_DIR
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Copy original YAML if available
-    if isinstance(original_config, (str, Path)):
-        src = Path(original_config)
-        if src.is_file():
-            shutil.copy2(src, meta_dir / RECIPE_FILE)
-    else:
-        # TrainRecipe object — serialise to YAML
-        recipe_dict = asdict(recipe)
-        with open(meta_dir / RECIPE_FILE, "w") as f:
-            yaml.dump(recipe_dict, f, default_flow_style=False)
+    # 1. Resolved recipe: this is the single deployment config source.
+    with open(meta_dir / RECIPE_FILE, "w") as f:
+        yaml.safe_dump(_recipe_to_yaml_dict(recipe), f, sort_keys=False)
 
     # 2. Schema
     with open(meta_dir / SCHEMA_FILE, "w") as f:
@@ -284,3 +272,41 @@ def _save_inference_metadata(
         json.dump(asdict(norm_stats), f, indent=2)
 
     logger.info("Inference metadata saved to %s", meta_dir)
+
+
+def _recipe_to_yaml_dict(recipe: TrainRecipe) -> dict:
+    """Serialize a fully expanded TrainRecipe using the public YAML structure."""
+    return {
+        "transforms": {
+            "imports": list(recipe.transform_imports),
+        },
+        "model": {
+            "name": recipe.model_name,
+            "path": recipe.model_path,
+            "config": recipe.model_config,
+        },
+        "action_spec": asdict(recipe.action_spec),
+        "data": {
+            "source": asdict(recipe.data.source),
+            "sampler": asdict(recipe.data.sampler),
+            "split": asdict(recipe.data.split),
+        },
+        "finetuning": {
+            "strategy": recipe.finetuning_strategy,
+            "lora": asdict(recipe.lora_config) if recipe.lora_config is not None else None,
+            "freeze_components": recipe.freeze_components,
+            "trainable_components": recipe.trainable_components,
+        },
+        "training": {
+            "backend": recipe.backend,
+            "lr": recipe.lr,
+            "lr_backbone": recipe.lr_backbone,
+            "batch_size": recipe.batch_size,
+            "total_steps": recipe.total_steps,
+            "gradient_checkpointing": recipe.gradient_checkpointing,
+            "inference_steps": recipe.inference_steps,
+            "num_workers": recipe.num_workers,
+            "augmentation": asdict(recipe.augmentation),
+        },
+        "output": asdict(recipe.output),
+    }

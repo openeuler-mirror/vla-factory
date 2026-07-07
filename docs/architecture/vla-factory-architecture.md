@@ -72,6 +72,10 @@ Therefore, VLA Factory aims to provide a unified recipe, intermediate data repre
 
 A training run should be fully described by a recipe. Model selection, data path, sampling window, action space, fine-tuning strategy, training steps, and output directory should all come from configuration instead of being scattered across scripts.
 
+The authoring recipe is the highest-priority user configuration entry point. Any configurable behavior that VLA Factory exposes should be representable from the recipe, either as a common top-level field or inside a model-specific `model.config` subtree. This keeps experiments auditable: the user can see every intentional override in one file instead of chasing hidden script defaults.
+
+Model default profiles such as `vla_factory/config/model/act.yaml` are defaults for the `model.config` subtree, not a separate configuration source at runtime. They carry model-specific baseline settings such as upstream model hyperparameters and transform defaults. At training entry, VLA Factory deep-merges the selected model profile with the recipe's `model.config`; fields explicitly written in the recipe win over profile defaults, and CLI overrides win over both when provided. The resolved `model.config` then becomes the single model configuration consumed by data transforms, model adapters, training, and deployment.
+
 The CLI may provide a small number of temporary overrides, such as `--steps`, `--batch-size`, and `--output-dir`, for smoke tests or debugging. The recipe remains the primary contract.
 
 ### 2.2 Adaptation Over Reimplementation
@@ -108,7 +112,7 @@ The core package stays lightweight. Upstream ecosystem dependencies such as ACT,
 
 ### 3.1 Layered Architecture Diagram
 
-![VLA Factory layered architecture diagram, generated from ./architecture-text.md](./vla-factory-layered-architecture.en.svg)
+![VLA Factory layered architecture diagram, generated from ../graph/architecture-text.md](../graph/vla-factory-layered-architecture.en.svg)
 
 Five layers: **user expression layer (recipe) -> external data parsing layer -> intermediate data representation layer -> training layer -> deployment layer**. The recipe is the central hub; the other four layers consume it.
 
@@ -118,7 +122,7 @@ The core data flow is divided into training data flow and deployment inference f
 
 Training data flow:
 
-![VLA Factory training data flow diagram, generated from ./architecture-text.md](./vla-factory-training-data-flow.en.svg)
+![VLA Factory training data flow diagram, generated from ../graph/architecture-text.md](../graph/vla-factory-training-data-flow.en.svg)
 
 | Stage | Input | Processing | Output |
 |---|---|---|---|
@@ -131,7 +135,7 @@ Training data flow:
 
 Deployment inference flow:
 
-![VLA Factory deployment inference flow diagram, generated from ./architecture-text.md](./vla-factory-deployment-inference-flow.en.svg)
+![VLA Factory deployment inference flow diagram, generated from ../graph/architecture-text.md](../graph/vla-factory-deployment-inference-flow.en.svg)
 
 | Stage | Input | Processing | Output |
 |---|---|---|---|
@@ -194,10 +198,14 @@ model:
   name: act
   path: null
   config:
-    image_size: [224, 224]
-    preprocessing:
-      normalize: true
-      resize_images: true
+    transforms:
+      inputs:
+        - type: image_to_float
+          range: [0, 1]
+        - type: image_layout
+          to: CHW
+        - type: image_normalize
+          mode: imagenet
 
 action_spec:
   action_dim: 6
@@ -244,7 +252,7 @@ The configuration system needs to support both common training fields and model-
 |---|---|---|---|
 | 1 | CLI explicit overrides | Temporary override for this run | Highest priority, used for smoke tests, tuning, and temporary output directory changes. |
 | 2 | YAML recipe | Configuration for this experiment | Main user configuration entry point, describing model, data, action space, training strategy, and output. |
-| 3 | Model default profile | Model-specific defaults | Located at `vla_factory/config/model/<name>.yaml`, such as `act.yaml`. Used for default hyperparameters, input size, preprocessing preferences, and similar model-specific values. |
+| 3 | Model default profile | Model-specific defaults | Located at `vla_factory/config/model/<name>.yaml`, such as `act.yaml`. Used for default hyperparameters, transform pipeline, preprocessing preferences, and similar model-specific values. |
 | 4 | Common defaults | Framework-level fallback | Defaults from `TrainRecipe` and child dataclasses, ensuring a minimal recipe can still be parsed. |
 
 The current `train()` entry point supports the following overrides:
@@ -253,7 +261,7 @@ The current `train()` entry point supports the following overrides:
 - `override_batch_size`
 - `override_output_dir`
 
-Model-specific hyperparameters live under the `model.config` field. Different models may have different defaults and processing details, such as image input size, default transform list, action horizon, backbone learning rate, or upstream model config parameters. To avoid stuffing these differences into the common recipe schema, a model entry can read the corresponding model default profile, such as `vla_factory/config/model/act.yaml`, and deep-merge it with `model.config` from the recipe.
+Model-specific hyperparameters live under the `model.config` field. Different models may have different defaults and processing details, such as the default transform list, action horizon, backbone learning rate, or upstream model config parameters. To avoid stuffing these differences into the common recipe schema, a model entry can read the corresponding model default profile, such as `vla_factory/config/model/act.yaml`, and deep-merge it with `model.config` from the recipe.
 
 In the current design, a model default profile is a model-level experimental baseline, not an immutable protocol. Its role is to provide reasonable defaults for a model. If a YAML recipe explicitly specifies the same field, the recipe wins; if the CLI provides an override for the relevant field, the CLI wins. This supports both simple out-of-the-box configuration and precise experiment reproduction.
 
@@ -263,10 +271,17 @@ For advanced users, customization should not require copying the entire model pr
 model:
   name: act
   config:
-    image_size: [320, 240]
-    preprocessing:
-      resize_images: true
-      normalize: true
+    transforms:
+      inputs:
+        - type: image_to_float
+          range: [0, 1]
+        - type: image_layout
+          to: CHW
+        - type: image_normalize
+          mode: imagenet
+        - type: resize_images
+          height: 320
+          width: 240
 ```
 
 This keeps the authoring recipe readable: users can clearly see what the experiment actually changes. The `recipe.yaml` stored in training artifacts records the fully expanded final configuration for reproduction and debugging.
@@ -299,6 +314,8 @@ Here, `recipe.yaml` stores the resolved recipe: the final configuration after me
 ### 5.1 Data Module
 
 The data module converts external datasets into model-agnostic training samples.
+
+For the full design, see [Data Module Design](../modules/data-module.md).
 
 Its main responsibilities include:
 

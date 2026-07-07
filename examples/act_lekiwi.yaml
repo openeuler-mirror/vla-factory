@@ -5,7 +5,7 @@
 # Key differences from default:
 #   - dim_model: 1024 (vs 512), n_decoder_layers: 7 (vs 1)
 #   - dual camera: front + wrist
-#   - image_size: 480x640 (native resolution, no resize)
+#   - native 480x640 images are kept; ACT does not resize by default
 #   - lr: 1e-5 (lower than default 1e-4)
 
 model:
@@ -21,7 +21,6 @@ model:
     n_vae_encoder_layers: 4
     kl_weight: 10.0
     dropout: 0.1
-    image_size: [480, 640]             # native resolution, matches lerobot
 
 action_spec:
   action_dim: 9
@@ -30,7 +29,7 @@ action_spec:
 
 data:
   source:
-    path: data/lerobot/vla-factory/banana
+    path: data/banana
     format: lerobot-v3
   sampler:
     type: sliding_window

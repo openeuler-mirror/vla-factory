@@ -14,18 +14,18 @@
 from __future__ import annotations
 
 import logging
+import importlib
 from pathlib import Path
 from typing import Any
 
 import torch
 
 from vla_factory.config.recipe import TrainRecipe
-
 from .formats import get_reader
 from .codec import resolve_codec
 from .manifest import build_manifest
 from .dataset import VLADataset, collate_fn
-from .transforms import build_preprocessor, BuildContext, TransformPipeline
+from .transforms import build_preprocessor, TransformContext, TransformPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -34,25 +34,48 @@ def _build_transforms(
     norm_stats: Any | None = None,
     model_metadata: dict[str, Any] | None = None,
     action_dim: int = 0,
+    recipe: TrainRecipe | None = None,
+    schema: Any | None = None,
+    split: str = "train",
 ) -> TransformPipeline:
-    """Assemble the preprocessor pipeline from model + dataset info.
-
-    Thin wrapper over :func:`build_preprocessor`.  The ordered transform list
-    comes from ``model_metadata["default_transforms"]`` (declared on the model
-    registry entry, e.g. ACT's ``("normalize", "resize_images",
-    "pad_dimensions")``), falling back to the legacy default list when absent.
-    Each step self-skips when its precondition isn't met (no stats, zero
-    image_size, no padding needed) — identical to the previous behaviour.
-    """
+    """Assemble the preprocessor pipeline from YAML transform config."""
     md = model_metadata or {}
-    img_size = md.get("image_size")
-    ctx = BuildContext(
+    ctx = TransformContext(
         norm_stats=norm_stats,
-        image_size=tuple(img_size) if img_size else None,
         model_action_dim=md.get("action_dim", 0),
         dataset_action_dim=action_dim,
+        recipe=recipe,
+        schema=schema,
+        model_config=md.get("profile") or {},
+        split=split,
     )
-    return build_preprocessor(md.get("default_transforms") or None, ctx)
+    transform_items = md.get("transform_inputs")
+    if transform_items is None:
+        model_name = recipe.model_name if recipe is not None else "<unknown>"
+        raise ValueError(
+            "No transform pipeline configured. Add `transforms.inputs` to "
+            f"vla_factory/config/model/{model_name}.yaml or "
+            "`model.config.transforms.inputs` in the recipe."
+        )
+    return build_preprocessor(transform_items, ctx)
+
+
+def _load_transform_imports(recipe: TrainRecipe) -> None:
+    """Import user modules that register custom transform classes."""
+    for module_name in recipe.transform_imports:
+        importlib.import_module(module_name)
+
+
+def _resolve_transform_inputs(recipe: TrainRecipe) -> tuple[list[dict] | None, dict]:
+    """Read transform config from an already prepared recipe."""
+    transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
+    if transform_inputs is None:
+        raise ValueError(
+            "No transform pipeline configured. Add `transforms.inputs` to "
+            f"vla_factory/config/model/{recipe.model_name}.yaml or "
+            "`model.config.transforms.inputs` in the recipe."
+        )
+    return list(transform_inputs), recipe.model_config
 
 
 def create_dataloaders(
@@ -64,10 +87,10 @@ def create_dataloaders(
     Parameters
     ----------
     recipe : TrainRecipe
-        Parsed YAML configuration.
+        Prepared recipe. Training entrypoints should call ``resolve_recipe()``
+        before passing authoring recipes here.
     model_metadata : dict, optional
-        Model capabilities (``action_dim``, ``image_size``, etc.) used to
-        select transforms.
+        Model capabilities such as ``action_dim`` used to select transforms.
 
     Returns
     -------
@@ -77,6 +100,7 @@ def create_dataloaders(
     sampler_cfg = data_cfg.sampler
     split_cfg = data_cfg.split
     path = Path(data_cfg.source.path)
+    _load_transform_imports(recipe)
 
     # 1. Reader + codec
     reader = get_reader(data_cfg.source.format, path=path)
@@ -99,10 +123,18 @@ def create_dataloaders(
     )
 
     # 3. Build transforms from config + stats
+    transform_inputs, profile = _resolve_transform_inputs(recipe)
     transforms = _build_transforms(
         norm_stats=norm_stats,
-        model_metadata=model_metadata,
+        model_metadata={
+            **(model_metadata or {}),
+            "profile": profile,
+            "transform_inputs": transform_inputs,
+        },
         action_dim=schema.action_dim,
+        recipe=recipe,
+        schema=schema,
+        split="train",
     )
 
     # 4. Manifest
@@ -120,8 +152,8 @@ def create_dataloaders(
 
     logger.info(
         "Manifest: %d train samples, %d val samples",
-        len(manifest._train_indices),
-        len(manifest._val_indices),
+        len(manifest.train_indices),
+        len(manifest.val_indices),
     )
 
     # 5. Datasets
