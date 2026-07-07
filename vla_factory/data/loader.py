@@ -152,8 +152,8 @@ def create_dataloaders(
 
     logger.info(
         "Manifest: %d train samples, %d val samples",
-        len(manifest._train_indices),
-        len(manifest._val_indices),
+        len(manifest.train_indices),
+        len(manifest.val_indices),
     )
 
     # 5. Datasets

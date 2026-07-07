@@ -47,6 +47,11 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     # ── Model ──
     model_block = raw.get("model", {})
     model_name = model_block.get("name", "") if isinstance(model_block, dict) else str(model_block)
+    if not model_name:
+        raise ValueError(
+            "model.name is required in the recipe YAML — the `model` entry must "
+            "specify a registered model name (e.g. `model: {name: act}`)."
+        )
     model_path = model_block.get("path") if isinstance(model_block, dict) else None
     model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
 

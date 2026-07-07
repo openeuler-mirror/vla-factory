@@ -25,6 +25,31 @@ from ..codec.base import VideoCodec
 logger = logging.getLogger(__name__)
 
 
+def _camera_size(spec: dict[str, Any], shape: list[Any]) -> tuple[int, int] | None:
+    """Best-effort ``(H, W)`` for a camera feature.
+
+    LeRobot v3 video features are typically 4D ``[frames, H, W, C]`` while plain
+    image features are 3D ``[H, W, C]``. Prefer explicit ``video_info`` metadata;
+    otherwise read H/W from the correct axes according to the dimension count so
+    a 4D shape like ``[1, 480, 640, 3]`` resolves to ``(480, 640)`` rather than
+    the previous buggy ``(1, 480)``.
+    """
+    video_info = spec.get("video_info") or spec.get("info") or {}
+    height = video_info.get("video.height")
+    width = video_info.get("video.width")
+    if height is not None and width is not None:
+        return (int(height), int(width))
+
+    def _pair(a: Any, b: Any) -> tuple[int, int] | None:
+        return (int(a), int(b)) if isinstance(a, int) and isinstance(b, int) else None
+
+    if len(shape) == 3:
+        return _pair(shape[0], shape[1])
+    if len(shape) == 4:
+        return _pair(shape[1], shape[2])
+    return None
+
+
 class LeRobotV3Reader:
     """Read LeRobot v3 datasets (parquet + MP4)."""
 
@@ -72,14 +97,9 @@ class LeRobotV3Reader:
             elif dtype == "video" or ("image" in key.lower() and len(shape) == 3):
                 cam_name = key.split(".")[-1]
                 cameras.append(cam_name)
-                if len(shape) >= 2 and isinstance(shape[0], int) and isinstance(shape[1], int):
-                    image_sizes[cam_name] = (int(shape[0]), int(shape[1]))
-                else:
-                    video_info = spec.get("video_info") or spec.get("info") or {}
-                    height = video_info.get("video.height")
-                    width = video_info.get("video.width")
-                    if height is not None and width is not None:
-                        image_sizes[cam_name] = (int(height), int(width))
+                size = _camera_size(spec, shape)
+                if size is not None:
+                    image_sizes[cam_name] = size
 
         # Check language
         has_language = (

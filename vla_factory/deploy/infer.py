@@ -557,11 +557,17 @@ class InferenceEngine:
         if len(self._chunk_buffer) > max_buffer:
             self._chunk_buffer.popleft()
 
-        # Weighted average: most recent predictions weighted more
+        # Temporal ensembling of overlapping chunks (à la lerobot ACT): each call
+        # advances time by one step, so every buffered chunk has a prediction that
+        # corresponds to the *current* timestep. Chunk i (i steps old) reaches that
+        # timestep at index `step_idx - i` within its own H-step horizon.
         buf_len = len(self._chunk_buffer)
-        weights = np.array([1.0 / (buf_len - i) for i in range(buf_len)])
         step_idx = buf_len - 1
         predictions = [self._chunk_buffer[i][step_idx - i] for i in range(buf_len)]
+        # Recency weighting (harmonic): the freshest chunk (i = buf_len-1) gets
+        # weight 1/1, the oldest gets 1/buf_len — emphasise the most recent
+        # prediction while still smoothing across the overlapping chunks.
+        weights = np.array([1.0 / (buf_len - i) for i in range(buf_len)])
         result = np.average(predictions, weights=weights, axis=0)
         return result.astype(np.float32)
 

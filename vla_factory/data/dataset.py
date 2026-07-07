@@ -84,9 +84,9 @@ class VLADataset(torch.utils.data.Dataset):
 
         # Select the appropriate locator subset
         if split == "train":
-            self._indices = manifest._train_indices
+            self._indices = manifest.train_indices
         elif split == "val":
-            self._indices = manifest._val_indices
+            self._indices = manifest.val_indices
         else:
             raise ValueError(f"Unknown split: {split!r}")
 
