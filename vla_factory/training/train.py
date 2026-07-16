@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Union
 
 import torch
+import torch.nn as nn
 import yaml
 from transformers import TrainingArguments
 
@@ -139,10 +140,24 @@ def train(
     # 3. Create model — adapter extracts what it needs from recipe + schema
     entry = get_entry(recipe.model_name)
     metadata = entry.metadata
+
+    # 3.1 Finetune-only models (pi0, pi05, ...) require a base checkpoint.
+    # ACT (from_scratch) allows model.path=None; pretrained_finetune does not.
+    # Inference bypasses this — InferenceEngine sets model_path=None and loads
+    # weights via load_state_dict — so the check belongs in the train() entry.
+    if metadata.training_paradigm == "pretrained_finetune" and not recipe.model_path:
+        raise ValueError(
+            f"Model {recipe.model_name!r} is finetune-only "
+            f"(training_paradigm=pretrained_finetune): model.path must point to "
+            f"a HF base checkpoint (e.g. lerobot/pi0_base). from_scratch training "
+            f"is not supported for this model."
+        )
+
     model = entry.factory(recipe=recipe, schema=schema)
 
-    # 4. Apply fine-tuning strategy (freeze/selective/full)
-    apply_strategy(model, recipe, metadata)
+    # 4. Apply fine-tuning strategy (freeze/selective/full/lora). LoRA may
+    # re-wrap subtrees in place, so use the returned model.
+    model = apply_strategy(model, recipe, metadata)
 
     # 5. Create DataLoaders
     model_metadata_dict = {
@@ -165,14 +180,162 @@ def train(
     logger.info("Starting training: %d steps, batch_size=%d", recipe.total_steps, recipe.batch_size)
     trainer.train()
 
-    # 8. Save final model
+    # 8. Save final model. For LoRA, merge adapters into the base weights and
+    # save the full state_dict so inference loads a single file (no peft merge
+    # needed at deploy). peft's merged state_dict still carries a residual
+    # `base_model.model.` wrapper on wrapped subtrees; strip it so the saved
+    # keys match the upstream model's bare structure (loaded strict by InferenceEngine).
     final_dir = Path(recipe.output.output_dir) / FINAL_DIR
     final_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), final_dir / MODEL_WEIGHTS_FILE)
+    save_model = model
+    try:
+        if recipe.finetuning_strategy == "lora":
+            save_model = _merge_lora_adapters(model)
+    except Exception as e:  # noqa: BLE001 - merge failure shouldn't lose the run
+        logger.warning("LoRA merge failed (%s); saving unmerged state_dict.", e)
+
+    state_dict = save_model.state_dict()
+    if recipe.finetuning_strategy == "lora":
+        state_dict = _strip_peft_prefix(state_dict)
+    torch.save(state_dict, final_dir / MODEL_WEIGHTS_FILE)
     logger.info("Model saved to %s", final_dir)
 
     # Return final metrics
     return trainer.state.log_history[-1] if trainer.state.log_history else {}
+
+
+def _merge_lora_adapters(model: nn.Module) -> nn.Module:
+    """Merge peft LoRA adapters into base weights and return the merged model.
+
+    Two wrap shapes exist (``strategies/lora.py:_wrap_subtree``):
+
+    * **Subtree-LoRA** (single ``target_components`` path): a *child* module —
+      e.g. only the VLM/paligemma subtree — is a ``PeftModel`` while the
+      top-level model is not. Walk the tree, ``merge_and_unload()`` each
+      ``PeftModel`` child, and re-attach the merged base to its parent.
+    * **Whole-model LoRA** (multiple targets): ``get_peft_model`` wraps the
+      top-level model itself, so no *child* is a ``PeftModel`` and the tree
+      walk alone would be a no-op — the checkpoint would keep ``lora_A`` /
+      ``lora_B`` keys that break the InferenceEngine's ``strict=True`` load.
+      Merge the top-level ``PeftModel`` directly and return its base.
+
+    Idempotent — a no-op when nothing is peft-wrapped (non-LoRA strategies).
+    """
+    from peft import PeftModel
+    if isinstance(model, PeftModel):
+        _merge_lora_layers_inplace(model)
+        merged = model.merge_and_unload()
+        _merge_peft_subtrees(merged)
+        return merged
+    _merge_peft_subtrees(model)
+    return model
+
+
+def _merge_peft_subtrees(module: nn.Module) -> None:
+    """Recursively replace ``PeftModel`` children with their merged base modules.
+
+    ``list(named_children())`` snapshots the children before mutation so the
+    ``setattr`` re-attach doesn't invalidate iteration. Recursing into the
+    merged base is defensive — our wrap paths don't nest peft, but it catches
+    a nested wrap for free and can't loop (the ``isinstance`` gate ends the
+    branch once a ``PeftModel`` is merged away).
+    """
+    from peft import PeftModel
+    for name, child in list(module.named_children()):
+        if isinstance(child, PeftModel):
+            # Merge adapters in place *before* merge_and_unload: peft's
+            # get_delta_weight materialises the full B@A delta on the
+            # submodule's device per layer, which OOMs a 12 GB GPU on the
+            # PaliGemma VLM projections when the trained model still holds
+            # the run's residency. Chunked in-place merge keeps the delta at
+            # one row-chunk; the subsequent merge_and_unload then finds every
+            # adapter already in merged_adapters and only strips the wrapper
+            # (no second materialisation).
+            _merge_lora_layers_inplace(child)
+            merged = child.merge_and_unload()
+            setattr(module, name, merged)
+            _merge_peft_subtrees(merged)
+        else:
+            _merge_peft_subtrees(child)
+
+
+def _merge_lora_layers_inplace(peft_model: nn.Module) -> None:
+    """Merge every LoRA layer's delta into its base weight, chunked, on-device.
+
+    Iterates all ``LoraLayer``s under ``peft_model`` and folds each adapter's
+    ``B @ A * scaling`` into ``base.weight`` row-chunk by row-chunk so the
+    transient delta never exceeds ``[chunk_rows, in_features]`` — vs peft's
+    default which materialises the full ``[out, in]`` delta at once. Adapters
+    are appended to ``merged_adapters`` so a later ``merge_and_unload`` skips
+    re-merging and only unloads the wrapper. Falls back to peft's own
+    ``layer.merge`` for non-vanilla cases (lora_variant / fan_in_fan_out) it
+    can't chunk safely.
+    """
+    from peft.tuners.lora import LoraLayer
+    for _, layer in peft_model.named_modules():
+        if not isinstance(layer, LoraLayer):
+            continue
+        for adapter in list(layer.lora_A.keys()):
+            if adapter in layer.merged_adapters:
+                continue
+            if not _merge_lora_layer_chunked(layer, adapter):
+                layer.merge(safe_merge=False, adapter_names=[adapter])
+
+
+def _merge_lora_layer_chunked(layer, adapter: str, chunk_rows: int = 256) -> bool:
+    """Fold one adapter's LoRA delta into its base weight in row-chunks.
+
+    Returns ``True`` if merged here, ``False`` for non-vanilla variants
+    (``lora_variant`` set, or ``fan_in_fan_out`` — those need peft's
+    transpose/variant logic, not a plain ``B @ A``) so the caller can fall
+    back to peft's merge.
+    """
+    if adapter in getattr(layer, "lora_variant", {}):
+        return False
+    if getattr(layer, "fan_in_fan_out", False):
+        return False
+
+    base = layer.get_base_layer()
+    weight_a = layer.lora_A[adapter].weight  # [r, in]
+    weight_b = layer.lora_B[adapter].weight  # [out, r]
+    scaling = layer.scaling[adapter]
+
+    with torch.no_grad():
+        out_dim = weight_b.shape[0]
+        for i in range(0, out_dim, chunk_rows):
+            j = min(i + chunk_rows, out_dim)
+            # partial delta for rows [i:j] only: [chunk, in]
+            delta = torch.mm(weight_b[i:j], weight_a) * scaling
+            base.weight.data[i:j] += delta.to(base.weight.dtype)
+
+        if layer.lora_bias[adapter]:
+            if getattr(base, "bias", None) is None:
+                raise RuntimeError(
+                    "lora_bias=True but base layer has no bias; cannot merge."
+                )
+            base.bias.data += (
+                layer.lora_B[adapter].bias * scaling
+            ).to(base.bias.dtype)
+
+    layer.merged_adapters.append(adapter)
+    return True
+
+
+def _strip_peft_prefix(state_dict: dict) -> dict:
+    """Strip peft's residual ``base_model.model.`` wrapper from merged LoRA keys.
+
+    After ``merge_and_unload``, a fully-merged subtree has clean keys, but peft
+    can leave a residual ``base_model.model.`` wrapper on partially-merged or
+    whole-model-wrapped subtrees (e.g. ``...paligemma.base_model.model.model.X``
+    → ``...paligemma.model.X``). InferenceEngine loads strict against the
+    upstream's bare structure, so strip the wrapper for a clean match. Keys
+    without the wrapper pass through unchanged — a no-op when merge succeeded
+    cleanly.
+    """
+    return {
+        (k.replace(".base_model.model.", ".") if ".base_model.model." in k else k): v
+        for k, v in state_dict.items()
+    }
 
 
 def _build_training_args(recipe: TrainRecipe):
@@ -199,6 +362,9 @@ def _build_training_args(recipe: TrainRecipe):
         logging_steps=recipe.output.logging_steps,
         save_steps=recipe.output.save_steps,
         save_total_limit=recipe.output.save_total_limit,
+        # pi0-base ships tied weights (lm_head == embed_tokens); safetensors
+        # refuses to save shared-storage tensors. Use torch.save (.bin) instead.
+        save_safetensors=False,
         # Eval
         eval_strategy="no",  # MVP: no eval during training
         # DataLoader

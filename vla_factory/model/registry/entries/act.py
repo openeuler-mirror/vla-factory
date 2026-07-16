@@ -88,14 +88,24 @@ def _patch_lerobot_groot():
 
 
 def _try_import_lerobot():
-    """Try importing lerobot's ACT classes. Returns (ACTPolicy, ACTConfig) or None."""
+    """Try importing lerobot's ACT classes. Returns (ACTPolicy, ACTConfig) or None.
+
+    Called lazily from the factory, NOT at module top-level — so merely
+    importing this entry (registry scan / list_entries) triggers no lerobot
+    import. Cached on the function object after the first call.
+    """
+    if getattr(_try_import_lerobot, "_cached", None) is not None:
+        return _try_import_lerobot._cached  # type: ignore[attr-defined]
     try:
         from lerobot.policies.act.modeling_act import ACTPolicy
         from lerobot.policies.act.configuration_act import ACTConfig
 
-        return ACTPolicy, ACTConfig
+        cached = (ACTPolicy, ACTConfig)
     except Exception:
         pass
+    else:
+        _try_import_lerobot._cached = cached  # type: ignore[attr-defined]
+        return cached
 
     # Import failed — try patching known bugs and retry once
     _patch_lerobot_groot()
@@ -109,15 +119,12 @@ def _try_import_lerobot():
         from lerobot.policies.act.modeling_act import ACTPolicy
         from lerobot.policies.act.configuration_act import ACTConfig
 
-        return ACTPolicy, ACTConfig
+        cached = (ACTPolicy, ACTConfig)
     except Exception as e:
         logger.info("lerobot not available (%s: %s)", type(e).__name__, e)
-        return None
-
-
-_LEROBOT_ACT = _try_import_lerobot()
-
-
+        cached = None
+    _try_import_lerobot._cached = cached  # type: ignore[attr-defined]
+    return cached
 # ── Checkpoint loading (continued training / fine-tuning) ────────────
 
 
@@ -290,7 +297,7 @@ def load_act(recipe, schema) -> ACTModelWrapper:
         ImportError: if lerobot is not installed. ACT has no in-tree fallback;
             install the upstream model with ``{_ACT_METADATA.install_hint}``.
     """
-    if _LEROBOT_ACT is None:
+    if _try_import_lerobot() is None:
         raise ImportError(
             "ACT requires lerobot (upstream model impl). "
             f"Install: {_ACT_METADATA.install_hint}"
@@ -356,7 +363,7 @@ def _schema_image_size(schema, camera_name: str) -> tuple[int, int]:
 
 def _load_lerobot(recipe, schema) -> ACTModelWrapper:
     """Create the model from lerobot's official ACTPolicy."""
-    ACTPolicy, ACTConfig = _LEROBOT_ACT
+    ACTPolicy, ACTConfig = _try_import_lerobot()
     from lerobot.configs.types import FeatureType, PolicyFeature
 
     action_spec = recipe.action_spec

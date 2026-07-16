@@ -50,8 +50,39 @@ def _camera_size(spec: dict[str, Any], shape: list[Any]) -> tuple[int, int] | No
     return None
 
 
+def _load_tasks(path: Path) -> dict[int, str]:
+    """Load ``{task_index: task_text}`` from ``meta/tasks.parquet`` or ``tasks.jsonl``.
+
+    LeRobot v3 stores the task table separately; each frame carries a
+    ``task_index`` column that indexes into it. Returns ``{}`` when no task
+    file is present (non-language-conditioned datasets).
+    """
+    pq_tasks = path / "meta" / "tasks.parquet"
+    if pq_tasks.exists():
+        df = pq.read_table(pq_tasks).to_pandas()
+        if "task_index" in df.columns and "task" in df.columns:
+            return {int(r["task_index"]): str(r["task"]) for _, r in df.iterrows()}
+        return {}
+    jsonl_tasks = path / "meta" / "tasks.jsonl"
+    if jsonl_tasks.exists():
+        out: dict[int, str] = {}
+        for line in jsonl_tasks.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            out[int(obj["task_index"])] = str(obj["task"])
+        return out
+    return {}
+
+
 class LeRobotV3Reader:
     """Read LeRobot v3 datasets (parquet + MP4)."""
+
+    def __init__(self) -> None:
+        # tasks is a dataset-level static table; cache it per dataset path so
+        # per-episode reads don't re-parse meta/tasks.* (N+1 I/O otherwise).
+        self._tasks_cache: dict[Path, dict[int, str]] = {}
 
     def can_read(self, path: Path) -> bool:
         """Check for ``meta/info.json`` with ``codebase_version >= 3.0``."""
@@ -144,24 +175,24 @@ class LeRobotV3Reader:
         images_stats: dict[str, FeatureStats] = {}
 
         for key, val in raw.items():
-            flat_mean = _flatten(val.get("mean", []))
-            flat_std = _flatten(val.get("std", []))
-            flat_min = _flatten(val.get("min", []))
-            flat_max = _flatten(val.get("max", []))
+            stats = FeatureStats(
+                mean=_flatten(val.get("mean", [])),
+                std=_flatten(val.get("std", [])),
+                min=_flatten(val.get("min", [])),
+                max=_flatten(val.get("max", [])),
+                # 1st/99th percentiles for quantile normalisation (pi05);
+                # lerobot v3 writes them to stats.json, older stats may omit.
+                q01=_flatten(val.get("q01", [])),
+                q99=_flatten(val.get("q99", [])),
+            )
 
             if "state" in key.lower() and "image" not in key.lower():
-                state_stats = FeatureStats(
-                    mean=flat_mean, std=flat_std, min=flat_min, max=flat_max
-                )
+                state_stats = stats
             elif key == "action":
-                action_stats = FeatureStats(
-                    mean=flat_mean, std=flat_std, min=flat_min, max=flat_max
-                )
+                action_stats = stats
             elif key.startswith("observation.images."):
                 cam_name = key.split(".")[-1]
-                images_stats[cam_name] = FeatureStats(
-                    mean=flat_mean, std=flat_std, min=flat_min, max=flat_max
-                )
+                images_stats[cam_name] = stats
 
         return NormStats(
             state=state_stats,
@@ -252,6 +283,12 @@ class LeRobotV3Reader:
         num_frames = len(ep_rows)
         rows = ep_rows
 
+        # Language: map each frame's task_index → task text (meta/tasks.*).
+        tasks = self._tasks_cache.get(path)
+        if tasks is None:
+            tasks = _load_tasks(path)
+            self._tasks_cache[path] = tasks
+
         # Build video path map: cam_key → video_path
         video_paths = _resolve_video_paths(path, camera_keys, rows)
 
@@ -297,6 +334,12 @@ class LeRobotV3Reader:
 
                 frame_idx = int(row.get("frame_index", row.get("index", 0)))
 
+                language = None
+                if "task_index" in row.index:
+                    ti = row["task_index"]
+                    if ti is not None and not (isinstance(ti, float) and np.isnan(ti)):
+                        language = tasks.get(int(ti))
+
                 yield Frame(
                     index=int(row["index"]),
                     images=images,
@@ -305,6 +348,7 @@ class LeRobotV3Reader:
                     timestamp=timestamp,
                     is_first=(frame_idx == 0),
                     is_last=(frame_idx == num_frames - 1),
+                    language=language,
                 )
 
         return Episode(

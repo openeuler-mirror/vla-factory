@@ -70,7 +70,34 @@ class ResizeImages(TransformStep):
                 if isinstance(img, np.ndarray) and img.ndim == 3:
                     channels_first = img.shape[0] in (1, 3, 4)
                     hwc = img.transpose(1, 2, 0) if channels_first else img
-                    resized = cv2.resize(hwc, (self.width, self.height), interpolation=interpolation)
-                    sample[key] = resized.transpose(2, 0, 1) if channels_first else resized
+                    if self.mode == "stretch":
+                        out = cv2.resize(hwc, (self.width, self.height), interpolation=interpolation)
+                    elif self.mode in ("pad", "letterbox", "keep_ratio"):
+                        out = self._resize_with_pad(hwc, interpolation)
+                    else:
+                        raise ValueError(f"Unsupported resize_images mode: {self.mode!r}")
+                    sample[key] = out.transpose(2, 0, 1) if channels_first else out
 
         return sample
+
+    def _resize_with_pad(self, hwc: np.ndarray, interpolation) -> np.ndarray:
+        """Resize keeping aspect ratio, then center-pad to ``(height, width)``.
+
+        Mirrors openpi's ``resize_with_pad``: scale by ``min(tw/w, th/h)``,
+        resize, then zero-pad the shorter side (centered). Avoids the
+        aspect-ratio distortion of plain stretch — important for
+        SigLIP/PaliGemma image inputs.
+        """
+        import cv2
+        h, w = hwc.shape[:2]
+        scale = min(self.width / w, self.height / h)
+        new_w = max(1, round(w * scale))
+        new_h = max(1, round(h * scale))
+        resized = cv2.resize(hwc, (new_w, new_h), interpolation=interpolation)
+        pad_h = self.height - new_h
+        pad_w = self.width - new_w
+        top, left = pad_h // 2, pad_w // 2
+        bottom, right = pad_h - top, pad_w - left
+        canvas = np.zeros((self.height, self.width, hwc.shape[2]), dtype=hwc.dtype)
+        canvas[top:top + new_h, left:left + new_w] = resized
+        return canvas

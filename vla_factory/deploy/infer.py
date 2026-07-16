@@ -94,7 +94,7 @@ def infer_from_dataset_sample(
         video[cam_name] = codec.decode_frame(ref)  # HWC uint8
 
     state = obs_frame.state.astype(np.float32) if obs_frame.state is not None else None
-    obs = ObsDict(video=video, state=state)
+    obs = ObsDict(video=video, state=state, language=obs_frame.language)
 
     # ── 4. Ground-truth actions (raw / dataset scale) ────────────────
     action_horizon = recipe.action_spec.action_horizon
@@ -222,6 +222,8 @@ def _parse_feature_stats(d: dict | None) -> FeatureStats | None:
         std=d.get("std", []),
         min=d.get("min", []),
         max=d.get("max", []),
+        q01=d.get("q01", []),
+        q99=d.get("q99", []),
     )
 
 
@@ -413,6 +415,11 @@ class InferenceEngine:
         self._model = model
         self.action_horizon = recipe.action_spec.action_horizon
         self.action_dim = recipe.action_spec.action_dim
+        # Flow-matching / diffusion heads (pi0) denoise over N steps at inference
+        # (ModelMetadata.inference_num_steps, e.g. pi0=10). Plumbed into
+        # predict_actions so the adapter doesn't hardcode the count and openpi
+        # doesn't receive num_steps=None (which crashes its time-step loop).
+        self.num_inference_steps = entry.metadata.inference_num_steps
 
         # ── 3.5 Forward + reverse transform pipelines ────────────
         # Built solely from the resolved recipe saved in inference_metadata.
@@ -500,6 +507,12 @@ class InferenceEngine:
             sample[f"images.{cam_name}"] = np.ascontiguousarray(img)
         if obs.state is not None:
             sample["state"] = obs.state.astype(np.float32)
+        # task_tokenize reads sample["task"] → tokenized_prompt(_mask).
+        # ObsDict.language carries the frame's task text (lerobot reader fills
+        # Frame.language); without it, language-conditioned models (pi0) get
+        # tokenized_prompt=None and crash at the embed layer.
+        if obs.language is not None:
+            sample["task"] = obs.language
 
         normalized = self.preprocessor(sample)
 
@@ -519,7 +532,28 @@ class InferenceEngine:
                 .to(self.device)
             )
 
-        return Observation(images=images, image_masks=image_masks, state=state)
+        tokenized_prompt: torch.Tensor | None = None
+        tokenized_prompt_mask: torch.Tensor | None = None
+        if normalized.get("tokenized_prompt") is not None:
+            tokenized_prompt = (
+                torch.as_tensor(np.ascontiguousarray(normalized["tokenized_prompt"]))
+                .unsqueeze(0)
+                .to(self.device)
+            )
+        if normalized.get("tokenized_prompt_mask") is not None:
+            tokenized_prompt_mask = (
+                torch.as_tensor(np.ascontiguousarray(normalized["tokenized_prompt_mask"]))
+                .unsqueeze(0)
+                .to(self.device)
+            )
+
+        return Observation(
+            images=images,
+            image_masks=image_masks,
+            state=state,
+            tokenized_prompt=tokenized_prompt,
+            tokenized_prompt_mask=tokenized_prompt_mask,
+        )
 
     # ── Execution strategies ───────────────────────────────────────
 
@@ -527,7 +561,9 @@ class InferenceEngine:
     def _predict_chunk(self, obs: ObsDict) -> np.ndarray:
         """Core inference: forward(obs) → model → reverse(actions) → [H, D] array."""
         observation = self._obs_to_observation(obs)
-        actions = self._model.predict_actions(observation)  # [B, H, D] or [H, D]
+        actions = self._model.predict_actions(
+            observation, num_steps=self.num_inference_steps
+        )  # [B, H, D] or [H, D]
 
         if isinstance(actions, torch.Tensor):
             actions_np = actions.detach().cpu().numpy()

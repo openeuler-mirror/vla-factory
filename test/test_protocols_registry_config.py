@@ -236,9 +236,11 @@ output_dir: outputs/pi0_lora
     assert recipe.model_path == "checkpoints/pi0_base"
     assert recipe.finetuning_strategy == "lora"
     assert recipe.lora_config is not None
-    assert recipe.lora_config.rank == 16
+    # legacy rank/alpha aliases in YAML are promoted to peft names r/lora_alpha
+    assert recipe.lora_config.r == 16
+    assert recipe.lora_config.lora_alpha == 16
     assert recipe.lora_config.target_components == ["llm", "action_expert"]
-    print(f"  LoRA: model={recipe.model_name}, rank={recipe.lora_config.rank}, targets={recipe.lora_config.target_components}")
+    print(f"  LoRA: model={recipe.model_name}, r={recipe.lora_config.r}, targets={recipe.lora_config.target_components}")
 
     print("  [PASS] config parser")
 

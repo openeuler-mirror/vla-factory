@@ -133,7 +133,13 @@ class UnnormalizeActionStep(TransformStep):
 
 @TransformRegistry.register("normalize_vector")
 class NormalizeVector(TransformStep):
-    """Normalize selected vector fields with dataset z-score statistics."""
+    """Normalize selected vector fields with dataset statistics.
+
+    - ``method="zscore"`` (default): ``(x - mean) / (std + eps)`` — pi0/ACT.
+    - ``method="quantile"``: ``(x - q01) / (q99 - q01 + eps) * 2 - 1`` — maps
+      the 1st..99th percentile range to [-1, 1], matching openpi's
+      ``use_quantile_norm`` for pi05 (openpi transforms.py).
+    """
 
     def __init__(
         self,
@@ -141,7 +147,7 @@ class NormalizeVector(TransformStep):
         fields: list[str] | tuple[str, ...] = ("state", "actions"),
         method: str = "zscore",
     ) -> None:
-        if method != "zscore":
+        if method not in ("zscore", "quantile"):
             raise ValueError(f"Unsupported normalize_vector method: {method!r}")
         self._stats = stats
         self.fields = tuple(fields)
@@ -158,19 +164,66 @@ class NormalizeVector(TransformStep):
             method=cfg.get("method", "zscore"),
         )
 
+    def _normalize(self, x, stats, field_name: str):
+        if self.method == "quantile":
+            q01, q99 = _require_quantiles(stats, field_name)
+            return (x - q01) / (q99 - q01 + _QUANTILE_EPS) * 2.0 - 1.0
+        mean = np.array(stats.mean, dtype=np.float32)
+        std = np.array(stats.std, dtype=np.float32) + _EPS
+        return (x - mean) / std
+
     def __call__(self, sample: dict) -> dict:
         if "state" in self.fields and self._stats.state is not None and sample.get("state") is not None:
-            mean = np.array(self._stats.state.mean, dtype=np.float32)
-            std = np.array(self._stats.state.std, dtype=np.float32) + _EPS
-            sample["state"] = (sample["state"] - mean) / std
+            sample["state"] = self._normalize(sample["state"], self._stats.state, "state")
 
         if "actions" in self.fields and self._stats.action is not None and sample.get("actions") is not None:
-            mean = np.array(self._stats.action.mean, dtype=np.float32)
-            std = np.array(self._stats.action.std, dtype=np.float32) + _EPS
-            sample["actions"] = (sample["actions"] - mean) / std
+            # actions shape: [horizon, dim] — stats broadcast against [dim]
+            sample["actions"] = self._normalize(sample["actions"], self._stats.action, "actions")
         return sample
 
     def inverse_for_output(self, ctx=None) -> TransformStep | None:
         if "actions" not in self.fields or self._stats.action is None:
             return None
+        if self.method == "quantile":
+            return UnnormalizeActionQuantileStep(self._stats)
         return UnnormalizeActionStep(self._stats)
+
+
+# openpi's quantile-normalisation epsilon (transforms.py _normalize_quantile).
+_QUANTILE_EPS = 1e-6
+
+
+def _require_quantiles(stats, field_name: str):
+    """Return (q01, q99) arrays or fail early with an actionable message."""
+    if not stats.q01 or not stats.q99:
+        raise ValueError(
+            f"normalize_vector method='quantile' needs q01/q99 statistics for "
+            f"{field_name!r}, but the dataset stats do not provide them. "
+            "lerobot v3 writes quantiles to meta/stats.json; regenerate the "
+            "dataset stats or use method='zscore'."
+        )
+    return (
+        np.array(stats.q01, dtype=np.float32),
+        np.array(stats.q99, dtype=np.float32),
+    )
+
+
+@TransformRegistry.register("unnormalize_action_quantile")
+class UnnormalizeActionQuantileStep(TransformStep):
+    """Reverse of quantile normalisation for the ``actions`` field.
+
+    ``(x + 1) / 2 * (q99 - q01 + eps) + q01`` — the exact inverse of
+    NormalizeVector's quantile branch (matches openpi ``Unnormalize`` with
+    ``use_quantiles=True``).
+    """
+
+    def __init__(self, stats: NormStats) -> None:
+        self._stats = stats
+
+    def __call__(self, sample: dict) -> dict:
+        actions = sample.get("actions")
+        if actions is None or self._stats.action is None:
+            return sample
+        q01, q99 = _require_quantiles(self._stats.action, "actions")
+        sample["actions"] = (actions + 1.0) / 2.0 * (q99 - q01 + _QUANTILE_EPS) + q01
+        return sample

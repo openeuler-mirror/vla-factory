@@ -140,28 +140,45 @@ class DataConfig:
 
 @dataclass
 class LoraConfig:
-    """LoRA (Low-Rank Adaptation) parameters.
+    """LoRA (Low-Rank Adaptation) parameters — field names align with peft.
 
-    Only used when ``finetuning.strategy == "lora"``.
+    Only used when ``finetuning.strategy == "lora"``. Common fields mirror
+    ``peft.LoraConfig`` (``r``, ``lora_alpha``, ``lora_dropout``, ...) so users
+    familiar with peft don't relearn names; they're forwarded as-is.
+    ``target_components`` is vla-factory's own abstraction on top (component →
+    subtree → peft target_modules), since different model ecosystems name their
+    linear layers differently and we don't want users to memorize each.
 
     Fields
     ------
-    rank : int
-        LoRA rank (r).  Higher = more capacity, more parameters.
-        Typical: 8, 16, 32.
-    alpha : int
-        LoRA scaling factor.  Effective learning rate is ``alpha / rank``.
-        Typically set equal to ``rank``.
+    r / rank : int  (alias; both accepted for backward compat)
+        LoRA rank. Higher = more capacity, more parameters. Typical: 8, 16, 32.
+    lora_alpha / alpha : int  (alias; both accepted)
+        LoRA scaling factor. Effective scaling = ``lora_alpha / r``.
+        Typically set equal to ``r``.
+    lora_dropout : float
+        Dropout on LoRA adapters. Forwarded to peft. Default 0.0.
+    use_rslora : bool
+        Rank-stabilized LoRA (scaling = alpha / sqrt(r)). Default False.
+    init_lora_weights : bool | str
+        Init scheme. Forwarded to peft. Default ``"gaussian"`` (matches RLinf's
+        openpi LoRA). Other peft values: True/False/"eva"/"pissa"/...
     target_components : list[str]
-        Which model components to apply LoRA to.
+        Which model components to apply LoRA to (vla abstraction).
         Names must match keys in the model's ``ModelMetadata.components``.
         Examples:
-          - PI0:       ``["llm", "action_expert"]``
+          - PI0:       ``["llm"]`` (PaliGemma VLM) or ``["llm", "action_expert"]``
           - OpenVLA:   ``["llm", "action_head"]``
     """
 
-    rank: int = 16
-    alpha: int = 16
+    # peft-aligned (aliased for backward compat: r/rank, lora_alpha/alpha both read).
+    r: int = 16
+    lora_alpha: int = 16
+    lora_dropout: float = 0.0
+    use_rslora: bool = False
+    init_lora_weights: object = "gaussian"
+
+    # vla-factory abstraction (component → subtree → peft target_modules).
     target_components: list[str] = field(default_factory=list)
 
 
