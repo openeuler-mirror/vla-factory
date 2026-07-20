@@ -75,7 +75,18 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     # ── Fine-tuning ──
     ft_block = raw.get("finetuning", {})
     strategy = ft_block.get("strategy", "full")
-    lora_config = _pop_dataclass(ft_block.get("lora", {}), LoraConfig) if isinstance(ft_block.get("lora"), dict) else None
+    lora_block = ft_block.get("lora", {})
+    if isinstance(lora_block, dict):
+        # Backward-compat aliases: legacy recipes used rank/alpha; promote to the
+        # peft-aligned names r/lora_alpha. Both names still accepted.
+        lora_block = dict(lora_block)
+        if "rank" in lora_block and "r" not in lora_block:
+            lora_block["r"] = lora_block.pop("rank")
+        if "alpha" in lora_block and "lora_alpha" not in lora_block:
+            lora_block["lora_alpha"] = lora_block.pop("alpha")
+        lora_config = _pop_dataclass(lora_block, LoraConfig)
+    else:
+        lora_config = None
     freeze_components = ft_block.get("freeze_components")
     trainable_components = ft_block.get("trainable_components")
 

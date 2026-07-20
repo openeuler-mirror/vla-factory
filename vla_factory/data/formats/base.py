@@ -51,6 +51,7 @@ class Frame:
     timestamp: float | None = None
     is_first: bool = False
     is_last: bool = False
+    language: str | None = None  # task instruction (language-conditioned models: pi0, pi05)
 
 
 @dataclass

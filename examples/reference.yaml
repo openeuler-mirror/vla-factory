@@ -15,7 +15,20 @@ model:
   path: null                   # [可选] 预训练权重路径
                                #   - 指向目录或文件，由模型的 factory 解读
                                #   - null = 从零训练 (适用于 ACT 等小模型)
+                               #   - pi0/pi05 仅支持微调，训练时必填 (如 "lerobot/pi0_base")
                                #   - 示例: "outputs/openpi/pi0.5", "openvla/openvla-7b"
+
+  # config:                    # [可选] 逐 run 的模型配置，深度合并到
+  #                            #   vla_factory/config/model/<name>.yaml 之上 (recipe 优先)
+  #   camera_mapping:          # [pi0/pi05 必填] {模型相机角色: 数据集相机名}
+  #     base_0_rgb: front      #   角色以 base checkpoint 的 config.json 为准，
+  #     left_wrist_0_rgb: wrist#   用 `vlafactory-cli list --config <recipe>` 查询/校验；
+  #                            #   未映射的角色自动用占位图 (mask=0)
+  #   default_task: "..."      # [可选] 任务文本兜底 (语言条件模型 pi0/pi05)。
+                               #   取值优先级: 帧级任务文本 (数据集/部署端 task 字段)
+                               #   > default_task > "" (空 prompt, 模型仍可运行)。
+                               #   部署时 prompt 由客户端 task 字段传入；数据集缺
+                               #   任务文本或部署端不发 task 时才用到这里的兜底。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -103,14 +116,17 @@ finetuning:
                                #   └────────────┴────────────────────────────────────┘
 
   # ── strategy == "lora" 时需要 ──
-  # 注意：LoRA 微调策略暂未实现（规划中），以下字段仅作为配置模板
+  # 字段名与 peft.LoraConfig 对齐（r/lora_alpha/lora_dropout/use_rslora/init_lora_weights
+  # 透传给 peft）；rank/alpha 作为向后兼容别名也接受。target_components 是 vla 自己的
+  # 抽象（component → subtree → peft target_modules），因为不同模型 module 名不同。
   lora:
-    rank: 16                   # LoRA 秩 (r), 越大容量越大
-                               #   常用: 8, 16, 32
-    alpha: 16                  # 缩放因子, 等效学习率 = alpha / rank
-                               #   通常设为与 rank 相同
+    r: 16                      # LoRA 秩, 越大容量越大. 常用: 8, 16, 32 (peft 名; rank 也接受)
+    lora_alpha: 16             # 缩放因子, 等效 = lora_alpha / r. 通常设为与 r 相同 (alpha 也接受)
+    lora_dropout: 0.0         # adapter dropout, 透传 peft
+    use_rslora: false          # rank-stabilized LoRA, 透传 peft
+    init_lora_weights: gaussian # 初始化方案, 透传 peft (默认 gaussian, 对齐 RLinf openpi LoRA)
     target_components:          # LoRA 应用到哪些组件 (引用 ModelMetadata.components 的 key)
-      - llm                    #   PI0 示例: ["llm", "action_expert"]
+      - llm                    #   PI0 示例: ["llm"] (只 VLM) 或 ["llm", "action_expert"]
       - action_expert          #   OpenVLA 示例: ["llm", "action_head"]
 
   # ── strategy == "freeze" 时需要 ──

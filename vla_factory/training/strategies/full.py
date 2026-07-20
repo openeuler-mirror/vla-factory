@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 import torch.nn as nn
 
+from vla_factory.utils.format import human_count
+
 if TYPE_CHECKING:
     from vla_factory.config.recipe import TrainRecipe
     from vla_factory.model.protocols.model import ModelMetadata
@@ -31,8 +33,8 @@ def apply_strategy(
     model: nn.Module,
     recipe: TrainRecipe,
     metadata: ModelMetadata,
-) -> None:
-    """Apply parameter freezing based on the recipe's finetuning strategy.
+) -> nn.Module:
+    """Apply parameter freezing / adapter injection per the recipe's strategy.
 
     Strategies
     ----------
@@ -42,47 +44,33 @@ def apply_strategy(
         Freeze components listed in ``recipe.freeze_components``.
     ``selective``
         Freeze everything *except* components in ``recipe.trainable_components``.
+    ``lora``
+        Inject PEFT LoRA adapters into ``recipe.lora_config.target_components``.
 
-    Parameters
-    ----------
-    model : nn.Module
-        The model wrapper (e.g. ACTModelWrapper).
-    recipe : TrainRecipe
-        Parsed training configuration.
-    metadata : ModelMetadata
-        Model descriptor with ``components`` name patterns.
+    Returns the model (LoRA may re-wrap subtrees in place; callers should use
+    the returned object). For freeze/selective the model is mutated in place.
     """
     strategy = recipe.finetuning_strategy
 
     if strategy == "full":
         # All parameters already have requires_grad=True by default.
         _log_param_stats(model, "full (all trainable)")
-        return
+        return model
 
     if strategy == "freeze":
         _freeze_components(model, recipe.freeze_components or [], metadata)
         _log_param_stats(model, f"freeze({recipe.freeze_components})")
-        return
+        return model
 
     if strategy == "selective":
         _selective_train(model, recipe.trainable_components or [], metadata)
         _log_param_stats(model, f"selective({recipe.trainable_components})")
-        return
+        return model
 
     if strategy == "lora":
-        if not metadata.support_lora:
-            raise ValueError(
-                f"Model '{metadata.name}' does not support LoRA fine-tuning "
-                f"(support_lora={metadata.support_lora}). "
-                f"Available strategies for this model: "
-                f"{'full' if metadata.support_full else ''} "
-                f"{'freeze' if metadata.support_freeze else ''} "
-                f"{'selective' if metadata.components else ''}".strip()
-            )
-        # LoRA handled separately by peft injection — nothing to freeze here.
-        # PEFT adapter injection is done after this call (future implementation).
-        _log_param_stats(model, "lora (peft-managed)")
-        return
+        # Delegated to the peft-based strategy (separate module).
+        from vla_factory.training.strategies.lora import apply_lora
+        return apply_lora(model, recipe, metadata)
 
     raise ValueError(f"Unknown finetuning strategy: {strategy!r}")
 
@@ -164,9 +152,9 @@ def _log_param_stats(model: nn.Module, label: str) -> None:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     frozen = total - trainable
     logger.info(
-        "Strategy [%s]: %s trainable, %s frozen, %s total",
+        "Strategy [%s]: %s (%s) trainable, %s (%s) frozen, %s (%s) total",
         label,
-        f"{trainable:,}",
-        f"{frozen:,}",
-        f"{total:,}",
+        f"{trainable:,}", human_count(trainable),
+        f"{frozen:,}", human_count(frozen),
+        f"{total:,}", human_count(total),
     )

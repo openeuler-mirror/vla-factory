@@ -1,0 +1,86 @@
+# openpi pi0 family end-to-end smoke (openpi PI0Pytorch).
+#
+# One recipe for the whole pi0 series. As written it runs pi0 with LoRA — the
+# portable path that fits a 12 GB GPU. Two commented switches cover the rest of
+# the family; nothing else needs to change.
+#
+# Run in the uv-installed pi env (see scripts/install.sh):
+#   source .venv/bin/activate   # (or wherever install.sh created it)
+#   HF_HUB_OFFLINE=1 HF_HUB_ENABLE_HF_TRANSFER=1 \
+#     vlafactory-cli train --config examples/pi0.yaml
+#
+# ── Variant A: pi05 instead of pi0 ────────────────────────────────────────
+#   Set model.name: pi05 and model.path: lerobot/pi05_base. The pi05 profile
+#   handles the rest (nothing to configure here): quantile normalisation for
+#   state/actions (needs q01/q99 in the dataset's meta/stats.json — lerobot v3
+#   ships them) and a normalized state digitized into the language prompt
+#   (discrete state input, max token len 200).
+#
+# ── Variant B: full finetune instead of LoRA ──────────────────────────────
+#   Set finetuning.strategy: full and drop the finetuning.lora block; lower
+#   training.lr to ~2.5e-5. Full FT needs ~13 GB VRAM for batch_size 1, so on a
+#   12 GB card keep the LoRA config below.
+#
+# LoRA injects adapters into the VLM (paligemma) subtree and freezes its base
+# weights; the action expert + projections stay fully trainable (openpi freeze
+# semantics — the action head must adapt to the new action space).
+#
+# The dataset carries per-frame task text; default_task is only the fallback
+# for frames without one. right_wrist_0_rgb is intentionally unmapped
+# (pi0_base expects 3 cameras; openpi PI0Pytorch consumes whatever images the
+# Observation holds).
+model:
+  name: pi0
+  path: lerobot/pi0_base          # pytorch safetensors (openpi weights, ported by lerobot)
+  config:
+    camera_mapping:
+      base_0_rgb: front
+      left_wrist_0_rgb: wrist
+    default_task: "pick up the rectangle"
+
+action_spec:
+  action_dim: 9
+  action_horizon: 50
+  action_type: joint_pos
+
+data:
+  source:
+    path: data/banana
+    format: lerobot-v3
+  sampler:
+    type: sliding_window
+    n_obs_steps: 1
+    action_horizon: 50
+  split:
+    strategy: episode
+    train_ratio: 0.9
+    seed: 42
+
+finetuning:
+  strategy: lora
+  lora:
+    r: 16                         # peft-aligned (rank alias also accepted)
+    lora_alpha: 16                # peft-aligned (alpha alias also accepted)
+    lora_dropout: 0.0             # forwarded to peft
+    init_lora_weights: gaussian   # forwarded to peft (gaussian matches RLinf's openpi LoRA)
+    target_components: ["llm"]    # vla abstraction: LoRA on the PaliGemma VLM subtree
+
+training:
+  backend: pytorch
+  lr: 5.0e-5                      # LoRA typically uses a higher lr than full FT
+  batch_size: 1
+  total_steps: 3                  # smoke: 3 optimizer steps
+  gradient_checkpointing: true
+  inference_steps: 10
+  num_workers: 0
+  augmentation:
+    random_crop: false
+    color_jitter: 0.0
+
+output:
+  output_dir: outputs/pi0_smoke
+  report_to: none
+  logging_steps: 1
+  save_steps: 1000
+  save_total_limit: 1
+  overwrite_output_dir: true

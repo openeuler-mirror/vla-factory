@@ -66,12 +66,19 @@ class DataSchema:
 
 @dataclass(frozen=True)
 class FeatureStats:
-    """Per-feature normalisation statistics."""
+    """Per-feature normalisation statistics.
+
+    ``q01``/``q99`` are the 1st/99th percentiles used by quantile
+    normalisation (pi05). lerobot v3 ships them in ``meta/stats.json``; they
+    stay empty for datasets/stats sources that do not provide quantiles.
+    """
 
     mean: list[float] = field(default_factory=list)
     std: list[float] = field(default_factory=list)
     min: list[float] = field(default_factory=list)
     max: list[float] = field(default_factory=list)
+    q01: list[float] = field(default_factory=list)
+    q99: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

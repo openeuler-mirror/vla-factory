@@ -17,9 +17,6 @@ dist/
 # Local training outputs
 outputs/
 
-# AI Coding
-.claude/
-
 # Environment variables
 .env
 
@@ -32,3 +29,7 @@ outputs/
 
 # Node (skill scripts)
 skills/**/node_modules/
+
+# Local skill/tool configuration (may contain access tokens) and local datasets
+/config.json
+/data/

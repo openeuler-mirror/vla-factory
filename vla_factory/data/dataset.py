@@ -142,6 +142,11 @@ class VLADataset(torch.utils.data.Dataset):
         else:
             sample["state"] = None
 
+        # Language / task instruction (language-conditioned models: pi0, pi05).
+        # A downstream `task_tokenize` transform turns this into tokenized_prompt.
+        if obs_frame.language is not None:
+            sample["task"] = obs_frame.language
+
         # ── Action frames ─────────────────────────────────────────
         # Action chunk starts from the last observation frame (delta=0),
         # matching lerobot's convention: the first predicted action is the
@@ -225,6 +230,8 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         images=images,
         image_masks=image_masks,
         state=stacked.get("state"),
+        tokenized_prompt=stacked.get("tokenized_prompt"),
+        tokenized_prompt_mask=stacked.get("tokenized_prompt_mask"),
     )
 
     return {

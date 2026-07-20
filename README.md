@@ -24,9 +24,23 @@ Architecture overview: VLA Factory's core goal is to unify the data, model, trai
 ```bash
 # From the repository root
 pip install -e ".[act]"      # ACT training (with lerobot>=0.5)
-# or
+
+# PI0 / PI0.5 training (openpi stack; uses uv because openpi has strict pins)
+bash scripts/install.sh
+
+# or, install all extras when you do not need the openpi patching path
 pip install -e ".[all]"      # all model-ecosystem dependencies
 pip install -e ".[dev]"      # dev deps: pytest / pytest-cov / tensorboard
+```
+
+For weak-network environments such as AutoDL, keep the same installer and add
+environment overrides as needed:
+
+```bash
+export VLA_PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple
+export VLA_UV_ATTEMPTS=8
+export VLA_LOCAL_LEROBOT=1   # avoid long GitHub git fetches; use a tarball source
+bash scripts/install.sh
 ```
 
 After installation, a `vlafactory-cli` command is registered (e.g. `vlafactory-cli train --config recipe.yaml`). `vlafactory-cli ...` is equivalent and works without installation / from source.
@@ -108,6 +122,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | Example | Description |
 |---------|-------------|
 | `examples/act_lekiwi.yaml` | Train lekiwi from scratch |
+| `examples/pi0.yaml` | openpi pi0 family smoke — pi0 LoRA by default; commented switches for pi05 and full finetune |
 | `examples/reference.yaml` | Fully annotated template |
 
 ---
@@ -121,8 +136,8 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | Data | Model | Algorithm | Deployment |
 |------|-------|-------|------|
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
-| ⬜ **RLDS** | ⬜ **π₀ / π-FAST / π₀.₅** | 🚧 **LoRA SFT** *(config ready, impl WIP)* |  |
-| ⬜ **ROS bags** | ⬜ **GR00T** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ⬜ **OpenVLA** | | |
+| ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
+| ⬜ **ROS bags** | ⬜ **π-FAST** | ⬜ **Selective SFT** | |
+| ⬜ **HDF5** | ⬜ **GR00T / OpenVLA** | | |
 
 ---

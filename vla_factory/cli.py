@@ -36,7 +36,15 @@ def main():
     preproc_parser.add_argument("--config", required=True, help="Path to YAML recipe file.")
 
     # ── list ──
-    list_parser = subparsers.add_parser("list", help="List registered models.")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List registered models, or describe one recipe with --config.",
+    )
+    list_parser.add_argument(
+        "--config", default=None,
+        help="Path to a YAML recipe. If set, print that recipe's model contract "
+             "(base cameras, action_dim) + camera_mapping check, instead of listing all models.",
+    )
 
     # ── evaluate ──
     eval_parser = subparsers.add_parser(
@@ -175,13 +183,38 @@ def main():
         print("Preprocessing complete.")
 
     elif args.command == "list":
-        from vla_factory.model.registry import list_entries
-        entries = list_entries()
-        if not entries:
-            print("No models registered.")
-        for name, meta in sorted(entries.items()):
-            install = meta.install_hint or "-"
-            print(f"  {name:20s} backend={meta.backend}  head={meta.action_head_type}  install={install}")
+        if args.config:
+            # Describe one recipe: model contract (base cameras, action_dim) +
+            # camera_mapping validation against the base + dataset cameras.
+            from pathlib import Path as _Path
+            from vla_factory.config.parser import parse_recipe
+            from vla_factory.config.defaults import resolve_recipe
+            from vla_factory.model.base_contract import describe_model_config
+
+            recipe = resolve_recipe(parse_recipe(args.config))
+
+            # Best-effort: read the dataset schema (lightweight, meta/info.json
+            # only) for the camera diff. Skip silently if the dataset isn't set
+            # or unreadable — the base-contract half still prints.
+            schema = None
+            data_path = recipe.data.source.path
+            if data_path:
+                try:
+                    from vla_factory.data.formats import get_reader
+                    reader = get_reader(recipe.data.source.format, path=_Path(data_path))
+                    schema = reader.get_schema(_Path(data_path))
+                except Exception as e:
+                    print(f"(skipped dataset schema read: {e})")
+
+            print(describe_model_config(recipe, schema))
+        else:
+            from vla_factory.model.registry import list_entries
+            entries = list_entries()
+            if not entries:
+                print("No models registered.")
+            for name, meta in sorted(entries.items()):
+                install = meta.install_hint or "-"
+                print(f"  {name:20s} backend={meta.backend}  head={meta.action_head_type}  install={install}")
 
     elif args.command == "evaluate":
         import numpy as np
@@ -228,7 +261,12 @@ def main():
                         raise KeyError(f"Camera '{cam_name}' not in frame. Available: {list(obs_frame.images.keys())}")
                     video[cam_name] = codec.decode_frame(ref)
                 state = obs_frame.state.astype(np.float32) if obs_frame.state is not None else None
-                obs = ObsDict(video=video, state=state)
+                # Pass the frame's task text so language-conditioned models (pi0)
+                # tokenize the *actual* episode task, not the recipe's default_task
+                # fallback. Same fix as infer_from_dataset_sample — without it every
+                # episode is evaluated under default_task, which silently biases L1
+                # when the dataset has more than one task.
+                obs = ObsDict(video=video, state=state, language=obs_frame.language)
 
                 valid_len = min(t + action_horizon, ep_len) - t
                 gt_list = [frames[t + i].action.astype(np.float32) for i in range(valid_len) if frames[t + i].action is not None]

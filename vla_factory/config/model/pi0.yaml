@@ -1,0 +1,64 @@
+# PI0 default profile for VLA Factory.
+#
+# PI0 (PaliGemma + Gemma + flow-matching action expert) is finetune-only:
+# `model.path` must point to a pytorch base checkpoint — lerobot/pi0_base is a
+# pytorch port of openpi's weights (openpi itself ships jax by default).
+# camera_mapping is per-recipe (depends on the base + dataset) and openpi's
+# Pi0Config carries no camera contract, so it is NOT set here — declare it in
+# the recipe's `model.config.camera_mapping`.
+#
+# Per-run overrides go in the recipe's `model.config` block (deep-merged on
+# top of this file; recipe wins).
+
+# Flow-matching denoising steps at inference (matches PI0Config default).
+num_inference_steps: 10
+
+# PaliGemma tokenizer max length for the language task.
+tokenizer_max_length: 48
+
+# torch.compile mode for openpi's sample_actions (inference path only; the
+# training forward is never compiled). Default matches openpi ("max-autotune")
+# so serving behaviour is identical to upstream. Autotune benchmarking on the
+# first call needs >=24 GB VRAM; on smaller cards or for one-shot smoke tests
+# and debugging, override in the recipe:
+#   null                         eager (no compile, lowest VRAM, fastest first call)
+#   "default"                    basic compile, modest speedup
+#   "reduce-overhead"            CUDA-graphs, low-latency, higher VRAM
+#   "max-autotune"               full autotune, max throughput, most VRAM (>=24 GB)
+#   "max-autotune-no-cudagraphs" max-autotune minus CUDA graphs (12-16 GB cards)
+# openpi Pi0Config.__post_init__ asserts the value is one of these (or null).
+pytorch_compile_mode: max-autotune
+
+# camera_mapping placeholder: real value lives in the recipe (per-run).
+# Documented here so users know the key exists.
+# camera_mapping:
+#   base_0_rgb: <dataset camera>         # e.g. front
+#   left_wrist_0_rgb: <dataset camera>   # e.g. wrist
+
+# ── Data transforms ──
+# openpi PI0Pytorch consumes images as [-1,1] HWC (openpi Observation contract;
+# SigLIP [-1,1] is the model's expected input range). So image_to_float maps
+# directly to [-1,1] and we do NOT flip to CHW (openpi keeps HWC). state+actions
+# are z-score normalized then zero-padded to the model's action_dim (32).
+# task_tokenize turns the language task into tokenized_prompt.
+transforms:
+  inputs:
+    - type: image_to_float         # uint8 → [-1,1] HWC (openpi Observation)
+      range: [-1, 1]
+    - type: image_layout
+      to: CHW
+    - type: resize_images          # keep-ratio + letterbox to 224 (HWC, no layout flip)
+      height: 224
+      width: 224
+      mode: pad
+    - type: normalize_vector
+      fields: ["state", "actions"]
+      method: zscore
+    - type: pad_dimensions
+      target_dim: 32
+      fields: ["state", "actions"]
+    - type: task_tokenize
+      max_length: 48
+      tokenizer_repo: google/paligemma-3b-pt-224
+      # (the repo above carries the PaliGemma tokenizer; pin a different one
+      # here if your base checkpoint uses another tokenizer)

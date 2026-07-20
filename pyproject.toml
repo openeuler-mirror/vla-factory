@@ -34,23 +34,25 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    # torch 上限与 lerobot 对齐，避免 [act] 安装时触发降级
+    # torch upper bound aligns with lerobot to avoid a downgrade on [act] install.
     "torch>=2.7,<2.11.0",
     "torchvision>=0.22.0,<0.26.0",
     "numpy>=1.24",
     "transformers>=4.40",
+    # LoRA / adapter fine-tuning (framework-level strategy, available by default).
+    "peft>=0.11",
     "pyyaml>=6.0",
     "av>=12.0",
     "pyzmq>=25.0",
     "safetensors>=0.4",
-    # 配置层：模型默认 profile 的合并 + 点路径/插值（Hydra 底层，未引入 Hydra 运行时）
+    # Config: model-default profile merge + dot-path/interpolation (Hydra base, no runtime).
     "omegaconf>=2.3",
-    # 图像 resize（ResizeImages transform）与 lerobot host JPEG 解码
+    # Image resize (ResizeImages transform) + lerobot-host JPEG decode.
     "opencv-python-headless>=4.5",
-    # 数据格式读取（LeRobot v3 parquet 解析）
+    # LeRobot v3 parquet parsing.
     "pandas>=2.0",
     "pyarrow>=14.0",
-    # 视频预处理进度条
+    # Preprocessing progress bar.
     "tqdm>=4.60",
 ]
 
@@ -58,14 +60,43 @@ dependencies = [
 vlafactory-cli = "vla_factory.cli:main"
 
 [project.optional-dependencies]
-# 按模型选装的生态依赖：ACT 是 lerobot ACTPolicy 的纯 adapter，硬依赖 lerobot
+# Per-model ecosystem deps. ACT wraps lerobot's ACTPolicy (standard PyPI, pip-friendly).
 act = ["lerobot>=0.5"]
-all = ["lerobot>=0.5"]
+# pi0/pi05 use openpi's native PI0Pytorch (jax + pytorch). openpi is pinned to a
+# known-good commit for reproducibility. It also imports pytest at runtime
+# (gemma_pytorch.py), so pytest is listed here even though it's a test dep.
+# NOTE: `pip install -e ".[pi0]"` does NOT work — openpi's strict pins + the
+# in-place transformers patch require the uv installer: `bash scripts/install.sh pi0`.
+pi0 = [
+    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "pytest>=7",
+]
+pi05 = [
+    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "pytest>=7",
+]
+all = [
+    "lerobot>=0.5",
+    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "pytest>=7",
+]
 dev = [
     "pytest>=7",
     "pytest-cov",
     "tensorboard>=2.14",
 ]
+
+# uv: route torch/torchvision through the PyTorch CUDA wheel index. The
+# installer (scripts/install.sh) auto-selects cu126/cu128 from the local driver.
+[tool.uv]
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
 
 [project.urls]
 Homepage = "https://gitcode.com/openeuler/vla-factory"
@@ -78,6 +109,11 @@ include-package-data = true
 where = ["."]
 include = ["vla_factory*"]
 
-# 让模型默认 profile (act.yaml 等) 随包发布
+# Ship model default profiles (act.yaml, pi0.yaml, ...) with the package.
 [tool.setuptools.package-data]
 "vla_factory.config.model" = ["*.yaml"]
+
+# Collect only the repo test suite (a bare `pytest` must not pick up unrelated
+# local directories such as vendored skills or datasets).
+[tool.pytest.ini_options]
+testpaths = ["test"]
