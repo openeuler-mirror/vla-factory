@@ -27,9 +27,27 @@ outputs/
 .vscode/
 .idea/
 
-# Node (skill scripts)
-skills/**/node_modules/
+# Virtual environments (scripts/install.sh creates one per model backend)
+.venv*/
+venv/
+
+# Vendored third-party skills checkout: a separate git repo, not a submodule.
+# Tracking it would record a dangling gitlink into an unrelated repository.
+/skills/
+
+# Claude Code: shared project config (.claude/settings.json, CLAUDE.md, skills/)
+# stays tracked; per-user state and atomic-write leftovers do not.
+.claude/settings.local.json
+.claude/*.json
+.claude/issue-chat.json
+.claude/*.tmp.*
+.claude/commands/
 
 # Local skill/tool configuration (may contain access tokens) and local datasets
 /config.json
 /data/
+
+# OS and editor noise
+.DS_Store
+*.log
+

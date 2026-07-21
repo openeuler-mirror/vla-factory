@@ -110,7 +110,14 @@ vlafactory-cli serve --checkpoint outputs/act_so101_banana \
 # lerobot 真机平台
 vlafactory-cli serve --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
+
+# RoboTwin 仿真平台
+vlafactory-cli serve --checkpoint outputs/act_robotwin \
+    --platform robotwin --port 9999
 ```
+
+RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、训练数据和评测
+步骤见 [RoboTwin 平台教程](./docs/tutorial/robotwin.cn.md)。
 
 ---
 

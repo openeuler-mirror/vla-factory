@@ -1,0 +1,6 @@
+# Minimal bootstrap config required by RoboTwin's eval_policy_client.py.
+#
+# The task, task config, checkpoint label, instruction type, and seed are
+# supplied by --overrides in the RoboTwin evaluation command. The actual model
+# and checkpoint live in the VLA Factory server process.
+policy_name: vla_factory.deploy.robotwin_connector

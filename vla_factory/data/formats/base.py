@@ -31,13 +31,22 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class VideoRef:
-    """Lazy video frame reference — records location only, no loader closure."""
+    """Lazy image/video frame reference — records location only, no loader closure.
+
+    ``video_path`` + ``frame_index`` locate one frame; the assigned
+    :class:`~vla_factory.data.codec.base.VideoCodec` turns that into pixels.
+    ``stream`` is an optional sub-stream selector for container formats that
+    hold several image streams in one file: for MP4 datasets (one file per
+    camera) it stays ``None``; for RoboTwin hdf5 (all cameras in one file) it
+    carries the camera name, so the codec can read ``/observation/{stream}/rgb``.
+    """
 
     video_path: Path
     frame_index: int
     height: int
     width: int
     channels: int = 3
+    stream: str | None = None
 
 
 @dataclass

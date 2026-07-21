@@ -10,22 +10,29 @@ from pathlib import Path
 
 from .base import Episode, FormatReader, Frame, VideoRef
 from .lerobot_v3 import LeRobotV3Reader
+from .robotwin import RoboTwinReader
 
 __all__ = [
     "Episode",
     "FormatReader",
     "Frame",
     "LeRobotV3Reader",
+    "RoboTwinReader",
     "VideoRef",
     "get_reader",
 ]
 
 
 # ── Format reader registry ───────────────────────────────────────
+#
+# Instantiating a reader must stay cheap and import-safe: RoboTwinReader
+# defers its optional h5py dependency to method-call time, so listing it here
+# does not require the [robotwin] extra to be installed.
 
 _READERS: dict[str, FormatReader] = {
     "lerobot-v3": LeRobotV3Reader(),
     "lerobot_v3": LeRobotV3Reader(),
+    "robotwin": RoboTwinReader(),
 }
 
 

@@ -206,12 +206,16 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     stacked: dict[str, torch.Tensor | None] = {}
     for key in keys:
         values = [item[key] for item in batch if item.get(key) is not None]
-        if values:
-            stacked[key] = torch.stack(
-                [torch.as_tensor(v) for v in values]
-            )
-        else:
+        if not values:
             stacked[key] = None
+            continue
+        # Skip non-tensor metadata (e.g. the raw `task` string kept on
+        # language-annotated datasets when the model has no tokenizer transform,
+        # such as ACT on RoboTwin): it is not a model input and must not reach
+        # torch.stack. Tokenized prompts, if any, arrive as separate numeric keys.
+        if isinstance(values[0], str):
+            continue
+        stacked[key] = torch.stack([torch.as_tensor(v) for v in values])
 
     # Separate images / masks / state
     images: dict[str, torch.Tensor] = {}

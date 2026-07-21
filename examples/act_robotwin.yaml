@@ -1,0 +1,72 @@
+# ACT from-scratch training on a RoboTwin 2.0 bimanual task.
+# Usage: python -m vla_factory train --config examples/act_robotwin.yaml
+#
+# Reads RoboTwin native episode hdf5 (episode*.hdf5, embedded JPEG camera
+# streams + /joint_action) via the `robotwin` reader + `hdf5_jpeg` codec.
+# Install the reader dep: pip install -e ".[act,robotwin]".
+#
+# Action space is qpos (bimanual joints), concatenated as
+#   [left_arm, left_gripper, right_arm, right_gripper]
+# so it matches RoboTwin's take_action(action_type='qpos') at deploy time.
+
+model:
+  name: act
+  path: null                         # from scratch, no pretrained weights
+  config:
+    dim_model: 1024
+    n_heads: 8
+    dim_feedforward: 3200
+    n_encoder_layers: 4
+    n_decoder_layers: 7
+    latent_dim: 32
+    n_vae_encoder_layers: 4
+    kl_weight: 10.0
+    dropout: 0.1
+
+action_spec:
+  # 14 = two 6-DOF arms + two 1-DOF grippers (Aloha-AgileX). The reader derives
+  # the real dimension from the dataset joint arrays; keep this in sync with the
+  # embodiment you trained on.
+  action_dim: 14
+  action_horizon: 100                # chunk_size
+  action_type: joint_pos
+
+data:
+  source:
+    # Point at a RoboTwin task-config root (episodes under its data/ dir),
+    path: data/robotwin_raw/dataset/beat_block_hammer/aloha-agilex_clean_50
+    format: robotwin
+    video_codec: hdf5_jpeg
+  sampler:
+    type: sliding_window
+    n_obs_steps: 1
+    action_horizon: 100
+  split:
+    strategy: episode
+    train_ratio: 0.9
+    val_ratio: 0.1
+    seed: 1000
+
+finetuning:
+  strategy: full                     # ACT trains from scratch
+
+training:
+  backend: pytorch
+  lr: 1e-5
+  lr_backbone: 1e-5
+  batch_size: 8
+  total_steps: 160000
+  gradient_checkpointing: false
+  inference_steps: 1
+  num_workers: 4
+  augmentation:
+    random_crop: false
+    color_jitter: 0.0
+
+output:
+  output_dir: outputs/act_robotwin
+  report_to: none                    # none | tensorboard | wandb
+  logging_steps: 200
+  save_steps: 20000
+  save_total_limit: 3
+  overwrite_output_dir: true
