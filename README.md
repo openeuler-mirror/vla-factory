@@ -111,7 +111,15 @@ vlafactory-cli serve --checkpoint outputs/act_so101_banana \
 # lerobot real-robot platform
 vlafactory-cli serve --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
+
+# RoboTwin simulator platform
+vlafactory-cli serve --checkpoint outputs/act_robotwin \
+    --platform robotwin --port 9999
 ```
+
+RoboTwin runs in a separate simulator environment and connects to the model
+server over TCP. See the [RoboTwin platform tutorial](./docs/tutorial/robotwin.md)
+for installation, native dataset, and evaluation instructions.
 
 ---
 

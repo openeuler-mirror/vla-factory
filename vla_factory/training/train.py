@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import shutil
@@ -343,7 +344,7 @@ def _build_training_args(recipe: TrainRecipe):
     # Resolve report_to: "none" → [], "tensorboard" → ["tensorboard"], etc.
     report_to = _resolve_report_to(recipe.output.report_to)
 
-    args = TrainingArguments(
+    ta_kwargs = dict(
         output_dir=recipe.output.output_dir,
         # Step-based training (not epoch-based)
         num_train_epochs=1,
@@ -362,9 +363,6 @@ def _build_training_args(recipe: TrainRecipe):
         logging_steps=recipe.output.logging_steps,
         save_steps=recipe.output.save_steps,
         save_total_limit=recipe.output.save_total_limit,
-        # pi0-base ships tied weights (lm_head == embed_tokens); safetensors
-        # refuses to save shared-storage tensors. Use torch.save (.bin) instead.
-        save_safetensors=False,
         # Eval
         eval_strategy="no",  # MVP: no eval during training
         # DataLoader
@@ -376,6 +374,15 @@ def _build_training_args(recipe: TrainRecipe):
         report_to=report_to,
         logging_nan_inf_filter=False,
     )
+    # pi0-base ships tied weights (lm_head == embed_tokens); safetensors refuses
+    # to save shared-storage tensors, so pi0 needs torch.save (.bin). The flag
+    # was removed in transformers >=5 (safetensors is always used there); pass it
+    # only when the installed version still accepts it, so both the pi0 (4.x) and
+    # ACT (5.x, via lerobot) environments construct TrainingArguments cleanly.
+    if "save_safetensors" in inspect.signature(TrainingArguments.__init__).parameters:
+        ta_kwargs["save_safetensors"] = False
+
+    args = TrainingArguments(**ta_kwargs)
 
     # Pass lr_backbone to VLATrainer via custom attribute
     args.lr_backbone = recipe.lr_backbone

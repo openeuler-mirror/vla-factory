@@ -27,6 +27,12 @@ def resolve_codec(name: str = "auto") -> VideoCodec:
     """
     if name in ("auto", "pyav"):
         return PyAVCodec()
+    if name == "hdf5_jpeg":
+        # Deferred import: keeps the registry importable without h5py (the
+        # RoboTwin extra). Constructing the codec does not need h5py; only
+        # decoding does (h5py is imported there).
+        from .hdf5_jpeg import Hdf5JpegCodec
+        return Hdf5JpegCodec()
     if name == "torchcodec":
         try:
             from .torch import TorchCodec

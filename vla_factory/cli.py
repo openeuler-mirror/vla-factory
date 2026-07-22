@@ -130,9 +130,18 @@ def main():
     )
     serve_parser.add_argument(
         "--platform", default="simulator",
-        choices=["simulator", "lerobot"],
-        help="Observation/action wire format. 'simulator' uses observation.images.X / observation.state keys; "
-             "'lerobot' uses the lerobot host format (per-motor state scalars + base64 JPEG cameras).",
+        choices=["simulator", "lerobot", "robotwin"],
+        help="Target platform / wire format. 'simulator' uses observation.images.X / observation.state keys; "
+             "'lerobot' uses the lerobot host format (per-motor state scalars + base64 JPEG cameras); "
+             "'robotwin' runs a RoboTwin-compatible TCP model server (the RoboTwin simulator connects as client).",
+    )
+    serve_parser.add_argument(
+        "--host", default="0.0.0.0",
+        help="Bind address for the 'robotwin' TCP model server.",
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=9999,
+        help="TCP port for the 'robotwin' model server (must match the RoboTwin client's --port).",
     )
     serve_parser.add_argument(
         "--task", default="",
@@ -341,11 +350,14 @@ def main():
         if args.max_loop_freq_hz <= 0:
             parser.error("--max-loop-freq-hz must be a positive number")
         device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # RoboTwin executes a full predicted chunk per get_action, so it needs the
+        # synchronous strategy (predict → [action_horizon, action_dim]).
+        strategy = "synchronous" if args.platform == "robotwin" else args.strategy
         engine = InferenceEngine(
             checkpoint_path=args.checkpoint,
             device=device,
             camera_names=args.camera_names,
-            execution_strategy=args.strategy,
+            execution_strategy=strategy,
             n_action_steps=args.n_action_steps,
         )
 
@@ -447,6 +459,30 @@ def main():
                 obs_socket.close(linger=0)
                 cmd_socket.close(linger=0)
                 context.term()
+
+        elif args.platform == "robotwin":
+            from vla_factory.deploy.robotwin_adapter import RobotwinObsAdapter
+            from vla_factory.deploy.robotwin_server import (
+                RobotwinEngineModel,
+                RobotwinModelServer,
+            )
+
+            adapter = RobotwinObsAdapter(
+                camera_keys=engine.camera_keys,
+                state_dim=engine.schema.state_dim,
+            )
+            model = RobotwinEngineModel(
+                engine, adapter, task=args.task, n_action_steps=args.n_action_steps,
+            )
+            server = RobotwinModelServer(model, host=args.host, port=args.port)
+
+            print(f"[serve] Model: {engine.recipe.model_name}", flush=True)
+            print(f"[serve] Device: {device}", flush=True)
+            print(f"[serve] Platform: robotwin (cameras={list(engine.camera_keys)}, "
+                  f"state_dim={engine.schema.state_dim}, action_dim={engine.action_dim})", flush=True)
+            print(f"[serve] Listening on {args.host}:{args.port} — start the RoboTwin "
+                  f"client with matching --port.", flush=True)
+            server.serve_forever()
 
         else:
             # Default: simulator platform (observation.images.X keys)
