@@ -262,6 +262,18 @@ def test_unknown_cmd_returns_error(server_and_engine):
         client.close()
 
 
+def test_missing_cmd_returns_clean_error(server_and_engine):
+    """A request without a (string) 'cmd' must report 'No model method named',
+    not a confusing 'attribute name must be string' TypeError from getattr."""
+    server, engine, port = server_and_engine
+    client = _MockRobotwinClient("127.0.0.1", port)
+    try:
+        with pytest.raises(RuntimeError, match="No model method named"):
+            client.call(None, _make_obs())  # type: ignore[arg-type]
+    finally:
+        client.close()
+
+
 def test_n_action_steps_truncation():
     engine = _FakeEngine()
     adapter = RobotwinObsAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)

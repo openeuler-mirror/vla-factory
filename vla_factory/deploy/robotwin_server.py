@@ -222,6 +222,8 @@ class RobotwinModelServer:
                     data = json_to_numpy(payload.decode("utf-8"))
                     cmd = data.get("cmd")
                     obs = data.get("obs")
+                    if not isinstance(cmd, str):
+                        raise AttributeError(f"No model method named {cmd!r}")
                     method = getattr(self.model, cmd, None)
                     if not callable(method):
                         raise AttributeError(f"No model method named '{cmd}'")
