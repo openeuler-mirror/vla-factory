@@ -115,9 +115,9 @@ def train(
     # Writes the resolved keys back onto ``schema`` so they land in
     # inference_metadata/schema.json via ``_save_inference_metadata`` (asdict).
     # This is what lets a checkpoint be served on the real robot without
-    # re-sorting motor keys. Lenient: warns (does not raise) if the dataset has
-    # no ``names`` — only some platforms (lerobot host) actually need the keys.
-    resolved_state_keys, resolved_action_keys = resolve_vector_keys(schema, recipe)
+    # re-sorting motor keys. Every non-empty vector must have exactly one key
+    # per dimension; fail before writing incomplete inference metadata.
+    resolved_state_keys, resolved_action_keys = resolve_vector_keys(schema)
     schema = replace(
         schema,
         state_keys=resolved_state_keys,

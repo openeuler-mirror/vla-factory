@@ -30,6 +30,12 @@ from vla_factory.deploy.infer import (
     InferenceEngine,
     ObsDict,
 )
+from vla_factory.deploy.infer import (
+    ActionChunk,
+    ActionCommand,
+    PolicyExecutor,
+    build_execution_policy,
+)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
@@ -204,36 +210,107 @@ def _setup_checkpoint_dir(
     return tmpdir
 
 
-class TestInferenceEngine:
-    @pytest.fixture
-    def checkpoint_dir(self, tmp_path):
-        recipe = _make_recipe(action_dim=6, action_horizon=10)
-        schema = _make_schema(action_dim=6, state_dim=6, cameras=("front",))
-        norm_stats = _make_norm_stats(action_dim=6, state_dim=6)
-        return _setup_checkpoint_dir(tmp_path, recipe, schema, norm_stats)
+class TestExecutionPolicies:
+    class _Producer:
+        def __init__(self, chunks):
+            self.chunks = iter(chunks)
+            self.predict_count = 0
+            self.reset_count = 0
 
-    def test_invalid_strategy_raises(self, checkpoint_dir):
-        """InferenceEngine rejects unknown execution strategies."""
-        # We can't fully construct it without a registered model,
-        # but we test the validation directly.
-        with pytest.raises(ValueError, match="Unknown strategy"):
-            InferenceEngine(
-                checkpoint_path=checkpoint_dir,
-                execution_strategy="bogus",
+        def predict(self, obs):
+            self.predict_count += 1
+            return ActionChunk(next(self.chunks))
+
+        def reset(self):
+            self.reset_count += 1
+
+    def test_action_contracts_require_two_dimensions(self):
+        with pytest.raises(ValueError, match=r"\[steps, action_dim\]"):
+            ActionChunk(np.zeros(3, dtype=np.float32))
+        with pytest.raises(ValueError, match="NaN"):
+            ActionCommand(np.array([[np.nan]], dtype=np.float32))
+
+    def test_synchronous_returns_a_two_dimensional_command(self):
+        producer = self._Producer([np.arange(12).reshape(4, 3)])
+        executor = PolicyExecutor(
+            producer,
+            build_execution_policy(
+                "synchronous",
+                action_horizon=4,
+                action_dim=3,
+                n_action_steps=2,
+            ),
+        )
+
+        command = executor.predict(object())
+
+        assert command.values.shape == (2, 3)
+        np.testing.assert_array_equal(command.values, np.arange(6).reshape(2, 3))
+
+    def test_receding_horizon_does_not_repredict_while_playing_back(self):
+        producer = self._Producer([
+            np.arange(12).reshape(4, 3),
+            np.arange(12, 24).reshape(4, 3),
+        ])
+        executor = PolicyExecutor(
+            producer,
+            build_execution_policy(
+                "receding_horizon",
+                action_horizon=4,
+                action_dim=3,
+                n_action_steps=2,
+            ),
+        )
+
+        first = executor.predict("obs-0")
+        second = executor.predict("obs-1")
+        third = executor.predict("obs-2")
+
+        assert producer.predict_count == 2
+        assert first.values.shape == second.values.shape == third.values.shape == (1, 3)
+        np.testing.assert_array_equal(first.values[0], [0, 1, 2])
+        np.testing.assert_array_equal(second.values[0], [3, 4, 5])
+        np.testing.assert_array_equal(third.values[0], [12, 13, 14])
+
+    def test_temporal_ensembling_uses_harmonic_recency_weights(self):
+        producer = self._Producer([
+            np.array([[1.0], [2.0], [3.0]]),
+            np.array([[10.0], [20.0], [30.0]]),
+        ])
+        executor = PolicyExecutor(
+            producer,
+            build_execution_policy(
+                "temporal_ensembling",
+                action_horizon=3,
+                action_dim=1,
+            ),
+        )
+
+        np.testing.assert_allclose(executor.predict(None).values, [[1.0]])
+        # old chunk predicts 2 for t=1, new chunk predicts 10; weights 1/2 and 1.
+        np.testing.assert_allclose(
+            executor.predict(None).values,
+            [[(2.0 * 0.5 + 10.0) / 1.5]],
+        )
+
+    @pytest.mark.parametrize("steps", [0, 5])
+    def test_n_action_steps_bounds_are_validated(self, steps):
+        with pytest.raises(ValueError, match=r"1 <= n_action_steps <= action_horizon"):
+            build_execution_policy(
+                "receding_horizon",
+                action_horizon=4,
+                action_dim=3,
+                n_action_steps=steps,
             )
 
-    def test_synchronous_returns_full_chunk(self, checkpoint_dir):
-        """Synchronous strategy returns [H, D] array."""
-        # This test requires the model to be registered — skip if not
-        pytest.skip("Requires registered 'act' model; integration test")
-
-    def test_receding_returns_single_step(self, checkpoint_dir):
-        """Receding horizon strategy returns [D] array."""
-        pytest.skip("Requires registered 'act' model; integration test")
-
-    def test_temporal_ensembling_returns_single_step(self, checkpoint_dir):
-        """Temporal ensembling returns [D] array."""
-        pytest.skip("Requires registered 'act' model; integration test")
+    def test_temporal_ensembling_rejects_multi_step_setting(self):
+        with pytest.raises(ValueError, match="always emits one step"):
+            build_execution_policy(
+                "temporal_ensembling",
+                action_horizon=4,
+                action_dim=3,
+                n_action_steps=2,
+            )
 
 
 # ── Tests: _obs_to_observation normalization ────────────────────────
@@ -407,9 +484,9 @@ class TestTrainInferNormalizationConsistency:
 
 class TestZMQObsAdapter:
     def test_basic_conversion(self):
-        from vla_factory.deploy.transport import _ZMQObsAdapter
+        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
 
-        adapter = _ZMQObsAdapter(camera_keys=("front", "wrist"))
+        adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
             "observation.images.front": np.zeros((64, 64, 3), dtype=np.uint8),
             "observation.images.wrist": np.ones((64, 64, 3), dtype=np.uint8),
@@ -424,9 +501,9 @@ class TestZMQObsAdapter:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_missing_camera_raises(self):
-        from vla_factory.deploy.transport import _ZMQObsAdapter
+        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
 
-        adapter = _ZMQObsAdapter(camera_keys=("front", "wrist"))
+        adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
             "observation.images.front": np.zeros((64, 64, 3), dtype=np.uint8),
             "observation.state": np.array([1.0], dtype=np.float32),
@@ -440,7 +517,7 @@ class TestZMQObsAdapter:
 
 class TestReplayPolicy:
     def test_replay_sequence(self):
-        from vla_factory.deploy.adapters import ReplayPolicy
+        from vla_factory.deploy.infer import ReplayPolicy
 
         data = [
             {"action": np.array([1.0, 2.0])},
@@ -450,12 +527,12 @@ class TestReplayPolicy:
         policy = ReplayPolicy(data)
         obs = ObsDict(video={}, state=None)
 
-        np.testing.assert_array_equal(policy.predict(obs), [1.0, 2.0])
-        np.testing.assert_array_equal(policy.predict(obs), [3.0, 4.0])
-        np.testing.assert_array_equal(policy.predict(obs), [5.0, 6.0])
+        np.testing.assert_array_equal(policy.predict(obs).values, [[1.0, 2.0]])
+        np.testing.assert_array_equal(policy.predict(obs).values, [[3.0, 4.0]])
+        np.testing.assert_array_equal(policy.predict(obs).values, [[5.0, 6.0]])
 
     def test_replay_exhausted(self):
-        from vla_factory.deploy.adapters import ReplayPolicy
+        from vla_factory.deploy.infer import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -464,13 +541,13 @@ class TestReplayPolicy:
             policy.predict(obs)
 
     def test_replay_reset(self):
-        from vla_factory.deploy.adapters import ReplayPolicy
+        from vla_factory.deploy.infer import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
         policy.predict(obs)
         policy.reset()
-        np.testing.assert_array_equal(policy.predict(obs), [1.0])
+        np.testing.assert_array_equal(policy.predict(obs).values, [[1.0]])
 
 
 # ── Tests: resolve_vector_keys ─────────────────────────────────────
@@ -479,58 +556,41 @@ class TestReplayPolicy:
 class TestResolveVectorKeys:
     """The dimension→key order is a data/model contract.
 
-    Resolution is deliberately lenient: dataset ``names`` win; if no keys are
-    resolvable it warns and returns empty rather than raising, because only
-    some platforms (lerobot host) actually need the per-dimension order.
+    The checkpoint schema (populated from dataset ``names`` at train time) is
+    the sole source — the training dataset is never re-read. Resolution is
+    strict: every non-empty vector must carry exactly one key per dimension so
+    checkpoint metadata remains complete and self-contained.
     """
 
-    @staticmethod
-    def _recipe(source_path: str = "/nonexistent-dataset-for-tests") -> TrainRecipe:
-        from vla_factory.config.recipe import DataConfig, DataSourceConfig
-
-        return TrainRecipe(
-            model_name="act",
-            data=DataConfig(
-                source=DataSourceConfig(path=source_path, format="lerobot-v3")
-            ),
-        )
-
-    def test_schema_keys_win(self, caplog):
+    def test_schema_keys_returned(self, caplog):
         """Dataset ``names`` (in schema) are returned when present."""
         schema = DataSchema(
             state_dim=3, action_dim=2,
             state_keys=("s0", "s1", "s2"), action_keys=("a0", "a1"),
         )
-        sk, ak = resolve_vector_keys(schema, self._recipe())
+        sk, ak = resolve_vector_keys(schema)
         assert sk == ("s0", "s1", "s2")
         assert ak == ("a0", "a1")
 
-    def test_warns_when_missing(self, caplog):
-        """No names and no readable dataset → warning + empty, not a raise."""
+    def test_raises_when_missing(self):
+        """A non-empty vector without keys violates the schema contract."""
         schema = DataSchema(state_dim=3, action_dim=3)
-        with caplog.at_level("WARNING", logger="vla_factory.data.manifest"):
-            sk, ak = resolve_vector_keys(schema, self._recipe())
-        assert sk == ()
-        assert ak == ()
-        assert any("no feature `names`" in r.message for r in caplog.records)
+        with pytest.raises(ValueError, match=r"schema\.state_keys is empty"):
+            resolve_vector_keys(schema)
 
-    def test_length_mismatch_warns(self, caplog):
-        """A resolved key count that disagrees with the dim is warned about
-        and emptied (never returned misaligned)."""
+    def test_length_mismatch_raises(self):
+        """A resolved key count must agree exactly with the vector dimension."""
         schema = DataSchema(
             state_dim=3, action_dim=2,
             state_keys=("a", "b"), action_keys=("x", "y"),  # state: 2 != 3; action: 2 == 2
         )
-        with caplog.at_level("WARNING", logger="vla_factory.data.manifest"):
-            sk, ak = resolve_vector_keys(schema, self._recipe())
-        assert sk == ()          # mismatched → emptied
-        assert ak == ("x", "y")  # matched → kept
-        assert any("length mismatch" in r.message for r in caplog.records)
+        with pytest.raises(ValueError, match=r"schema\.state_keys has 2 entries"):
+            resolve_vector_keys(schema)
 
     def test_dim_zero_returns_empty(self):
         """A stateless vector (dim 0) resolves to empty keys without warning."""
         schema = DataSchema(state_dim=0, action_dim=2, action_keys=("x", "y"))
-        sk, ak = resolve_vector_keys(schema, self._recipe())
+        sk, ak = resolve_vector_keys(schema)
         assert sk == ()
         assert ak == ("x", "y")
 
@@ -543,7 +603,7 @@ class TestLerobotHostAdapters:
     sorting, no auto-detection (which would scramble dimensions)."""
 
     def test_obs_adapter_assembles_state_in_key_order(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostObsAdapter
+        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
 
         state_keys = ("shoulder", "elbow", "wrist")
         # Host dict deliberately in scrambled insertion order.
@@ -555,7 +615,7 @@ class TestLerobotHostAdapters:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_obs_adapter_missing_state_key_raises(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostObsAdapter
+        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=(), state_keys=("a", "b"), state_dim=2,
@@ -563,30 +623,32 @@ class TestLerobotHostAdapters:
         with pytest.raises(KeyError, match="'a'"):
             adapter({"b": 1.0})
 
-    def test_obs_adapter_count_mismatch_asserts(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostObsAdapter
+    def test_obs_adapter_count_mismatch_raises(self):
+        """Contract check must be a real raise (survives `python -O`)."""
+        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
 
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="state_keys count"):
             LerobotHostObsAdapter(
                 camera_keys=(), state_keys=("a", "b"), state_dim=3,
             )
 
     def test_action_adapter_maps_each_dim(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostActionAdapter
+        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
 
         keys = ("shoulder", "elbow", "wrist")
         adapter = LerobotHostActionAdapter(action_dim=3, action_keys=keys)
         out = adapter(np.array([10.0, 20.0, 30.0]))
         assert out == {"shoulder": 10.0, "elbow": 20.0, "wrist": 30.0}
 
-    def test_action_adapter_count_mismatch_asserts(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostActionAdapter
+    def test_action_adapter_count_mismatch_raises(self):
+        """Contract check must be a real raise (survives `python -O`)."""
+        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
 
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="action_keys count"):
             LerobotHostActionAdapter(action_dim=3, action_keys=("a", "b"))
 
     def test_obs_adapter_missing_camera_raises(self):
-        from vla_factory.deploy.lerobot_host_adapter import LerobotHostObsAdapter
+        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=("front",), state_keys=("a",), state_dim=1,

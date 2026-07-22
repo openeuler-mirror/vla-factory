@@ -101,19 +101,19 @@ vlafactory-cli evaluate --checkpoint outputs/act_so101_banana \
     --dataset /path/to/dataset
 ```
 
-### 4. Start an Inference Service
+### 4. Deploy a Checkpoint
 
 ```bash
 # Simulator platform
-vlafactory-cli serve --checkpoint outputs/act_so101_banana \
+vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform simulator --strategy receding_horizon
 
 # lerobot real-robot platform
-vlafactory-cli serve --checkpoint outputs/act_so101_banana \
+vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
 
 # RoboTwin simulator platform
-vlafactory-cli serve --checkpoint outputs/act_robotwin \
+vlafactory-cli deploy --checkpoint outputs/act_robotwin \
     --platform robotwin --port 9999
 ```
 

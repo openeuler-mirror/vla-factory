@@ -39,7 +39,7 @@ data:
 ## 3. 启动模型服务（VLA Factory 环境）
 
 ```bash
-vlafactory-cli serve \
+vlafactory-cli deploy \
   --checkpoint outputs/<checkpoint> \
   --platform robotwin \
   --host 0.0.0.0 \
@@ -60,7 +60,7 @@ export VLA_FACTORY_PATH=/path/to/vla-factory
 PYTHONPATH="$VLA_FACTORY_PATH${PYTHONPATH:+:$PYTHONPATH}" \
 python script/eval_policy_client.py \
   --port 9999 \
-  --config "$VLA_FACTORY_PATH/vla_factory/deploy/configs/robotwin.yml" \
+  --config "$VLA_FACTORY_PATH/vla_factory/deploy/connectors/robotwin.yml" \
   --overrides \
     task_name beat_block_hammer \
     task_config demo_randomized \
@@ -73,7 +73,7 @@ python script/eval_policy_client.py \
 只声明外置 connector；真正的模型和 checkpoint 位于服务端。命令中的端口
 必须与服务端一致。评测结果由 RoboTwin 写入其 `eval_result/` 目录。
 
-## 运行时契约
+## 运行时标准
 
 - Aloha-AgileX 动作按 qpos 执行，典型维度为 14：左右各 6 个手臂关节和
   1 个夹爪关节。
@@ -81,5 +81,5 @@ python script/eval_policy_client.py \
   不匹配时，服务端会在推理前报出所需值和实际值。
 - PI0/PI0.5 等语言条件模型会收到 `TASK_ENV.get_instruction()` 返回的指令；
   ACT 等不使用语言的模型会忽略该字段。
-- connector 位于 `vla_factory.deploy.robotwin_connector`，自身不依赖 torch、
+- connector 位于 `vla_factory.deploy.connectors.robotwin`，自身不依赖 torch、
   Transformers、OpenPI 或 LeRobot，因此可以由 RoboTwin 环境直接导入。

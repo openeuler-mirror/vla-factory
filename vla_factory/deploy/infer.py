@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import importlib
+import re
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +27,151 @@ from vla_factory.utils.constants import (
     FINAL_DIR, MODEL_WEIGHTS_FILE,
 )
 from vla_factory.model.registry import get_entry
-
 logger = logging.getLogger(__name__)
+
+
+def _validated_actions(value: Any, *, name: str) -> np.ndarray:
+    actions = np.asarray(value, dtype=np.float32)
+    if actions.ndim != 2 or 0 in actions.shape:
+        raise ValueError(f"{name} must be a non-empty [steps, action_dim] array; got {actions.shape}.")
+    if not np.isfinite(actions).all():
+        raise ValueError(f"{name} contains NaN or infinite values.")
+    return np.ascontiguousarray(actions)
+
+
+@dataclass(frozen=True)
+class ActionChunk:
+    values: np.ndarray
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _validated_actions(self.values, name="ActionChunk"))
+
+    @property
+    def horizon(self) -> int:
+        return self.values.shape[0]
+
+    @property
+    def action_dim(self) -> int:
+        return self.values.shape[1]
+
+
+@dataclass(frozen=True)
+class ActionCommand:
+    values: np.ndarray
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", _validated_actions(self.values, name="ActionCommand"))
+
+    @property
+    def num_steps(self) -> int:
+        return self.values.shape[0]
+
+    def single(self) -> np.ndarray:
+        if self.num_steps != 1:
+            raise ValueError(f"A single-step command was required, got {self.num_steps} steps.")
+        return self.values[0]
+
+
+class ExecutionStrategy(str, Enum):
+    SYNCHRONOUS = "synchronous"
+    TEMPORAL_ENSEMBLING = "temporal_ensembling"
+    RECEDING_HORIZON = "receding_horizon"
+
+
+class ExecutionPolicy:
+    def __init__(self, strategy: ExecutionStrategy, action_horizon: int, action_dim: int, n_action_steps: int) -> None:
+        if action_horizon < 1 or action_dim < 1:
+            raise ValueError("action_horizon and action_dim must be positive")
+        self.strategy, self.action_horizon = strategy, action_horizon
+        self.action_dim, self.n_action_steps = action_dim, n_action_steps
+        self._chunks: deque[np.ndarray] = deque()
+        self._actions: deque[np.ndarray] = deque()
+
+    @property
+    def needs_chunk(self) -> bool:
+        return self.strategy != ExecutionStrategy.RECEDING_HORIZON or not self._actions
+
+    def _require(self, chunk: ActionChunk | None) -> np.ndarray:
+        if chunk is None:
+            raise ValueError("This execution step requires an ActionChunk.")
+        expected = (self.action_horizon, self.action_dim)
+        if chunk.values.shape != expected:
+            raise ValueError(f"ActionChunk shape mismatch: expected {expected}, got {chunk.values.shape}.")
+        return chunk.values
+
+    def consume(self, chunk: ActionChunk | None) -> ActionCommand:
+        if self.strategy == ExecutionStrategy.SYNCHRONOUS:
+            return ActionCommand(self._require(chunk)[: self.n_action_steps])
+        if self.strategy == ExecutionStrategy.TEMPORAL_ENSEMBLING:
+            actions = self._require(chunk)
+            self._chunks.append(actions)
+            if len(self._chunks) > self.action_horizon:
+                self._chunks.popleft()
+            count = len(self._chunks)
+            values = [self._chunks[i][count - 1 - i] for i in range(count)]
+            weights = np.array([1.0 / (count - i) for i in range(count)])
+            return ActionCommand(np.average(values, weights=weights, axis=0)[None, :])
+        if self._actions:
+            if chunk is not None:
+                raise ValueError("A new chunk cannot be supplied during playback.")
+        else:
+            self._actions.extend(self._require(chunk)[: self.n_action_steps])
+        return ActionCommand(self._actions.popleft()[None, :])
+
+    def reset(self) -> None:
+        self._chunks.clear()
+        self._actions.clear()
+
+
+def build_execution_policy(strategy: ExecutionStrategy | str, *, action_horizon: int, action_dim: int, n_action_steps: int | None = None) -> ExecutionPolicy:
+    try:
+        strategy = ExecutionStrategy(strategy)
+    except ValueError as exc:
+        raise ValueError(f"Unknown execution strategy {strategy!r}.") from exc
+    steps = action_horizon if n_action_steps is None else n_action_steps
+    if not 1 <= steps <= action_horizon:
+        raise ValueError(f"n_action_steps must satisfy 1 <= n_action_steps <= action_horizon; got {steps}.")
+    if strategy == ExecutionStrategy.TEMPORAL_ENSEMBLING and n_action_steps not in (None, 1):
+        raise ValueError("temporal_ensembling always emits one step; n_action_steps must be omitted or 1.")
+    return ExecutionPolicy(strategy, action_horizon, action_dim, steps)
+
+
+class PolicyExecutor:
+    def __init__(self, engine: "InferenceEngine", execution_policy: ExecutionPolicy) -> None:
+        self.engine, self.execution_policy = engine, execution_policy
+
+    def predict(self, obs: Any) -> ActionCommand:
+        chunk = self.engine.predict(obs) if self.execution_policy.needs_chunk else None
+        return self.execution_policy.consume(chunk)
+
+    def reset(self) -> None:
+        self.engine.reset()
+        self.execution_policy.reset()
+
+
+class ReplayPolicy:
+    """Replay recorded actions without running model inference.
+
+    An executable-policy stand-in occupying the same slot as
+    :class:`PolicyExecutor` (``predict → ActionCommand``, ``reset``), used to
+    validate deployment integrations end to end without a real model.
+    """
+
+    def __init__(self, episode_data: list[dict]) -> None:
+        self.data = episode_data
+        self._index = 0
+
+    def predict(self, obs: "ObsDict") -> ActionCommand:
+        if self._index >= len(self.data):
+            raise StopIteration("Episode replay exhausted")
+        action = np.asarray(self.data[self._index]["action"], dtype=np.float32)
+        self._index += 1
+        if action.ndim == 1:
+            action = action[None, :]
+        return ActionCommand(action)
+
+    def reset(self) -> None:
+        self._index = 0
 
 
 def infer_from_dataset_sample(
@@ -58,7 +202,6 @@ def infer_from_dataset_sample(
     engine = InferenceEngine(
         checkpoint_path=checkpoint,
         device=device,
-        execution_strategy="synchronous",  # full chunk for smoke test
     )
 
     # ── 2. Load raw frame from dataset via format reader ─────────────
@@ -110,7 +253,7 @@ def infer_from_dataset_sample(
     gt_raw = np.stack(gt_list, axis=0)
 
     # ── 5. Predict via InferenceEngine (normalize → model → unnormalize)
-    actions_raw = engine.predict(obs)  # [H, D], raw scale
+    actions_raw = engine.predict(obs).values  # [H, D], raw scale
 
     # ── 6. Optionally save ───────────────────────────────────────────
     if output is not None:
@@ -328,30 +471,18 @@ class InferenceEngine:
         Torch device.  Default: auto-detect.
     camera_names : list[str] | None
         Override camera key ordering.  Default: read from saved schema.
-    execution_strategy : str
-        One of ``"synchronous"``, ``"temporal_ensembling"``,
-        ``"receding_horizon"``.
+    ``predict`` always returns a complete :class:`ActionChunk`. Deployment
+    execution strategies are composed with this engine by :class:`PolicyExecutor`.
     """
-
-    _STRATEGIES = ("synchronous", "temporal_ensembling", "receding_horizon")
 
     def __init__(
         self,
         checkpoint_path: str | Path,
         device: str | None = None,
         camera_names: list[str] | None = None,
-        execution_strategy: str = "synchronous",
-        n_action_steps: int | None = None,
     ) -> None:
-        if execution_strategy not in self._STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy {execution_strategy!r}. "
-                f"Choose from: {self._STRATEGIES}"
-            )
-
         checkpoint_path = Path(checkpoint_path)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.execution_strategy = execution_strategy
 
         # ── 1. Load saved metadata ────────────────────────────────
         schema, norm_stats, recipe = _load_saved_metadata(checkpoint_path)
@@ -382,14 +513,12 @@ class InferenceEngine:
 
         # ── 1.5 Resolve canonical state/action key order ─────────
         # The dimension→key mapping is a data/model contract, never invented by
-        # sorting. ``schema`` here came from the checkpoint's schema.json, which
-        # may be stale (no ``names`` at train time); ``resolve_vector_keys``
-        # auto-heals it from the live dataset pointed at by the recipe. This is
-        # what un-scrambles the state/action vectors on the real robot.
-        # Lenient: if neither source yields keys it warns and returns empty —
-        # only platforms that reassemble vectors from per-motor keys (lerobot
-        # host) actually need them, and they fail clearly at adapter build time.
-        self.state_keys, self.action_keys = resolve_vector_keys(self.schema, self.recipe)
+        # sorting. It was resolved from the dataset feature ``names`` at train
+        # time and saved into the checkpoint's schema.json — the sole source
+        # here; the training dataset is never re-read at inference time.
+        # Missing or mismatched keys mean the checkpoint metadata is incomplete
+        # and fail here before any platform adapter is constructed.
+        self.state_keys, self.action_keys = resolve_vector_keys(self.schema)
         self.schema = replace(
             self.schema,
             state_keys=self.state_keys,
@@ -442,19 +571,12 @@ class InferenceEngine:
             transform_inputs, tctx
         )
 
-        # ── 4. Chunking state ─────────────────────────────────────
-        self._chunk_buffer: deque[np.ndarray] = deque()
-        self._playback_buffer: deque[np.ndarray] = deque()
-        # Actions executed open-loop per predicted chunk before re-predicting
-        # (mirrors lerobot's n_action_steps; default = play the full chunk).
-        self.n_action_steps = n_action_steps if n_action_steps is not None else self.action_horizon
-
         logger.info(
             "InferenceEngine ready: model=%s checkpoint=%s cameras=%s "
-            "action_dim=%d action_horizon=%d strategy=%s device=%s",
+            "action_dim=%d action_horizon=%d device=%s",
             recipe.model_name, ckpt_file, self.camera_keys,
             self.action_dim, self.action_horizon,
-            execution_strategy, self.device,
+            self.device,
         )
         logger.info(
             "Resolved vector keys — state=%s action=%s",
@@ -463,28 +585,16 @@ class InferenceEngine:
 
     # ── Public API ────────────────────────────────────────────────
 
-    def predict(self, obs: ObsDict) -> np.ndarray:
-        """Run inference: ObsDict → action array.
-
-        Returns
-        -------
-        np.ndarray
-            Shape depends on strategy:
-            - ``synchronous``: ``[action_horizon, action_dim]``
-            - ``temporal_ensembling``: ``[action_dim]``
-            - ``receding_horizon``: ``[action_dim]``
-        """
-        if self.execution_strategy == "synchronous":
-            return self._predict_chunk(obs)
-        elif self.execution_strategy == "temporal_ensembling":
-            return self._predict_with_ensembling(obs)
-        else:
-            return self._predict_receding(obs)
+    def predict(self, obs: ObsDict) -> ActionChunk:
+        """Run inference and always return a strict ``[H, D]`` action chunk."""
+        return self._predict_chunk(obs)
 
     def reset(self) -> None:
-        """Clear internal chunk buffers (call on episode reset)."""
-        self._chunk_buffer.clear()
-        self._playback_buffer.clear()
+        """Reset model-side inference state.
+
+        Chunk playback state belongs to the separate execution policy.
+        """
+        return None
 
     # ── Observation conversion ─────────────────────────────────────
 
@@ -509,8 +619,9 @@ class InferenceEngine:
             sample["state"] = obs.state.astype(np.float32)
         # task_tokenize reads sample["task"] → tokenized_prompt(_mask).
         # ObsDict.language carries the frame's task text (lerobot reader fills
-        # Frame.language); without it, language-conditioned models (pi0) get
-        # tokenized_prompt=None and crash at the embed layer.
+        # Frame.language); without it, task_tokenize falls back to default_task
+        # or an empty prompt (with a one-time warning) — the prompt tensor is
+        # never missing, but language conditioning degrades for models like pi0.
         if obs.language is not None:
             sample["task"] = obs.language
 
@@ -555,10 +666,10 @@ class InferenceEngine:
             tokenized_prompt_mask=tokenized_prompt_mask,
         )
 
-    # ── Execution strategies ───────────────────────────────────────
+    # ── Chunk prediction ───────────────────────────────────────────
 
     @torch.inference_mode()
-    def _predict_chunk(self, obs: ObsDict) -> np.ndarray:
+    def _predict_chunk(self, obs: ObsDict) -> ActionChunk:
         """Core inference: forward(obs) → model → reverse(actions) → [H, D] array."""
         observation = self._obs_to_observation(obs)
         actions = self._model.predict_actions(
@@ -571,6 +682,10 @@ class InferenceEngine:
             actions_np = np.asarray(actions)
         if actions_np.ndim == 3:
             actions_np = actions_np[0]
+        elif actions_np.ndim == 1:
+            # Non-chunk policies are represented as a one-step chunk. A model
+            # configured with an action horizon > 1 must still return a chunk.
+            actions_np = actions_np[None, :]
 
         # Reverse: un-normalise (and, in future, delta→absolute) via the
         # postprocessor. Raw obs.state is threaded through for the future
@@ -581,44 +696,11 @@ class InferenceEngine:
             post_sample["state"] = obs.state.astype(np.float32)
         post_sample = self.postprocessor(post_sample)
 
-        return post_sample["actions"].astype(np.float32)
-
-    def _predict_with_ensembling(self, obs: ObsDict) -> np.ndarray:
-        """Temporal ensembling: buffer chunks, weighted average overlapping predictions."""
-        chunk = self._predict_chunk(obs)  # [H, D]
-        self._chunk_buffer.append(chunk)
-
-        # Trim buffer to action_horizon length
-        max_buffer = chunk.shape[0]
-        if len(self._chunk_buffer) > max_buffer:
-            self._chunk_buffer.popleft()
-
-        # Temporal ensembling of overlapping chunks (à la lerobot ACT): each call
-        # advances time by one step, so every buffered chunk has a prediction that
-        # corresponds to the *current* timestep. Chunk i (i steps old) reaches that
-        # timestep at index `step_idx - i` within its own H-step horizon.
-        buf_len = len(self._chunk_buffer)
-        step_idx = buf_len - 1
-        predictions = [self._chunk_buffer[i][step_idx - i] for i in range(buf_len)]
-        # Recency weighting (harmonic): the freshest chunk (i = buf_len-1) gets
-        # weight 1/1, the oldest gets 1/buf_len — emphasise the most recent
-        # prediction while still smoothing across the overlapping chunks.
-        weights = np.array([1.0 / (buf_len - i) for i in range(buf_len)])
-        result = np.average(predictions, weights=weights, axis=0)
-        return result.astype(np.float32)
-
-    def _predict_receding(self, obs: ObsDict) -> np.ndarray:
-        """Receding horizon: predict a chunk, play ``n_action_steps`` steps, re-predict when exhausted.
-
-        Mirrors lerobot's ``ACTPolicy.select_action`` queue: predict once, yield the next
-        ``n_action_steps`` actions across successive calls (ignoring the incoming obs while
-        the buffer drains — open-loop playback), then re-predict on the latest obs. This is
-        required for chunked policies like ACT whose grasp lives deeper in the chunk.
-        """
-        if self._playback_buffer:
-            return self._playback_buffer.popleft()
-        chunk = self._predict_chunk(obs)  # [H, D]
-        n = min(self.n_action_steps, len(chunk))
-        for i in range(n):
-            self._playback_buffer.append(chunk[i])
-        return self._playback_buffer.popleft()
+        chunk = ActionChunk(post_sample["actions"])
+        expected_shape = (self.action_horizon, self.action_dim)
+        if chunk.values.shape != expected_shape:
+            raise ValueError(
+                "Model action chunk shape does not match checkpoint metadata: "
+                f"expected {expected_shape}, got {chunk.values.shape}."
+            )
+        return chunk

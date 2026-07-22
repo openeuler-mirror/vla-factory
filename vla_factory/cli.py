@@ -17,7 +17,7 @@ import sys
 def main():
     parser = argparse.ArgumentParser(
         prog="vlafactory-cli",
-        description="VLA Factory: fine-tune robot models.",
+        description="VLA Factory: train and deploy robot models.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -97,72 +97,74 @@ def main():
     infer_parser.add_argument("--device", default=None, help="Torch device.")
     infer_parser.add_argument("--output", default=None, help="Save results as .npz.")
 
-    # ── serve ──
-    serve_parser = subparsers.add_parser(
-        "serve",
-        help="Serve a checkpoint as a ZMQ inference client.",
+    # ── deploy ──
+    deploy_parser = subparsers.add_parser(
+        "deploy",
+        help="Deploy a checkpoint to a simulator or robot platform.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--checkpoint", required=True,
         help="Checkpoint root (must have inference_metadata/).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--remote-ip", default="127.0.0.1",
         help="Simulator host IP.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--port-zmq-cmd", type=int, default=5555,
         help="Port to send actions.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--port-zmq-observations", type=int, default=5556,
         help="Port to receive observations.",
     )
-    serve_parser.add_argument("--device", default=None, help="Torch device.")
-    serve_parser.add_argument(
-        "--strategy", default="receding_horizon",
+    deploy_parser.add_argument("--device", default=None, help="Torch device.")
+    deploy_parser.add_argument(
+        "--strategy", default=None,
         choices=["synchronous", "temporal_ensembling", "receding_horizon"],
-        help="Action chunking execution strategy.",
+        help="Action chunk execution strategy. Defaults to synchronous for "
+             "RoboTwin and receding_horizon for other platforms.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--camera-names", nargs="*", default=None,
         help="Camera names (default: from saved schema).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--platform", default="simulator",
         choices=["simulator", "lerobot", "robotwin"],
         help="Target platform / wire format. 'simulator' uses observation.images.X / observation.state keys; "
              "'lerobot' uses the lerobot host format (per-motor state scalars + base64 JPEG cameras); "
              "'robotwin' runs a RoboTwin-compatible TCP model server (the RoboTwin simulator connects as client).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--host", default="0.0.0.0",
         help="Bind address for the 'robotwin' TCP model server.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--port", type=int, default=9999,
         help="TCP port for the 'robotwin' model server (must match the RoboTwin client's --port).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--task", default="",
         help="Task instruction (for language-conditioned policies).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--max-loop-freq-hz", type=float, default=60.0,
         help="Client loop frequency cap (must be positive).",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--polling-timeout-ms", type=int, default=1000,
         help="ZMQ observation polling timeout in milliseconds.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--connect-timeout-s", type=float, default=0.0,
         help="Initial connection timeout. 0 = wait forever.",
     )
-    serve_parser.add_argument(
+    deploy_parser.add_argument(
         "--n-action-steps", type=int, default=None,
-        help="Actions executed per predicted chunk before re-predicting (lerobot n_action_steps). "
-             "Default: action_horizon (play the full chunk). Lower = more reactive feedback.",
+        help="Steps selected from each predicted chunk. Synchronous returns this "
+             "prefix; receding-horizon plays it one step per observation. "
+             "Must be in [1, action_horizon]. Temporal ensembling requires 1 or omission.",
     )
 
 
@@ -236,7 +238,6 @@ def main():
         engine = InferenceEngine(
             checkpoint_path=args.checkpoint,
             device=args.device,
-            execution_strategy="synchronous",
         )
         reader = get_reader(engine.recipe.data.source.format, path=data_path)
         codec = resolve_codec(engine.recipe.data.source.video_codec)
@@ -283,7 +284,7 @@ def main():
                     continue
                 gt_raw = np.stack(gt_list, axis=0)
 
-                pred_raw = engine.predict(obs)[:len(gt_raw)]
+                pred_raw = engine.predict(obs).values[:len(gt_raw)]
                 frame_losses = np.abs(pred_raw - gt_raw).mean(axis=1)
                 ep_loss += frame_losses.sum()
                 ep_count += len(gt_raw)
@@ -343,161 +344,124 @@ def main():
         for k, v in result.items():
             print(f"  {k}: {v}")
 
-    elif args.command == "serve":
+    elif args.command == "deploy":
         import torch
+        from vla_factory.deploy.infer import (
+            PolicyExecutor,
+            build_execution_policy,
+        )
         from vla_factory.deploy.infer import InferenceEngine
-        from vla_factory.deploy.transport import ZMQTransport
         if args.max_loop_freq_hz <= 0:
             parser.error("--max-loop-freq-hz must be a positive number")
         device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        # RoboTwin executes a full predicted chunk per get_action, so it needs the
-        # synchronous strategy (predict → [action_horizon, action_dim]).
-        strategy = "synchronous" if args.platform == "robotwin" else args.strategy
         engine = InferenceEngine(
             checkpoint_path=args.checkpoint,
             device=device,
             camera_names=args.camera_names,
-            execution_strategy=strategy,
+        )
+        strategy = args.strategy or (
+            "synchronous" if args.platform == "robotwin" else "receding_horizon"
+        )
+        execution_policy = build_execution_policy(
+            strategy,
+            action_horizon=engine.action_horizon,
+            action_dim=engine.action_dim,
             n_action_steps=args.n_action_steps,
         )
+        policy = PolicyExecutor(engine, execution_policy)
 
-        if args.platform == "lerobot":
-            import json as _json
-            import time
-            import zmq
-            from vla_factory.deploy.lerobot_host_adapter import (
-                LerobotHostObsAdapter,
-                LerobotHostActionAdapter,
+        if args.platform == "robotwin":
+            from vla_factory.deploy.platforms.robotwin import RoboTwinAdapter
+            from vla_factory.deploy.policy_runtime import RemotePolicyModel
+            from vla_factory.deploy.transports.length_prefixed_json import (
+                LengthPrefixedJsonRpcServer,
             )
 
-            # Motor-key mapping is a resolved data/model contract (dataset
-            # `names` → recipe embodiment), never invented by sorting. This is
-            # what keeps each action dimension driving the motor it was
-            # trained on instead of scrambling them.
-            obs_adapter = LerobotHostObsAdapter(
-                camera_keys=engine.camera_keys,
-                state_keys=engine.state_keys,
-                state_dim=engine.schema.state_dim,
-            )
-            act_adapter = LerobotHostActionAdapter(
-                action_dim=engine.action_dim,
-                action_keys=engine.action_keys,
-            )
-
-            context = zmq.Context()
-            cmd_socket = context.socket(zmq.PUSH)
-            cmd_socket.connect(f"tcp://{args.remote_ip}:{args.port_zmq_cmd}")
-            cmd_socket.setsockopt(zmq.CONFLATE, 1)
-
-            obs_socket = context.socket(zmq.PULL)
-            obs_socket.connect(f"tcp://{args.remote_ip}:{args.port_zmq_observations}")
-            obs_socket.setsockopt(zmq.CONFLATE, 1)
-
-            poller = zmq.Poller()
-            poller.register(obs_socket, zmq.POLLIN)
-
-            print(f"[serve] Model: {engine.recipe.model_name}", flush=True)
-            print(f"[serve] Strategy: {args.strategy}", flush=True)
-            print(f"[serve] Device: {device}", flush=True)
-            print(f"[serve] Platform: lerobot (state_keys={list(engine.state_keys)}, "
-                  f"action_keys={list(engine.action_keys)})", flush=True)
-            print(f"[serve] Connecting to {args.remote_ip}:{args.port_zmq_observations}/{args.port_zmq_cmd}", flush=True)
-
-            # Wait for first observation (connection confirmation)
-            if args.connect_timeout_s > 0:
-                socks = dict(poller.poll(int(args.connect_timeout_s * 1000)))
-                if obs_socket not in socks or socks[obs_socket] != zmq.POLLIN:
-                    print("[serve] Timeout waiting for host observations.", flush=True)
-                    sys.exit(1)
-            else:
-                last_log = 0.0
-                while True:
-                    socks = dict(poller.poll(1000))
-                    if obs_socket in socks and socks[obs_socket] == zmq.POLLIN:
-                        break
-                    now = time.time()
-                    if now - last_log >= 5.0:
-                        print("[serve] Waiting for host observations...", flush=True)
-                        last_log = now
-
-            print("[serve] Connected. Running inference loop.", flush=True)
-
-            try:
-                while True:
-                    loop_start = time.time()
-
-                    # Recv latest observation: poll then drain. A bare NOBLOCK-drain loop
-                    # starves a CONFLATE PULL (only the first message arrives); polling first
-                    # matches lerobot's LeKiwiClient and keeps the pipe delivering.
-                    poller = zmq.Poller()
-                    poller.register(obs_socket, zmq.POLLIN)
-                    socks = dict(poller.poll(args.polling_timeout_ms))
-                    latest_raw = None
-                    if obs_socket in socks and socks[obs_socket] == zmq.POLLIN:
-                        while True:
-                            try:
-                                latest_raw = obs_socket.recv_string(zmq.NOBLOCK)
-                            except zmq.Again:
-                                break
-                    if latest_raw is None:
-                        time.sleep(max(1.0 / args.max_loop_freq_hz - (time.time() - loop_start), 0.0))
-                        continue
-
-                    # lerobot host format → ObsDict → predict → motor-key action dict
-                    observation = _json.loads(latest_raw)
-                    obs = obs_adapter(observation, task=args.task)
-                    action = engine.predict(obs)
-                    action_dict = act_adapter(action)
-                    cmd_socket.send_string(_json.dumps(action_dict), flags=zmq.NOBLOCK)
-
-                    elapsed = time.time() - loop_start
-                    time.sleep(max(1.0 / args.max_loop_freq_hz - elapsed, 0.0))
-
-            except KeyboardInterrupt:
-                print("[serve] Keyboard interrupt. Exiting.", flush=True)
-            finally:
-                obs_socket.close(linger=0)
-                cmd_socket.close(linger=0)
-                context.term()
-
-        elif args.platform == "robotwin":
-            from vla_factory.deploy.robotwin_adapter import RobotwinObsAdapter
-            from vla_factory.deploy.robotwin_server import (
-                RobotwinEngineModel,
-                RobotwinModelServer,
-            )
-
-            adapter = RobotwinObsAdapter(
+            adapter = RoboTwinAdapter(
                 camera_keys=engine.camera_keys,
                 state_dim=engine.schema.state_dim,
             )
-            model = RobotwinEngineModel(
-                engine, adapter, task=args.task, n_action_steps=args.n_action_steps,
+            model = RemotePolicyModel(
+                policy, adapter, task=args.task,
             )
-            server = RobotwinModelServer(model, host=args.host, port=args.port)
+            server = LengthPrefixedJsonRpcServer(
+                model, host=args.host, port=args.port,
+            )
 
-            print(f"[serve] Model: {engine.recipe.model_name}", flush=True)
-            print(f"[serve] Device: {device}", flush=True)
-            print(f"[serve] Platform: robotwin (cameras={list(engine.camera_keys)}, "
+            print(f"[deploy] Model: {engine.recipe.model_name}", flush=True)
+            print(f"[deploy] Device: {device}", flush=True)
+            print(f"[deploy] Platform: robotwin (cameras={list(engine.camera_keys)}, "
                   f"state_dim={engine.schema.state_dim}, action_dim={engine.action_dim})", flush=True)
-            print(f"[serve] Listening on {args.host}:{args.port} — start the RoboTwin "
+            print(f"[deploy] Listening on {args.host}:{args.port} — start the RoboTwin "
                   f"client with matching --port.", flush=True)
             server.serve_forever()
 
         else:
-            # Default: simulator platform (observation.images.X keys)
-            transport = ZMQTransport(
+            # ZMQ-host platforms (simulator / lerobot) share one client-shaped
+            # deployment loop; the platform difference is only the adapters.
+            from vla_factory.deploy.policy_runtime import PolicyRunner
+            from vla_factory.deploy.transports.zmq import (
+                ZmqPolicyClient,
+                ZmqPolicyClientConfig,
+            )
+
+            if args.platform == "lerobot":
+                from vla_factory.deploy.platforms.lerobot import (
+                    LerobotHostObsAdapter,
+                    LerobotHostActionAdapter,
+                )
+
+                # Motor-key mapping is a resolved data/model contract (dataset
+                # `names` → recipe embodiment), never invented by sorting. This
+                # is what keeps each action dimension driving the motor it was
+                # trained on instead of scrambling them.
+                obs_adapter = LerobotHostObsAdapter(
+                    camera_keys=engine.camera_keys,
+                    state_keys=engine.state_keys,
+                    state_dim=engine.schema.state_dim,
+                )
+                action_adapter = LerobotHostActionAdapter(
+                    action_dim=engine.action_dim,
+                    action_keys=engine.action_keys,
+                )
+                platform_desc = (
+                    f"lerobot (state_keys={list(engine.state_keys)}, "
+                    f"action_keys={list(engine.action_keys)})"
+                )
+            else:
+                # Default: simulator platform (observation.images.X keys)
+                from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+
+                obs_adapter = SimulatorAdapter(engine.camera_keys)
+                action_adapter = None
+                platform_desc = f"simulator (cameras={list(engine.camera_keys)})"
+
+            runner = PolicyRunner(
+                policy,
+                obs_adapter,
+                action_adapter,
+                task=args.task,
+                max_loop_freq_hz=args.max_loop_freq_hz,
+            )
+            client = ZmqPolicyClient(ZmqPolicyClientConfig(
                 remote_ip=args.remote_ip,
                 port_zmq_cmd=args.port_zmq_cmd,
                 port_zmq_observations=args.port_zmq_observations,
                 polling_timeout_ms=args.polling_timeout_ms,
                 connect_timeout_s=args.connect_timeout_s,
-                max_loop_freq_hz=args.max_loop_freq_hz,
-            )
-            print(f"[serve] Model: {engine.recipe.model_name}", flush=True)
-            print(f"[serve] Strategy: {args.strategy}", flush=True)
-            print(f"[serve] Device: {device}", flush=True)
-            transport.serve(engine)
+            ))
+
+            print(f"[deploy] Model: {engine.recipe.model_name}", flush=True)
+            print(f"[deploy] Strategy: {strategy}", flush=True)
+            print(f"[deploy] Device: {device}", flush=True)
+            print(f"[deploy] Platform: {platform_desc}", flush=True)
+            print(f"[deploy] Connecting to {args.remote_ip}:"
+                  f"{args.port_zmq_observations}/{args.port_zmq_cmd}", flush=True)
+            try:
+                runner.run(client)
+            except TimeoutError:
+                print("[deploy] Timeout waiting for host observations.", flush=True)
+                sys.exit(1)
 
     else:
         parser.print_help()
