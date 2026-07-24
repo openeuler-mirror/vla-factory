@@ -426,7 +426,7 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 详细设计见 [部署模块设计](../modules/deploy-module.cn.md)，其中展开说明：
 
 - 推理核心层、平台适配层、传输与远程服务层的职责边界。
-- `InferenceEngine`、`ObsDict`、平台 adapter、`Transport`、`RemotePolicyModel` 等核心对象。
+- `InferenceEngine`、`ObsDict`、平台 adapter、`PolicyRunner`、`RemotePolicyModel`、`ZmqPolicyClient`、`LengthPrefixedJsonRpcServer` 等核心对象。
 - ObsDict → Observation 前处理、后处理反变换，以及 synchronous / temporal_ensembling / receding_horizon 三种 action chunk 执行策略。
 - 进程内 / 远程两种服务形态（ZMQ 与 length-prefixed JSON RPC）以及零依赖 connector。
 - 新增平台 adapter、transport 和外置 connector 的扩展方式。
