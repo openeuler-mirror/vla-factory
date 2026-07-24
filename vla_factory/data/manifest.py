@@ -6,16 +6,8 @@ to find the raw data, without depending on any specific storage format.
 
 from __future__ import annotations
 
-import logging
 import random
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from vla_factory.config.recipe import TrainRecipe
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -206,90 +198,51 @@ def build_manifest(
 
 def resolve_vector_keys(
     schema: DataSchema,
-    recipe: TrainRecipe,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Best-effort resolution of the canonical per-dimension key order.
+    """Validate the canonical per-dimension key order carried by the schema.
 
     The dimension→key mapping is a *data/model contract*: it must come from
-    the dataset, never invented by sorting the host's motor keys (which would
-    scramble every dimension — e.g. the shoulder command driving the elbow).
+    the dataset feature ``names`` (resolved into the schema by the format
+    reader at training time and saved to ``inference_metadata/schema.json``),
+    never invented by sorting the host's motor keys (which would scramble
+    every dimension — e.g. the shoulder command driving the elbow). At
+    inference time the checkpoint schema is the sole source; the training
+    dataset is never re-read.
 
-    Resolution precedence (applied independently to state and action):
+    For every non-empty vector, the schema must contain exactly one key per
+    dimension. Missing or mismatched keys make the checkpoint metadata
+    incomplete and fail immediately. ``dim == 0`` is the only case where an
+    empty key tuple is valid.
 
-    1. ``schema.state_keys`` / ``schema.action_keys`` — populated from the
-       dataset feature ``names`` by ``LeRobotV3Reader.get_schema``.
-    2. Re-read the dataset ``info.json`` live via
-       ``get_reader(...).get_schema(...)`` using ``recipe.data.source.path``.
-       Auto-heals a stale checkpoint ``schema.json`` whose ``names`` were
-       absent at train time but present now.
-
-    This is deliberately **lenient**: if neither source yields keys, it logs
-    a warning and returns empty tuples rather than raising. The per-dimension
-    order is only actually needed by platforms that reassemble vectors from
-    per-motor keys (e.g. the lerobot host adapter); other platforms — and
-    datasets that simply don't carry ``names`` — should not be blocked by a
-    hard contract that doesn't apply to them. A platform that *does* need the
-    keys will fail clearly at its own adapter construction if they're missing.
-
-    Returns ``(state_keys, action_keys)`` as ordered tuples (possibly empty).
+    Returns ``(state_keys, action_keys)`` as ordered tuples.
     """
-    # ── Step 2: best-effort live re-read of the dataset schema ──────
-    live_schema: DataSchema | None = None
-    source_path = recipe.data.source.path
-    if source_path and Path(source_path).exists():
-        try:
-            from .formats import get_reader
-
-            reader = get_reader(recipe.data.source.format, path=Path(source_path))
-            live_schema = reader.get_schema(Path(source_path))
-        except Exception as exc:  # noqa: BLE001 — degrade gracefully, don't crash
-            logger.warning(
-                "Could not re-read dataset schema from %s for key resolution "
-                "(%s: %s).",
-                source_path, type(exc).__name__, exc,
-            )
-
-    live_state = live_schema.state_keys if live_schema else ()
-    live_action = live_schema.action_keys if live_schema else ()
-
-    state_keys = schema.state_keys or live_state
-    action_keys = schema.action_keys or live_action
-
-    state_keys = _validate_keys("state", state_keys, schema.state_dim)
-    action_keys = _validate_keys("action", action_keys, schema.action_dim)
-
+    state_keys = _validate_keys("state", schema.state_keys, schema.state_dim)
+    action_keys = _validate_keys("action", schema.action_keys, schema.action_dim)
     return state_keys, action_keys
 
 
 def _validate_keys(which: str, keys: tuple[str, ...], dim: int) -> tuple[str, ...]:
     """Check a resolved key list against the schema dimension.
 
-    ``dim == 0`` means the vector is absent (e.g. a stateless policy); empty
-    keys are correct and returned as-is. Missing keys (``dim > 0`` but no
-    keys resolved) or a count mismatch are **warnings, not errors**: empty
-    keys are returned so callers that don't need them are unaffected, while a
-    platform that does need them (e.g. lerobot host) will surface a clear
-    failure at its adapter.
+    ``dim == 0`` means the vector is absent (e.g. a stateless policy), so an
+    empty key tuple is valid. For ``dim > 0``, missing keys or a count mismatch
+    violate the self-contained schema contract and are errors.
     """
     if dim == 0:
         return ()
 
     if not keys:
-        logger.warning(
-            "Could not determine the canonical %s key order: the dataset has no "
-            "feature `names`. This is only required by platforms that reassemble "
-            "vectors from per-motor keys (e.g. lerobot host); other platforms "
-            "ignore it. Returning empty %s_keys.",
-            which, which,
+        raise ValueError(
+            f"schema.{which}_keys is empty, but schema.{which}_dim={dim}. "
+            "The dataset reader must provide exactly one canonical key per "
+            "vector dimension before inference metadata is saved."
         )
-        return ()
 
     if len(keys) != dim:
-        logger.warning(
-            "%s_keys length mismatch: resolved %d keys %s but schema.%s_dim=%d. "
-            "Returning empty %s_keys to avoid mis-ordering dimensions.",
-            which, len(keys), list(keys), which, dim, which,
+        raise ValueError(
+            f"schema.{which}_keys has {len(keys)} entries {list(keys)}, but "
+            f"schema.{which}_dim={dim}. Expected exactly one canonical key per "
+            "vector dimension."
         )
-        return ()
 
     return keys

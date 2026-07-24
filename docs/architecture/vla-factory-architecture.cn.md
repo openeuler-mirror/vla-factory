@@ -48,7 +48,7 @@ YAML recipe
 
 ## 1. 背景与挑战
 
-VLA Factory 的核心诉求是提供一个统一框架，解决机器人 VLA 模型工程链路高度碎片化的问题。这里的“统一”不是把所有模型、数据格式和运行平台改造成同一种实现，而是在数据、模型、训练、产物和验证之间建立稳定的工程契约，让不同来源的能力可以通过清晰边界接入同一条工作流。
+VLA Factory 的核心诉求是提供一个统一框架，解决机器人 VLA 模型工程链路高度碎片化的问题。这里的“统一”不是把所有模型、数据格式和运行平台改造成同一种实现，而是在数据、模型、训练、产物和验证之间建立稳定的工程标准，让不同来源的能力可以通过清晰边界接入同一条工作流。
 
 ### 1.1 统一框架的核心诉求
 
@@ -59,9 +59,9 @@ VLA Factory 的核心诉求是提供一个统一框架，解决机器人 VLA 模
 - 数据格式不统一：LeRobot、HDF5、RLDS、ROS bags 等格式在图像、状态、动作、episode 边界和统计量表达上各不相同。
 - 训练配置不统一：每个模型生态通常自带配置系统、训练入口、checkpoint 布局和超参命名，迁移实验时需要重新适配。
 - 模型接口不统一：不同上游模型对 observation、action、loss 计算、动作预测和 checkpoint 组织方式的假设不同，很难直接复用同一套训练与评估代码。
-- 产物契约不统一：训练完成后需要哪些 metadata、schema、norm stats 和配置快照，往往依赖项目约定，导致复现、调试和后续验证成本较高。
+- 产物标准不统一：训练完成后需要哪些 metadata、schema、norm stats 和配置快照，往往依赖项目约定，导致复现、调试和后续验证成本较高。
 
-因此，VLA Factory 旨在提供一套统一的 recipe、数据中间表示、模型注册表、训练入口和产物契约，把人工适配沉淀为可复用的模块边界。框架的首要目标是让用户用同一种方式描述实验、接入数据、选择模型、启动训练、生成产物和复用结果；其他能力应建立在这套统一契约之上，而不是另起一套并行路径。
+因此，VLA Factory 旨在提供一套统一的 recipe、数据中间表示、模型注册表、训练入口和产物标准，把人工适配沉淀为可复用的模块边界。框架的首要目标是让用户用同一种方式描述实验、接入数据、选择模型、启动训练、生成产物和复用结果；其他能力应建立在这套统一标准之上，而不是另起一套并行路径。
 
 ---
 
@@ -75,7 +75,7 @@ authoring recipe 是用户最高优先级的配置入口。VLA Factory 暴露的
 
 `vla_factory/config/model/<name>.yaml` 这类模型默认 profile 是 `model.config` 子树的默认值来源，不是运行时并行存在的另一份配置。它承载模型相关的基线设置，例如上游模型超参和默认 transform pipeline。训练入口会把选中的模型 profile 与 recipe 中的 `model.config` 做深度合并；recipe 中显式写出的字段优先于 profile 默认值，如果 CLI 对相关字段提供临时覆盖，则 CLI 优先级最高。合并后的 `model.config` 是数据 transform、模型 adapter、训练和部署共同消费的唯一模型配置。
 
-CLI 可以提供少量临时 override，例如 `--steps`、`--batch-size`、`--output-dir`，用于 smoke test 或调试，但 recipe 仍是主契约。
+CLI 可以提供少量临时 override，例如 `--steps`、`--batch-size`、`--output-dir`，用于 smoke test 或调试，但 recipe 仍是主标准。
 
 ### 2.2 适配优于复现
 
@@ -97,7 +97,7 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 
 参数访问、设备迁移、训练模式等能力按 backend 扩展，例如 PyTorch 模型实现 `parameters()`、`named_parameters()`、`train()`、`to()`。框架不要求所有模型都暴露相同的内部模块。
 
-### 2.4 数据契约与模型解耦
+### 2.4 数据标准与模型解耦
 
 数据模块输出统一的 observation/action 样本，模型模块只消费抽象后的 `Observation` 和 action tensor。数据格式中的字段路径、视频编码、episode 索引、统计量、向量 key 顺序都不应泄漏到模型实现内部。
 
@@ -126,7 +126,7 @@ recipe 是中心枢纽，其余四层都消费它。
 vla_factory/
 ├── examples/                      # recipe 示例和最小运行样例
 ├── docs/                          # 架构、使用说明和设计记录
-├── config/                        # recipe 解析、默认值合并和运行时配置契约
+├── config/                        # recipe 解析、默认值合并和运行时配置标准
 │   └── ...
 ├── data/                          # 数据格式接入、中间表示、采样、transform 和 dataloader
 │   ├── formats/                   # 外部数据格式 reader
@@ -142,10 +142,13 @@ vla_factory/
 │   ├── strategies/
 │   └── ...
 ├── deploy/                        # 推理引擎、平台 adapter、transport 和动作执行策略
+│   ├── connectors/                  # 远程机器人环境导入的轻量 connector 及其启动配置
+│   ├── platforms/                   # 平台原生 observation/action 与统一推理接口的适配
+│   ├── transports/                  # ZMQ、length-prefixed JSON RPC 等线协议与序列化
 │   └── ...
 ├── utils/                         # 跨模块共享的常量、工具函数和轻量辅助能力
 │   └── ...
-└── test/                          # 单元测试、契约测试和集成 smoke test
+└── test/                          # 单元测试、标准测试和集成 smoke test
 ```
 
 ---
@@ -277,7 +280,7 @@ model:
 - `schema.json`
 - `norm_stats.json`
 
-其中 `recipe.yaml` 保存的是 resolved recipe，也就是合并 CLI 覆盖、用户 recipe、模型默认 profile 和通用默认值之后的最终配置。部署、复现和问题排查都以这份 `recipe.yaml` 为准；用户原始 authoring recipe 可以由实验管理系统或版本控制保存，但不作为 checkpoint 的部署契约。这样 `InferenceEngine` 只需要读取一个配置文件，也保证了中间 checkpoint 能被直接加载，避免“只有训练结束后的 final checkpoint 才能部署”的限制。
+其中 `recipe.yaml` 保存的是 resolved recipe，也就是合并 CLI 覆盖、用户 recipe、模型默认 profile 和通用默认值之后的最终配置。部署、复现和问题排查都以这份 `recipe.yaml` 为准；用户原始 authoring recipe 可以由实验管理系统或版本控制保存，但不作为 checkpoint 的部署标准。这样 `InferenceEngine` 只需要读取一个配置文件，也保证了中间 checkpoint 能被直接加载，避免“只有训练结束后的 final checkpoint 才能部署”的限制。
 
 ---
 
@@ -285,7 +288,7 @@ model:
 
 ### 5.1 数据模块
 
-数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR，并进一步通过 transform pipeline、训练样本构建与批处理形成训练 batch；视频解码作为样本读取过程中的可替换能力使用。它同时为部署侧保存并复用 schema、norm stats 和 resolved recipe，保证训练与推理使用同一套数据契约。
+数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR，并进一步通过 transform pipeline、训练样本构建与批处理形成训练 batch；视频解码作为样本读取过程中的可替换能力使用。它同时为部署侧保存并复用 schema、norm stats 和 resolved recipe，保证训练与推理使用同一套数据标准。
 
 详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明：
 
@@ -418,62 +421,15 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 
 ### 5.4 部署模块
 
-部署模块的目标是把训练产物转成平台可调用的实时策略服务。
+部署模块负责把训练产物转成平台可调用的实时策略服务：从 checkpoint 重建与训练一致的推理链路（模型 + preprocessor / postprocessor），把各仿真器 / 真机平台的原生 observation 翻译成统一 `ObsDict`，运行模型前向，再按执行策略把归一化 action chunk 还原成平台可执行的动作命令。它以 checkpoint 中的 `inference_metadata`（recipe、schema、norm stats）为唯一事实来源，不重新扫描训练数据集，也不重新合并当前代码里的 model profile。
 
-#### 5.4.1 InferenceEngine
+详细设计见 [部署模块设计](../modules/deploy-module.cn.md)，其中展开说明：
 
-`InferenceEngine` 是部署核心。初始化时执行：
-
-1. 从 checkpoint 目录加载 `inference_metadata`。
-2. 根据 recipe 和 schema 创建模型。
-3. 解析 checkpoint 权重路径并加载 state dict。
-4. 构造与训练一致的 preprocessor 和 postprocessor。
-5. 解析 camera key、state key、action key。
-6. 初始化 action chunk 执行策略状态。
-
-推理时，平台 observation 先转成 `ObsDict`：
-
-```python
-ObsDict(
-    video={"front": np.ndarray, ...},
-    state=np.ndarray | None,
-    language=str | None,
-)
-```
-
-然后进入：
-
-```text
-ObsDict
-    -> Observation
-    -> preprocessor
-    -> model.predict_actions
-    -> postprocessor
-    -> raw action array
-```
-
-#### 5.4.2 Action Chunk 执行策略
-
-当前支持三种策略：
-
-- `synchronous`：一次返回完整 action chunk。
-- `temporal_ensembling`：对重叠 chunk 做时间集成，返回单步动作。
-- `receding_horizon`：预测一个 chunk，执行其中若干步后重新预测。
-
-`receding_horizon` 对 ACT 这类 chunked policy 很重要，因为关键动作可能出现在 chunk 深处，不能每次只取第一步。
-
-#### 5.4.3 Platform Adapter
-
-部署 adapter 负责平台线协议与 `ObsDict` / action dict 的互转。
-
-仿真器路径使用通用 ZMQ transport，约定 observation 中包含图像和 state 字段。
-
-lerobot 真机路径使用 `LerobotHostObsAdapter` 和 `LerobotHostActionAdapter`：
-
-- observation adapter 把逐电机 state 标量和 base64 图像转成 `ObsDict`。
-- action adapter 把 action 向量按 `action_keys` 还原成逐电机命令。
-
-state/action key 顺序来自训练时解析出的 schema 与 recipe 契约，不能在部署时临时排序生成。
+- 推理核心层、平台适配层、传输与远程服务层的职责边界。
+- `InferenceEngine`、`ObsDict`、平台 adapter、`PolicyRunner`、`RemotePolicyModel`、`ZmqPolicyClient`、`LengthPrefixedJsonRpcServer` 等核心对象。
+- ObsDict → Observation 前处理、后处理反变换，以及 synchronous / temporal_ensembling / receding_horizon 三种 action chunk 执行策略。
+- 进程内 / 远程两种服务形态（ZMQ 与 length-prefixed JSON RPC）以及零依赖 connector。
+- 新增平台 adapter、transport 和外置 connector 的扩展方式。
 
 ---
 
@@ -525,14 +481,14 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra �
 主要检查包括：
 
 - schema 检查：确认 state/action 维度、camera 列表、episode 数量、frame 数量符合 recipe 和模型要求。
-- state/action key 顺序检查：确认 key 顺序可解析，并写入 schema。state/action 向量的维度顺序是数据与机器人之间的强契约，部署阶段应优先复用训练阶段解析出的顺序。
+- state/action key 顺序检查：确认 key 顺序可解析，并写入 schema。state/action 向量的维度顺序是数据与机器人之间的强标准，部署阶段应优先复用训练阶段解析出的顺序。
 - episode split 检查：默认以 episode 为单位做 train/val split，降低相邻帧泄漏导致的虚假验证效果。
 - 样本索引检查：确认滑窗采样不会产生越界样本，train/val split 不为空。
 - 数值检查：确认 state/action 中不存在 NaN、Inf 或明显超出预期范围的值。
 - 图像检查：确认图像能解码，shape、通道数和 dtype 符合 transform 预期。
 - 统计量检查：确认 norm stats 与数据维度一致。
 
-对于可自动修复的问题应记录 warning；对于会破坏训练语义的问题应直接失败。如果缺少 state/action key 信息，系统可以对不需要逐 key 还原的平台保持宽松，但对 lerobot 真机这类必须按电机名发命令的平台，应在 adapter 构造或发送前明确失败。
+对于可自动修复的问题应记录 warning；对于会破坏训练语义的问题应直接失败。state/action 的维度大于零时，keys 必须存在且数量与维度完全一致；缺失或不匹配说明 checkpoint metadata 不完整，应在训练写出 metadata 前或部署加载 checkpoint 时直接失败，不能按平台放宽，也不能回退读取 live dataset。
 
 ### 7.2 训练可靠性
 
@@ -598,7 +554,7 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra �
 
 > TODO：本章描述的是后续需要补齐的测试策略，目前作为测试覆盖目标和回归检查清单保留。
 
-测试应覆盖从配置解析到训练、推理和部署 adapter 的关键契约。
+测试应覆盖从配置解析到训练、推理和部署 adapter 的关键标准。
 
 ### 8.1 配置测试
 
@@ -653,7 +609,7 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra �
 
 ### 8.6 回归测试原则
 
-凡是修复过的契约问题，都应固化为测试，尤其是：
+凡是修复过的标准问题，都应固化为测试，尤其是：
 
 - state/action key 顺序。
 - action dim padding 与反向裁剪。
@@ -667,7 +623,7 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra �
 
 VLA 是当前具身智能的主流路线之一，覆盖视觉、语言和动作三个模态。它未必是具身智能的最终模型形态，但在当前阶段具有很强代表性：学术界和工业界仍在围绕 VLA 的数据、模型、后训练和部署持续产生新方法。因此，VLA Factory 的演进目标不仅是做一个可用的微调工具，也是在 VLA 这条技术路线下探索基础软件应该如何设计。
 
-换句话说，VLA Factory 是一个工程框架，也是一个研究载体。它借助统一的 recipe、数据契约、模型 adapter、训练引擎和部署引擎，持续研究以下问题：
+换句话说，VLA Factory 是一个工程框架，也是一个研究载体。它借助统一的 recipe、数据标准、模型 adapter、训练引擎和部署引擎，持续研究以下问题：
 
 - 数据如何被采集、清洗、标定、转换和复用。
 - VLA 与模仿学习模型如何低成本微调、续训和后训练。
@@ -703,22 +659,22 @@ VLA 是当前具身智能的主流路线之一，覆盖视觉、语言和动作�
 
 纵向演进更强调技术积累，需要从实际场景不断迭代，而不是只做接口适配。尤其是部署方向，具身模型比 LLM/VLM 多了 action 层，并且常常运行在端侧闭环中，不能简单复用 LLM/VLM 的部署设施。动作输出的实时性、稳定性、合法性和安全边界，是具身基础设施需要单独研究的问题。
 
-### 9.3 契约抽象：把模型特有技巧沉淀为框架能力
+### 9.3 标准抽象：把模型特有技巧沉淀为框架能力
 
-VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成框架级能力，从而让其他模型复用。典型例子是 delta action：如果它最初只在某个模型中使用，但框架把动作变换、归一化、反归一化和部署还原抽象成统一 transform，那么其他 VLA 模型也可以基于同一套数据和训练契约尝试 delta action 微调。
+VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成框架级能力，从而让其他模型复用。典型例子是 delta action：如果它最初只在某个模型中使用，但框架把动作变换、归一化、反归一化和部署还原抽象成统一 transform，那么其他 VLA 模型也可以基于同一套数据和训练标准尝试 delta action 微调。
 
 这类抽象应遵循以下原则：
 
 - trick 不直接写死在某个模型 adapter 内，而是沉淀到数据 transform、训练策略、action spec 或部署 postprocessor 中。
 - 抽象后的能力应尽量跨模型复用，但允许模型通过 metadata 或 recipe 声明是否启用。
 - 训练和部署必须共享同一套语义，不能只在训练侧生效。
-- 每个抽象都应有可测试的输入输出契约，避免“看似通用，实际只服务一个模型”。
+- 每个抽象都应有可测试的输入输出标准，避免“看似通用，实际只服务一个模型”。
 
-这种“契约抽象统一”是框架从胶水层走向基础设施的关键。它让 VLA Factory 不只是接模型，还能把新方法沉淀成可组合、可复用、可验证的基础模块。
+这种“标准抽象统一”是框架从胶水层走向基础设施的关键。它让 VLA Factory 不只是接模型，还能把新方法沉淀成可组合、可复用、可验证的基础模块。
 
 ### 9.4 部署推理演进
 
-部署推理是统一框架向真实机器人闭环延伸后的重要演进方向，但它不是第一阶段构建框架的核心诉求。第一阶段应先保证训练产物、数据契约和模型协议稳定；在此基础上，部署推理可以围绕同一套 recipe、schema、norm stats 和 transform 继续深化。
+部署推理是统一框架向真实机器人闭环延伸后的重要演进方向，但它不是第一阶段构建框架的核心诉求。第一阶段应先保证训练产物、数据标准和模型协议稳定；在此基础上，部署推理可以围绕同一套 recipe、schema、norm stats 和 transform 继续深化。
 
 该方向的重点包括：
 
@@ -728,7 +684,7 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - 安全与可观测性：增加异常 observation 检查、动作合法性检查、频率监控、日志追踪和 fallback 策略。
 - 部署评估：沉淀离线回放、仿真验证、真机验证和部署日志回流的统一评估方法。
 
-这一方向的边界是：部署能力应复用训练阶段形成的统一契约，不应在部署侧重新定义一套独立的数据语义或模型输入输出协议。
+这一方向的边界是：部署能力应复用训练阶段形成的统一标准，不应在部署侧重新定义一套独立的数据语义或模型输入输出协议。
 
 ### 9.5 国产化算力演进
 
@@ -742,7 +698,7 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - 性能基线建设：建立 CUDA 与国产化环境下的数据加载、训练吞吐、推理延迟和控制频率对照。
 - 工程经验沉淀：形成环境安装、问题定位、算子替代、精度差异和部署约束的可复用文档。
 
-这一方向的边界是：国产化支持应通过 backend、adapter 和依赖管理逐步引入，不应让核心数据契约和模型协议绑定某一种硬件或系统环境。
+这一方向的边界是：国产化支持应通过 backend、adapter 和依赖管理逐步引入，不应让核心数据标准和模型协议绑定某一种硬件或系统环境。
 
 ### 9.6 扩展路径约束
 
@@ -753,4 +709,4 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - 新增训练策略：通过 metadata components 或参数名规则选择参数，不写死模型内部结构。
 - 新增部署平台：新增 observation adapter、action adapter 和必要 transport，不修改 `InferenceEngine` 核心预测逻辑。
 
-演进过程中应坚持两个约束：主链路只依赖稳定契约，生态差异留在 adapter 内部。横向扩展负责扩大生态覆盖，纵向演进负责沉淀技术深度，两者互相垂直，可以并行推进。
+演进过程中应坚持两个约束：主链路只依赖稳定标准，生态差异留在 adapter 内部。横向扩展负责扩大生态覆盖，纵向演进负责沉淀技术深度，两者互相垂直，可以并行推进。

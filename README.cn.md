@@ -10,11 +10,11 @@ VLA Factory 是一个 **recipe 驱动** 的机器人视觉-语言-动作（VLA�
 
 ![VLA Factory 分层架构图](./docs/graph/vla-factory-layered-architecture.cn.svg)
 
-架构概述：VLA Factory 的核心目标是把 VLA 微调链路中的数据、模型、训练产物和部署入口统一到一套稳定契约下。用户用 recipe 描述实验意图，框架负责把外部数据格式转换成统一样本语义，通过模型适配层调用上游模型生态，并产出可复用、可验证的训练结果。
+架构概述：VLA Factory 的核心目标是把 VLA 微调链路中的数据、模型、训练产物和部署入口统一到一套稳定标准下。用户用 recipe 描述实验意图，框架负责把外部数据格式转换成统一样本语义，通过模型适配层调用上游模型生态，并产出可复用、可验证的训练结果。
 
 - **统一实验入口**：用一份 recipe 描述模型、数据、动作空间、微调策略、训练参数和输出位置，减少散落脚本和临时配置约定。
 - **统一数据语义**：把不同来源的数据集转换成一致的 observation/action 表达，保留 schema、统计量和 key 顺序，便于训练、评估和后续复用。
-- **模型生态适配**：通过轻量 adapter 接入外部模型实现，框架关注模型协议和训练契约，不重新维护上游模型架构代码。
+- **模型生态适配**：通过轻量 adapter 接入外部模型实现，框架关注模型协议和训练标准，不重新维护上游模型架构代码。
 - **可复用训练产物**：训练输出包含 recipe、数据 schema、归一化统计量和模型权重等必要信息，方便复现、评估和后续推理验证。
 
 ---
@@ -100,19 +100,19 @@ vlafactory-cli evaluate --checkpoint outputs/act_so101_banana \
     --dataset /path/to/dataset
 ```
 
-### 4. 启动推理服务
+### 4. 部署 Checkpoint
 
 ```bash
 # 仿真器平台
-vlafactory-cli serve --checkpoint outputs/act_so101_banana \
+vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform simulator --strategy receding_horizon
 
 # lerobot 真机平台
-vlafactory-cli serve --checkpoint outputs/act_so101_banana \
+vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
 
 # RoboTwin 仿真平台
-vlafactory-cli serve --checkpoint outputs/act_robotwin \
+vlafactory-cli deploy --checkpoint outputs/act_robotwin \
     --platform robotwin --port 9999
 ```
 
@@ -133,7 +133,7 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 
 ---
 
-**模型默认配置**：每个模型在 `vla_factory/config/model/<name>.yaml` 下附带一份 baseline profile（如 [`vla_factory/config/model/act.yaml`](./vla_factory/config/model/act.yaml)）。工厂以它为默认，再与 recipe 里逐 run 的 `model.config` 做深度合并——recipe 的值优先，profile 只是实验起点而非冻结契约。未知 key 会被上游配置对象报错（不会因拼写错误静默失效）。
+**模型默认配置**：每个模型在 `vla_factory/config/model/<name>.yaml` 下附带一份 baseline profile（如 [`vla_factory/config/model/act.yaml`](./vla_factory/config/model/act.yaml)）。工厂以它为默认，再与 recipe 里逐 run 的 `model.config` 做深度合并——recipe 的值优先，profile 只是实验起点而非冻结标准。未知 key 会被上游配置对象报错（不会因拼写错误静默失效）。
 
 ---
 

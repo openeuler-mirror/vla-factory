@@ -4,7 +4,7 @@
 
 数据模块是 VLA Factory 的输入端。它负责将外部格式的机器人数据集（LeRobot v3 等）解析为框架内部统一的数据中间表示（Canonical IR），再由数据变换流水线、训练样本构建与批处理共同组装，向训练侧输出模型可直接消费的 `{"observation": Observation, "actions": Tensor}` batch。
 
-数据模块不只服务训练。训练开始时写出的 `schema.json`、`norm_stats.json` 和 resolved `recipe.yaml` 也会在部署推理侧复用，用于重建 schema / stats / transform 语义。因此，数据模块的核心职责不是“喂给训练一个 batch”这么窄，而是建立一套从外部数据到训练、部署都能复用的数据契约。
+数据模块不只服务训练。训练开始时写出的 `schema.json`、`norm_stats.json` 和 resolved `recipe.yaml` 也会在部署推理侧复用，用于重建 schema / stats / transform 语义。因此，数据模块的核心职责不是“喂给训练一个 batch”这么窄，而是建立一套从外部数据到训练、部署都能复用的数据标准。
 
 ### 层级职责边界
 
@@ -13,11 +13,11 @@
 | 层 | 职责 | 边界 |
 |---|---|---|
 | **外部数据解析层** | 理解 LeRobot、HDF5、RLDS、ROS bag 等外部格式，把外部 metadata、episode 边界、帧索引、state/action、视频引用等解析成内部数据事实。 | 可以感知外部格式；不向上层泄漏外部字段名、目录布局或文件结构；不做模型预处理、不构造 batch。 |
-| **数据中间表示层** | 用稳定对象表达数据事实，并把这些事实组织成训练和部署共享的数据契约。 | 不理解外部存储格式；不表达上游模型原生 batch；不把数据模块变成按模型分支的 adapter。 |
+| **数据中间表示层** | 用稳定对象表达数据事实，并把这些事实组织成训练和部署共享的数据标准。 | 不理解外部存储格式；不表达上游模型原生 batch；不把数据模块变成按模型分支的 adapter。 |
 
 数据模块在整体架构中对应主架构文档里的“外部数据解析层”和
 “数据中间表示层”。它消费 recipe / model profile 中的数据、采样和
-transform 配置，并向训练和部署提供统一数据契约。训练产物中的
+transform 配置，并向训练和部署提供统一数据标准。训练产物中的
 `recipe.yaml`、`schema.json` 和 `norm_stats.json` 是部署侧重建数据语义
 的事实来源。
 
@@ -26,7 +26,7 @@ transform 配置，并向训练和部署提供统一数据契约。训练产物�
 - 第 1 章讲数据模块在训练和部署中的整体流转。
 - 第 2 章讲数据模块涉及的核心对象。
 - 第 3 章讲外部数据如何被解析为数据事实。
-- 第 4 章讲数据事实如何成为训练和部署共享的数据契约。
+- 第 4 章讲数据事实如何成为训练和部署共享的数据标准。
 - 第 5 章讲如何扩展数据模块。
 - 第 6 章讲设计约束和使用注意事项。
 - 第 7 章讲后续可以继续演进的方向。
@@ -46,7 +46,7 @@ transform 配置，并向训练和部署提供统一数据契约。训练产物�
   - [1.3 配置、metadata 与数据流的关系](#13-配置metadata-与数据流的关系)
 - [2. 核心对象速览](#2-核心对象速览)
   - [2.1 外部数据解析对象](#21-外部数据解析对象)
-  - [2.2 数据事实与契约对象](#22-数据事实与契约对象)
+  - [2.2 数据事实与标准对象](#22-数据事实与标准对象)
   - [2.3 训练索引与样本对象](#23-训练索引与样本对象)
   - [2.4 训练样本与 batch 对象](#24-训练样本与-batch-对象)
   - [2.5 变换流水线对象](#25-变换流水线对象)
@@ -59,8 +59,8 @@ transform 配置，并向训练和部署提供统一数据契约。训练产物�
   - [4.1 层职责与边界](#41-层职责与边界)
   - [4.2 延迟加载与视频解码机制](#42-延迟加载与视频解码机制)
   - [4.3 模型变换流水线设计](#43-模型变换流水线设计)
-  - [4.4 训练侧数据契约](#44-训练侧数据契约)
-  - [4.5 部署侧复用契约](#45-部署侧复用契约)
+  - [4.4 训练侧数据标准](#44-训练侧数据标准)
+  - [4.5 部署侧复用标准](#45-部署侧复用标准)
   - [4.6 Canonical IR 的非目标](#46-canonical-ir-的非目标)
 - [5. 扩展指南](#5-扩展指南)
   - [5.1 新增数据格式](#51-新增数据格式)
@@ -69,7 +69,7 @@ transform 配置，并向训练和部署提供统一数据契约。训练产物�
 - [6. 设计约束与注意事项](#6-设计约束与注意事项)
   - [6.1 Reader 不做模型预处理](#61-reader-不做模型预处理)
   - [6.2 Dataset 输出 canonical raw sample](#62-dataset-输出-canonical-raw-sample)
-  - [6.3 Transform 决定模型输入契约](#63-transform-决定模型输入契约)
+  - [6.3 Transform 决定模型输入标准](#63-transform-决定模型输入标准)
   - [6.4 Observation 字段需求由模型声明](#64-observation-字段需求由模型声明)
   - [6.5 Schema 是数据事实来源](#65-schema-是数据事实来源)
   - [6.6 训练产物 metadata 是部署侧事实来源](#66-训练产物-metadata-是部署侧事实来源)
@@ -85,7 +85,7 @@ transform 配置，并向训练和部署提供统一数据契约。训练产物�
 
 数据模块的核心数据流分为训练数据流和部署推理流。两条链路共享
 schema、norm stats、transform 语义和 resolved recipe，保证训练阶段的
-数据契约能在部署阶段复用。
+数据标准能在部署阶段复用。
 
 ### 1.1 训练数据流
 
@@ -150,7 +150,7 @@ resolved recipe。部署侧只读取训练产物中的 resolved `recipe.yaml`，
 | `FormatReader` | 数据格式 reader 协议，定义外部格式如何被解析成内部数据事实。 | 理解外部格式；不做模型预处理、不构造训练 batch。 |
 | `LeRobotV3Reader` | 当前主实现，读取 LeRobot v3 的 metadata、stats、parquet 和 video layout。 | LeRobot v3 细节只在 reader 内部消化，不泄漏到 Dataset 或模型 adapter。 |
 
-### 2.2 数据事实与契约对象
+### 2.2 数据事实与标准对象
 
 | 对象 | 作用 | 关键字段 |
 |---|---|---|
@@ -208,7 +208,7 @@ Reader 不应该做：
 - 不构造训练 batch。
 - 不依赖具体模型 adapter。
 
-#### 数据事实契约
+#### 数据事实标准
 
 Reader 解析出的数据事实进入 VLA Factory 后，应成为训练和部署期间一致可信
 的事实来源。camera 名、图像原始尺寸、state/action 维度、key 顺序、episode
@@ -218,7 +218,7 @@ Reader 解析出的数据事实进入 VLA Factory 后，应成为训练和部署
 `DataSchema` 表达 feature space、camera、图像尺寸、state/action 维度和
 key 顺序；`NormStats` 表达训练 normalize 与部署 unnormalize 共享的统计量；
 `Episode`、`Frame` 和 `VideoRef` 表达 episode 边界、逐帧事实和视频帧定位。
-这些对象共同构成 Reader 向上层交付的数据事实契约。
+这些对象共同构成 Reader 向上层交付的数据事实标准。
 
 #### 数据事实解析职责
 
@@ -344,20 +344,20 @@ per-episode 视频使用 episode 内局部 `frame_index`，multi-episode 视频�
 ### 4.1 层职责与边界
 
 数据中间表示层负责把 Reader 解析出来的数据事实组织成训练和部署共享的
-数据契约。这里的“契约”不是某个 dataclass 的字段说明，而是跨模块必须
+数据标准。这里的“标准”不是某个 dataclass 的字段说明，而是跨模块必须
 共同遵守的稳定语义约定：一个模块交出去的数据，另一个模块可以做哪些
 确定假设。
 
 中间表示层不再理解外部存储格式，也不重新猜测 schema、stats 或 key 顺序。
-它以前一章 Reader 输出的数据事实为输入，围绕训练侧和部署侧两条契约主线
+它以前一章 Reader 输出的数据事实为输入，围绕训练侧和部署侧两条标准主线
 组织内部数据流。
 
-- **训练侧数据契约**：从 episode 到训练样本的过程必须稳定定义：一个 sample
+- **训练侧数据标准**：从 episode 到训练样本的过程必须稳定定义：一个 sample
 如何定位、observation window 如何取、action chunk 从哪个 timestep 开始、
 episode 尾部如何 padding、padding 如何显式标记，以及 flat sample 如何聚合
 成 `Observation` 和 batch。这些约定让 Trainer 和 loss 逻辑不需要理解
 episode、视频或外部文件结构。
-- **部署侧复用契约**：训练产物必须保存部署所需的数据语义，包括 resolved
+- **部署侧复用标准**：训练产物必须保存部署所需的数据语义，包括 resolved
 recipe、schema 和 stats。部署侧以这些 metadata 为事实来源，复用训练时的
 transform 和 key 顺序，而不是重新解析训练数据集或重新合并当前代码里的
 model profile。
@@ -405,11 +405,11 @@ Episode  (dataclass)
 - `VideoCodec.name`
 - `VideoCodec.decode_frame(ref: VideoRef) -> NDArray`
 
-`decode_frame()` 的输出契约是 `numpy HWC uint8`。这是 Dataset 与 transform pipeline 之间的图像格式边界。当前默认实现是 `PyAVCodec`，用于把 `VideoRef` 解码成 raw image。
+`decode_frame()` 的输出标准是 `numpy HWC uint8`。这是 Dataset 与 transform pipeline 之间的图像格式边界。当前默认实现是 `PyAVCodec`，用于把 `VideoRef` 解码成 raw image。
 
 缓存策略不改变数据语义。无论帧来自视频解码还是 `.npy` cache，输出都应保持 `HWC uint8`。
 
-后续可以扩展新的视频解码策略，例如 `DecordCodec`、`OpenCVCodec`、`ImageFolderCodec` 或 `RemoteCodec`。新增 codec 不应要求修改 Reader 或 Dataset，只需要遵守 `VideoCodec` 协议和 `HWC uint8` 输出契约。详见 [新增视频解码策略](#52-新增视频解码策略)。
+后续可以扩展新的视频解码策略，例如 `DecordCodec`、`OpenCVCodec`、`ImageFolderCodec` 或 `RemoteCodec`。新增 codec 不应要求修改 Reader 或 Dataset，只需要遵守 `VideoCodec` 协议和 `HWC uint8` 输出标准。详见 [新增视频解码策略](#52-新增视频解码策略)。
 
 #### 4.2.2 PyAVCodec 与缓存策略
 
@@ -420,7 +420,7 @@ Episode  (dataclass)
 
 ### 4.3 模型变换流水线设计
 
-`TransformPipeline` 是模型输入契约的执行层——它负责把 canonical raw sample 转成模型可消费的 model-ready sample。它会体现模型对图像尺寸、layout、归一化、action 维度等输入格式的要求，但这种耦合是**声明式的**（由 YAML 配置驱动），不是按 `model_name` 写死在 Dataset 或 collate 里。
+`TransformPipeline` 是模型输入标准的执行层——它负责把 canonical raw sample 转成模型可消费的 model-ready sample。它会体现模型对图像尺寸、layout、归一化、action 维度等输入格式的要求，但这种耦合是**声明式的**（由 YAML 配置驱动），不是按 `model_name` 写死在 Dataset 或 collate 里。
 
 真正把 `Observation` 编排成上游模型库原生 batch dict 的逻辑仍属于 model adapter，例如 ACT adapter 将 `Observation.images["front"]` 转成 LeRobot 期望的 `observation.images.front`。
 
@@ -454,9 +454,9 @@ TransformPipeline 的每个步骤可以声明 `inverse_for_output()`，生成反
 
 对于需要语言指令的模型（PI0、OpenVLA），`Observation` 预留了 `tokenized_prompt` 和相关 mask 字段，但当前 `collate_fn` 不生成这些字段，它只负责通用堆叠。后续 tokenizer 应作为显式 transform step 纳入 TransformPipeline，由配置声明 tokenizer 类型、参数和 artifact 路径，而不是让 `collate_fn` 承担模型语义处理。
 
-### 4.4 训练侧数据契约
+### 4.4 训练侧数据标准
 
-训练侧数据契约定义从 episode 到训练 batch 的稳定路径：
+训练侧数据标准定义从 episode 到训练 batch 的稳定路径：
 
 ```text
 Episode / Frame / VideoRef
@@ -491,7 +491,7 @@ episode (长度 = L, n_obs_steps = 1, action_horizon = H)
   frame L-1: locator(episode=0, start=L-1, n_obs=1, horizon=H)
 ```
 
-当前 `VLADataset._load_sample()` 只物化 observation window 的最后一帧作为 images/state；`n_obs_steps` 是后续扩展多帧观测的契约入口。action chunk 从 observation window 的最后一帧开始，长度为 `action_horizon`。
+当前 `VLADataset._load_sample()` 只物化 observation window 的最后一帧作为 images/state；`n_obs_steps` 是后续扩展多帧观测的标准入口。action chunk 从 observation window 的最后一帧开始，长度为 `action_horizon`。
 
 **tail padding**：当 action_horizon 超出 episode 长度时，`VLADataset._load_sample` 使用 repeat-last padding——用 episode 最后一个有效 action 填充超出部分。如果 episode 所有帧的 action 均为 None，则抛出 `ValueError`。
 
@@ -532,7 +532,7 @@ Episode 缓存策略：`_episode_cache` 最多缓存 64 个 episode 的帧数据
 
 不同模型需要的 Observation 字段编排不同，但这个差异**不在数据层消化**。数据层的职责是产出包含所有可用字段的 `Observation`，模型 adapter 自己选取需要的子集并做内部转换（如 ACT 的 `_obs_to_lerobot_batch()`）。这种设计的代价是每个 adapter 都要写一次转换逻辑，好处是数据管线稳定——新增模型不改数据代码。
 
-### 4.5 部署侧复用契约
+### 4.5 部署侧复用标准
 
 部署侧不运行完整数据管线，但复用训练时产出的元数据：
 
@@ -552,7 +552,7 @@ TransformPipeline 的 inverse 变换（UnnormalizeAction、UnpadAction）由 che
 
 - **模型预处理**：图像 resize 到多大、向量归一化到什么尺度，由 TransformPipeline 根据模型声明决定，Canonical IR 只承载原始数据
 - **模型输入格式适配**：上游模型库（lerobot、transformers）各有自己的 batch dict 格式，这个转换由 model adapter 在 `compute_loss()` 内部完成，Canonical IR 不感知
-- **数据增强**：随机裁剪、颜色抖动等训练增强在 TransformPipeline 中实现，不属于中间表示层的契约职责
+- **数据增强**：随机裁剪、颜色抖动等训练增强在 TransformPipeline 中实现，不属于中间表示层的标准职责
 - **在线推理数据采集**：部署侧的观测数据来自传感器/模拟器，不经过 VLADataset 管线
 
 ## 5. 扩展指南
@@ -605,7 +605,7 @@ class MyCodec:
 ```
 
 新 codec 应保证输出为 `numpy HWC uint8`，因为这是 Dataset 与 transform
-pipeline 之间的图像契约。
+pipeline 之间的图像标准。
 
 ### 5.3 新增变换步骤
 
@@ -643,7 +643,7 @@ model:
           tokenizer_path: artifacts/tokenizer
 ```
 
-自定义 step 仍需遵守 transform 契约：
+自定义 step 仍需遵守 transform 标准：
 
 - 输入和输出都是 flat sample dict。
 - 小参数写在 transform config 中。
@@ -666,9 +666,9 @@ Dataset 输出应尽量贴近 raw data：
 - state/action 是 `float32` vector。
 - action padding 用 `action_is_pad` 显式表达。
 
-Dataset 不应该因为某个模型需要 CHW 或 `[0, 1]` 而改变全局输出契约。
+Dataset 不应该因为某个模型需要 CHW 或 `[0, 1]` 而改变全局输出标准。
 
-### 6.3 Transform 决定模型输入契约
+### 6.3 Transform 决定模型输入标准
 
 模型输入格式属于 transform pipeline。不同模型可以声明不同默认 transform，
 用户也可以在 recipe 中覆盖。

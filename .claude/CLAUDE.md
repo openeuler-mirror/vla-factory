@@ -39,7 +39,7 @@ Execution path:
 YAML recipe → TrainRecipe → model registry (entries/<name>.py)
   → data reader / codec / transforms / sampler → VLADataset / DataLoader
   → VLATrainer (HF Trainer based) → checkpoint + inference_metadata
-  → InferenceEngine + platform adapters (simulator / lerobot host)
+  → InferenceEngine + platform adapters (simulator / lerobot host / robotwin)
 ```
 
 ---
@@ -47,7 +47,7 @@ YAML recipe → TrainRecipe → model registry (entries/<name>.py)
 ## Code structure
 
 - **`vla_factory/cli.py`** — argparse CLI: `train`, `preprocess`, `list`,
-  `evaluate`, `infer`, `serve`. Entry: `vlafactory-cli` (installed) or
+  `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli` (installed) or
   `python -m vla_factory` (from source). This is where user commands land.
 - **`vla_factory/config/`** — recipe parsing & model defaults.
   - `recipe.py` — `TrainRecipe` and sub-dataclasses (mirror the YAML).
@@ -86,8 +86,23 @@ YAML recipe → TrainRecipe → model registry (entries/<name>.py)
 - **`vla_factory/training/`** — `train.py` (orchestration: recipe → trained
   model), `pytorch_trainer.py` (`VLATrainer`, wraps HF `Trainer`),
   `strategies/` (`apply_strategy`: full / freeze / selective; LoRA is WIP).
-- **`vla_factory/deploy/`** — `infer.py` (`InferenceEngine`, receding-horizon),
-  `adapters.py`, `lerobot_host_adapter.py`, `transport.py`, `zmq_client.py`.
+- **`vla_factory/deploy/`** — split into a transport-agnostic inference core
+  and pluggable sub-layers (see `docs/modules/deploy-module.md`):
+  - `infer.py` — the inference core: `InferenceEngine` + `ObsDict`, the
+    `ActionChunk`/`ActionCommand` contracts, the execution policies
+    (synchronous / temporal_ensembling / receding_horizon) + `PolicyExecutor`,
+    and the `ReplayPolicy` stand-in.
+  - `policy_runtime.py` — the two serving forms: `PolicyRunner` (client-shaped
+    loop driving an injected transport; shared by `simulator` and `lerobot`
+    host) and `RemotePolicyModel` (server-shaped RPC handler).
+  - `platforms/` — per-platform observation/action adapters (`simulator`,
+    `lerobot` host, `robotwin`, `groot`) behind the `PlatformObservationAdapter`
+    protocol (`base.py`).
+  - `transports/` — pure connection/framing/serialization, no orchestration:
+    `zmq.py` (LeKiwi PUSH/PULL client), `length_prefixed_json.py`
+    (RoboTwin-compatible TCP RPC).
+  - `connectors/` — dependency-free callbacks imported by the robot env
+    (`robotwin.py` + bootstrap `robotwin.yml`), runnable without the model deps.
 - **`vla_factory/utils/constants.py`** — on-disk artifact layout:
   `inference_metadata/{recipe.yaml,schema.json,norm_stats.json}`, `final/model.pt`.
 - **`examples/`** — ready recipes. `reference.yaml` is the fully-annotated
@@ -110,11 +125,15 @@ params per `finetuning_strategy` + `ModelMetadata.components` →
 `VLATrainer` runs HF `Trainer` → saves `final/model.pt` +
 `inference_metadata/{recipe,schema,norm_stats}`.
 
-`serve` loads a checkpoint's `inference_metadata` to rebuild recipe/schema/
-norm_stats at inference time (no re-fit), builds the `InferenceEngine`, and
-exposes it over ZMQ (`transport.py`) to a platform adapter (simulator or
-lerobot real robot). `infer`/`evaluate` reuse the same engine on a dataset
-sample / per-episode L1.
+`deploy --platform {simulator,lerobot,robotwin}` loads a checkpoint's
+`inference_metadata` to rebuild recipe/schema/norm_stats at inference time
+(no re-fit), builds the `InferenceEngine`, and serves it to a platform adapter:
+via `PolicyRunner` (`policy_runtime.py` driving `transports/zmq.py`) for
+`simulator`/`lerobot` real robot, or a
+length-prefixed-JSON TCP server (`transports/length_prefixed_json.py` +
+`RemotePolicyModel`) for `robotwin` — the sim connects as a client through the
+dependency-free `connectors/robotwin.py`. `infer`/`evaluate` reuse the same
+engine on a dataset sample / per-episode L1.
 
 The transform pipeline is the contract bridge: each model's baseline profile
 declares which `TransformRegistry` steps it needs (e.g. pi0 needs
@@ -274,6 +293,7 @@ extra or GPU, guard the import with `importlib.util.find_spec` and
 - Architecture (the why): `docs/architecture/vla-factory-architecture.md` · `.cn.md`
 - Layered architecture + flow diagrams: `docs/graph/*.svg`
 - Data module design: `docs/modules/data-module.md` · `.cn.md`
+- Deploy module design: `docs/modules/deploy-module.md` · `.cn.md`
 - Fully-annotated recipe: `examples/reference.yaml`
 - Adapting a new model (experience + decision tests): `adapt_new_model` skill
 - README (user-facing, multilingual): `README.md` · `README.cn.md`

@@ -117,6 +117,7 @@ include = ["vla_factory*"]
 # Ship model default profiles (act.yaml, pi0.yaml, ...) with the package.
 [tool.setuptools.package-data]
 "vla_factory.config.model" = ["*.yaml"]
+"vla_factory.deploy.connectors" = ["*.yml"]
 
 # Collect only the repo test suite (a bare `pytest` must not pick up unrelated
 # local directories such as vendored skills or datasets).

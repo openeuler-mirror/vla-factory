@@ -1,13 +1,14 @@
-"""RoboTwin connector and model-server protocol tests.
+"""RoboTwin platform adapter and length-prefixed transport tests.
 
 Stands up the generic RPC transport with a fake engine and drives it over a
 socket using RoboTwin's exact wire protocol. Verifies transport framing,
-remote-policy dispatch, platform adaptation and compatibility exports. No
-RoboTwin install required.
+remote-policy dispatch and platform adaptation. No RoboTwin install required.
 """
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
 import socket
 import threading
 import time
@@ -15,12 +16,18 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yaml
 
-from vla_factory.deploy import robotwin_connector
-from vla_factory.deploy.robotwin_adapter import RobotwinObsAdapter
-from vla_factory.deploy.robotwin_server import (
-    RobotwinEngineModel,
-    RobotwinModelServer,
+from vla_factory.deploy.connectors import robotwin as robotwin_connector
+from vla_factory.deploy.infer import (
+    ActionChunk,
+    PolicyExecutor,
+    build_execution_policy,
+)
+from vla_factory.deploy.platforms.robotwin import RoboTwinAdapter
+from vla_factory.deploy.policy_runtime import RemotePolicyModel
+from vla_factory.deploy.transports.length_prefixed_json import (
+    LengthPrefixedJsonRpcServer,
     json_to_numpy,
     numpy_to_json,
 )
@@ -42,9 +49,9 @@ class _FakeEngine:
         self.last_obs = None
         self.reset_count = 0
 
-    def predict(self, obsdict) -> np.ndarray:
+    def predict(self, obsdict) -> ActionChunk:
         self.last_obs = obsdict
-        return (
+        return ActionChunk(
             np.arange(HORIZON * ACTION_DIM, dtype=np.float32)
             .reshape(HORIZON, ACTION_DIM)
         )
@@ -96,9 +103,7 @@ class _MockRobotwinClient:
 
 
 def _make_obs() -> dict:
-    obs = {cam: np.full((8, 8, 3), 7, dtype=np.uint8) for cam in CAMERAS}
-    obs["qpos"] = np.arange(STATE_DIM, dtype=np.float32)
-    return obs
+    return {"robotwin_observation": _make_native_obs()}
 
 
 def _make_native_obs() -> dict:
@@ -125,10 +130,18 @@ def _make_native_obs() -> dict:
 @pytest.fixture
 def server_and_engine():
     engine = _FakeEngine()
-    adapter = RobotwinObsAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
-    model = RobotwinEngineModel(engine, adapter, task="pick up the block")
+    adapter = RoboTwinAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
+    policy = PolicyExecutor(
+        engine,
+        build_execution_policy(
+            "synchronous",
+            action_horizon=HORIZON,
+            action_dim=ACTION_DIM,
+        ),
+    )
+    model = RemotePolicyModel(policy, adapter, task="pick up the block")
     port = _free_port()
-    server = RobotwinModelServer(model, host="127.0.0.1", port=port)
+    server = LengthPrefixedJsonRpcServer(model, host="127.0.0.1", port=port)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     yield server, engine, port
@@ -183,11 +196,22 @@ def test_native_observation_roundtrip_and_instruction(server_and_engine):
 def test_native_observation_named_joint_fallback():
     native = _make_native_obs()
     del native["joint_action"]["vector"]
-    adapter = RobotwinObsAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
+    adapter = RoboTwinAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
 
     obsdict = adapter({"robotwin_observation": native})
 
     np.testing.assert_array_equal(obsdict.state, np.arange(STATE_DIM))
+
+
+def test_flattened_legacy_observation_is_rejected():
+    adapter = RoboTwinAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
+    flattened = {
+        **{cam: np.zeros((8, 8, 3), dtype=np.uint8) for cam in CAMERAS},
+        "qpos": np.zeros(STATE_DIM, dtype=np.float32),
+    }
+
+    with pytest.raises(KeyError, match="robotwin_observation"):
+        adapter(flattened)
 
 
 def test_lightweight_connector_forwards_raw_observation_and_executes_chunk():
@@ -228,6 +252,16 @@ def test_lightweight_connector_forwards_raw_observation_and_executes_chunk():
     assert len(env.executed) == 2
     assert all(action_type == "qpos" for _, action_type in env.executed)
     assert returned is raw_observation
+
+
+def test_connector_config_is_colocated_and_importable():
+    config_path = Path(robotwin_connector.__file__).with_suffix(".yml")
+    assert config_path.is_file()
+
+    config = yaml.safe_load(config_path.read_text())
+    module = importlib.import_module(config["policy_name"])
+
+    assert module is robotwin_connector
 
 
 def test_update_obs_then_get_action_uses_cache(server_and_engine):
@@ -276,10 +310,19 @@ def test_missing_cmd_returns_clean_error(server_and_engine):
 
 def test_n_action_steps_truncation():
     engine = _FakeEngine()
-    adapter = RobotwinObsAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
-    model = RobotwinEngineModel(engine, adapter, n_action_steps=5)
+    adapter = RoboTwinAdapter(camera_keys=CAMERAS, state_dim=STATE_DIM)
+    policy = PolicyExecutor(
+        engine,
+        build_execution_policy(
+            "synchronous",
+            action_horizon=HORIZON,
+            action_dim=ACTION_DIM,
+            n_action_steps=5,
+        ),
+    )
+    model = RemotePolicyModel(policy, adapter)
     port = _free_port()
-    server = RobotwinModelServer(model, host="127.0.0.1", port=port)
+    server = LengthPrefixedJsonRpcServer(model, host="127.0.0.1", port=port)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     try:
@@ -297,3 +340,11 @@ def test_numpy_codec_roundtrip():
     out = json_to_numpy(numpy_to_json({"x": arr}))["x"]
     np.testing.assert_array_equal(out, arr)
     assert out.dtype == np.float32
+
+
+def test_rpc_server_exposes_handler_only():
+    handler = object()
+    server = LengthPrefixedJsonRpcServer(handler)
+
+    assert server.handler is handler
+    assert not hasattr(server, "model")
