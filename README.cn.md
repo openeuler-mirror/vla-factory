@@ -8,7 +8,7 @@ VLA Factory 是一个 **recipe 驱动** 的机器人视觉-语言-动作（VLA�
 
 ## 架构和主要特性
 
-![VLA Factory 分层架构图](./docs/graph/vla-factory-layered-architecture.cn.svg)
+![VLA Factory 总体架构图](./docs/graph/vla-factory-layered-architecture.cn.svg)
 
 架构概述：VLA Factory 的核心目标是把 VLA 微调链路中的数据、模型、训练产物和部署入口统一到一套稳定标准下。用户用 recipe 描述实验意图，框架负责把外部数据格式转换成统一样本语义，通过模型适配层调用上游模型生态，并产出可复用、可验证的训练结果。
 
