@@ -123,3 +123,11 @@ include = ["vla_factory*"]
 # local directories such as vendored skills or datasets).
 [tool.pytest.ini_options]
 testpaths = ["test"]
+# CI tier markers (see docs/ci/ci-overview.md). L0 is the unmarked subset
+# selected via `-m "not l1 and not l2 and not l3"`; until tests carrying
+# these markers are merged, L0 equals the full suite and L1/L2 collect zero.
+markers = [
+    "l1: parity tests against upstream implementations (needs model extras)",
+    "l2: end-to-end smoke tests (short CPU overfit runs)",
+    "l3: long-running convergence / GPU tests (manual only)",
+]

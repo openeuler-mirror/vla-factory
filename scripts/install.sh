@@ -165,7 +165,7 @@ ensure_lerobot_source() {
     return
   fi
   rm -rf "$LEROBOT_DIR"
-  echo "downloading lerobot tarball @ ${LEROBOT_COMMIT:0.8}..."
+  echo "downloading lerobot tarball @ ${LEROBOT_COMMIT:0:8}..."
   mkdir -p .local-deps
   curl -fSL \
     --retry 8 --retry-delay 3 --retry-all-errors --retry-connrefused \

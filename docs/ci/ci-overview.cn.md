@@ -85,9 +85,12 @@ GitCode PR API，覆盖**所有贡献者**的 PR，只需要出站 HTTPS。
 
 | 环境 | 依赖 | 跑哪些 tier | 覆盖的用例 |
 |------|------|------------|-----------|
-| **base** | core + `[dev]` | L0 | 全部 L0（252 例） |
-| **act** | + lerobot | L1 + L2 | lerobot parity（6 例）+ 过拟合冒烟 |
-| **pi** | + openpi | L1 | openpi parity（17 例） |
+| **base** | core + `[dev]` | L0 | 全部 L0（162 例¹） |
+| **act** | + lerobot | L1 + L2 | lerobot parity + 过拟合冒烟（计划中，见 §4） |
+| **pi** | + openpi | L1 | openpi parity（计划中，见 §4） |
+
+¹ 以 master 上 `pytest --collect-only` 实际统计为准：161 个测试函数 +
+parametrize 扩展 1 例。测试新增后此数字会漂移，更新文档时重新统计。
 
 L1 测试通过 `pytest.importorskip` 自动分流：act 环境跑 lerobot 相关用例，
 pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不报错。
@@ -103,21 +106,26 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 
 | 层 | marker | 验证对象 | 成本 | 触发 |
 |----|--------|---------|------|------|
-| **L0** 单元 | 无（`not l1 and not l2`） | 我们自己的代码：模块功能、边界条件、报错路径 | 秒级 CPU | 每次 PR |
+| **L0** 单元 | 无（`not l1 and not l2 and not l3`） | 我们自己的代码：模块功能、边界条件、报错路径 | 秒级 CPU | 每次 PR |
 | **L1** parity | `@pytest.mark.l1` | 引进的上游语义：transform 链、归一化公式、PEFT 挂载 | 秒级 CPU | 每次 PR |
 | **L2** 冒烟 | `@pytest.mark.l2` | 端到端连通性：单条 episode 过拟合 | 分钟级 CPU/GPU | 每次 PR |
 
-### L0 — 单元测试（252 例）
+marker 已在 `pyproject.toml` `[tool.pytest.ini_options] markers` 注册。当前
+master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `dev_ci-backup`
+分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例——daemon 对
+「某环境所有 tier 都收集 0 例」判 FAIL 而非 pass，防止空跑误报绿。
+
+### L0 — 单元测试（162 例）
 
 验证**我们自己的代码**。不依赖任何模型 extra，base 环境即可全跑。
+当前 master `test/` 下共 13 个文件、161 个测试函数（parametrize 扩展后
+收集 162 例）：
 
-**配置解析 (config/)**
+**配置 / CLI**
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
 | `test_protocols_registry_config.py` | 4 | 协议契约（Observation/ActionSpec/VLA 层次/ModelMetadata）、注册表（注册/查找/重复/未知模型）、YAML→TrainRecipe 解析、`examples/*.yaml` 全部可解析 |
-| `test_error_paths.py` | 18 | 未知 transform type / 非 TransformStep、未知/空/auto 数据集 format、缺失/空 `model.name`、损坏的 entry-point 报错 + 注册表可恢复、`action_type` 校验（se3/tokenized 报错） |
-| `test_cli_commands.py` | 17 | 五个子命令的 argparse 分发、`train` 参数覆盖优先级、`preprocess` 从 recipe 取数据路径、`list` 注册表输出、`infer` recipe 回退链 |
 | `test_cli_deploy.py` | 2 | `deploy` 命令注册/非法参数退出；`serve` 未注册 |
 
 **模型层 (model/)**
@@ -128,15 +136,13 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 | `test_act_model.py` | 15 | ACT lerobot adapter：协议合规、注册集成、observation_to、factory wrapper（compute_loss/predict/多相机/save-load）、profile 默认值 & recipe 覆盖 |
 | `test_pi0_model.py` | 4 | pi0 adapter（fake openpi）：metadata、camera_mapping 翻译、loss/predict 委托、空相机占位 |
 | `test_pi05_model.py` | 13 | pi05 与 pi0 的差异：factory variant 构建、discrete-state prompt、task 回退链、quantile normalize/unnormalize roundtrip |
-| `test_lora_strategy.py` | 10 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、legacy alias |
+| `test_lora_strategy.py` | 8 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、legacy alias |
 
-**训练策略 (strategies/)**
+**训练 (training/)**
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
-| `test_strategy_errors.py` | 9 | freeze/selective 报错矩阵：未知组件报错并列出可用名、空列表报错、无前缀组件报错、未知策略报错 |
 | `test_phase4_engine.py` | 8 | 训练引擎：策略分发（full/freeze/selective + 未知 raises）、recipe→training-args 映射、CPU 3 步训练循环 |
-| `test_transform_eps.py` | 11 | per-model normalize eps 管道：config eps 到达 transform、profile eps per method、zscore/quantile 逆继承、常量维 round-trip 精确性 |
 
 **数据管道 (data/)**
 
@@ -144,24 +150,26 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 |------|------|------|
 | `test_data_pipeline.py` | 43 | 端到端数据管道（bundled 3-episode lerobot 数据集）：LeRobotV3 reader、PyAV codec 解码、滑动窗口采样、manifest 构建（train/val 分割/无泄漏/确定性）、transforms、VLADataset、DataLoader 批处理 |
 | `test_robotwin_reader.py` | 7 | RoboTwin reader + codec 正常路径（合成数据集）：can_read、schema、episode 长度/范围、state/action 读取、帧解码、norm_stats |
-| `test_robotwin_reader_errors.py` | 10 | RoboTwin reader + hdf5-JPEG codec 报错路径：无 episode 目录、can_read false、未知 episode 索引、损坏 JPEG |
 
 **部署 / 推理 (deploy/)**
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
-| `test_inference_engine.py` | 31 | 推理引擎：ObsDict 构建/冻结、3 种执行策略（同步/receding-horizon/temporal-ensembling）、obs 归一化、训练↔推理一致性 |
+| `test_inference_engine.py` | 31 | 推理引擎：ObsDict 构建/冻结、3 种执行策略（同步/receding-horizon/temporal-ensembling）、obs 归一化、训练↔推理一致性（30 函数 + 1 parametrize 扩展） |
 | `test_policy_runtime.py` | 7 | PolicyRunner 编排：fake transport+engine、predict/send、action-adapter、reset 控制 |
-| `test_transports.py` | 17 | 传输层帧/序列化（loopback socket）：长度前缀帧边界、畸形 JSON、numpy roundtrip、ZMQ obs recv/send |
 | `test_robotwin_server.py` | 13 | RoboTwin 平台 adapter + 长度前缀传输：get_action roundtrip、obs 解析、numpy codec roundtrip |
-| `test_groot_platform.py` | 6 | GR00T 平台 adapter：dict→ObsDict 转换、可选字段容忍、非 command 拒绝 |
 
-### L1 — parity 测试（23 例）
+### L1 — parity 测试（计划中，尚未合入）
+
+> L1 parity 测试文件（`test/parity/*.py`）目前在 `dev_ci-backup` 分支，
+> **尚未合入 master**。daemon 在 master 上跑 `pytest -m l1` 收集 0 例，
+> 该 tier 显示 `— (skip)` 且所在环境判 FAIL（见 §3），因此在 parity
+> 文件合入前不要给 daemon 配置 act/pi 环境。以下为合入后生效的计划清单。
 
 验证**引进的上游语义**与官方实现一致。golden 值内嵌在测试代码中（常量/参考实现），
 不依赖外部 `.npz`。每个上游契约 pin 到源码 commit，缺依赖时 `importorskip` 自动 skip。
 
-| 文件 | 例数 | 对照上游 | 验证的契约 |
+| 文件（计划） | 例数 | 对照上游 | 验证的契约 |
 |------|------|---------|-----------|
 | `test/parity/utils.py` | — (helper) | — | `assert_tensor_parity`：报告首个不匹配元素位置/双方值/shape/dtype |
 | `test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps 是 per-model 上游契约；config eps 到达算术；两个数量级差异；openpi pin 未漂移 |
@@ -169,18 +177,18 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 | `test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | ACT 全链 parity：state/actions/images 逐元素相等、channels-first layout、ImageNet 归一化等价 |
 | `test_peft_parity.py` | 10 | peft (张量级) + openpi (契约级) | LoRA 挂载面张量一致、scaling 公式 == openpi、adapter 保持 float32 on bf16 base、merge 写入 delta |
 
-### L2 — 端到端冒烟
+### L2 — 端到端冒烟（计划中，尚未合入）
+
+> 同 L1：L2 文件目前在 `dev_ci-backup` 分支，尚未合入 master。
+> 需要 `[act]` extra（ACT 可跑 CPU），pi0/pi05 需要 GPU。
 
 验证**端到端连通性**：单条 episode 训到近零 loss。联合断言——数据、归一化、
 模型输入契约、可训练参数集合，任何一环错了都过不去。
 
-| 文件 | 覆盖 |
+| 文件（计划） | 覆盖 |
 |------|------|
 | `test/integration/test_overfit_smoke.py` | loss 数量级下降（vs degenerate baseline）、训练产物走推理路径重建同一条 episode、实际可训练参数集合 == `ModelMetadata.components` 声明集合、语言条件通路存活 |
 | `test/integration/thresholds.yaml` | per-model 过拟合判据阈值 |
-
-> L2 目前在 `dev_ci-backup` 分支，尚未合入 test-l0 / test-l1-parity。
-> 需要 `[act]` extra（ACT 可跑 CPU），pi0/pi05 需要 GPU。
 
 ---
 
@@ -267,17 +275,19 @@ sudo systemctl enable --now vlaf-ci
 
 daemon 对每个 PR 先发一条「运行中」评论，跑完后编辑为结果表格：
 
+当前（仅 base 环境、L0 = 全套件）的实际输出形如：
+
 ```markdown
 ## CI 测试报告 — pass
 
-branch: `test-l0` · commit: `5509b77b983a` · all tests passed · 42s
+branch: `dev_ci` · commit: `517028f8f6fe` · all tests passed · 32s
 
 | 环境 | L0 单元 | L1 parity | L2 冒烟 | 耗时 |
 |------|---------|-----------|---------|------|
-| base | 249 passed | — | — | 21s |
-| act  | — | 6 passed | — (skip) | 24s |
-| pi   | — | 17 passed | — | 18s |
+| base | 159 passed, 3 skipped | — (skip) | — (skip) | 21s |
 ```
+
+parity / 冒烟测试合入并配置 act/pi 环境后，表格会扩展为多环境多 tier。
 
 ---
 
@@ -309,8 +319,9 @@ while True:
 ```
 
 `process_pr` 内部按环境 × tier 分配执行：base 跑 L0，act 跑 L1+L2，pi 跑 L1。
-每个 tier 直接调 `pytest --junitxml`，exit 5（无测试）当通过处理，不依赖
-PR 分支上的 `ci/run_gate.sh`（版本可能不一致）。
+每个 tier 直接调 `pytest --junitxml`，不依赖 PR 分支上的脚本（版本可能不一致）。
+单个 tier exit 5（无测试收集）不算失败，但**某环境所有 tier 都收集 0 例时该
+环境判 FAIL**——空 summaries 不允许报 pass，防止环境配置错误被静默吞掉。
 
 ---
 
@@ -318,10 +329,10 @@ PR 分支上的 `ci/run_gate.sh`（版本可能不一致）。
 
 | 威胁 / 风险 | 对策 |
 |------------|------|
-| token 泄露 | 只存环境变量 / systemd unit，不进仓库 |
+| token 泄露 | 只存环境变量 / systemd unit，不进仓库；API 请求经 `Authorization: Bearer` 头携带，不进 URL（避免代理/日志泄露） |
 | 执行恶意 PR 代码 | `checkout --detach` + `git clean -qfd`，不碰工作区 |
 | PR 评论 API 限流 | SHA 去重 + 编辑同一条评论（不追加） |
 | GitCode PR API 变更 | 只用标准 `GET /pulls?state=open`，最稳定的端点 |
 | merge ref 不存在（冲突） | 捕获 → 评论报 "fetch failed" |
-| daemon 挂了漏掉 PR | 重启后 SQLite 去重防重跑已完成的，新 SHA 正常入队 |
+| daemon 挂了漏掉 PR | SQLite 只把 `done`/`failed` 视为已完成；`running`/`crashed` 状态重启后自动重试，并复用记录的 comment_id 编辑原「运行中」评论（不留残骸） |
 | openpi + lerobot 环境冲突 | 三环境隔离（`build_ci_envs.sh`） |

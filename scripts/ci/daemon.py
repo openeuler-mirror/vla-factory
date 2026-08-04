@@ -96,10 +96,17 @@ def db() -> sqlite3.Connection:
 
 
 def is_seen(pr_number: int, head_sha: str) -> bool:
+    """True only for SHAs that reached a terminal state (done/failed).
+
+    Rows left in 'running' or 'crashed' state (daemon died or process_pr
+    raised) are NOT seen, so the next poll retries them instead of
+    treating a crash as a completed run.
+    """
     conn = db()
     try:
         return conn.execute(
-            "SELECT 1 FROM seen_prs WHERE pr_number = ? AND head_sha = ?",
+            "SELECT 1 FROM seen_prs WHERE pr_number = ? AND head_sha = ? "
+            "AND status IN ('done', 'failed')",
             (pr_number, head_sha),
         ).fetchone() is not None
     finally:
@@ -107,11 +114,16 @@ def is_seen(pr_number: int, head_sha: str) -> bool:
 
 
 def mark_seen(pr_number: int, head_sha: str, status: str, comment_id: int | None) -> None:
+    """Upsert a (pr, sha) row. A None comment_id preserves any stored one,
+    so a crash in main() doesn't erase the id recorded by process_pr."""
     conn = db()
     try:
         conn.execute(
-            "INSERT OR REPLACE INTO seen_prs (pr_number, head_sha, status, comment_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO seen_prs (pr_number, head_sha, status, comment_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (pr_number, head_sha) DO UPDATE SET "
+            "status = excluded.status, "
+            "comment_id = COALESCE(excluded.comment_id, comment_id)",
             (pr_number, head_sha, status, comment_id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
         )
         conn.commit()
@@ -119,20 +131,50 @@ def mark_seen(pr_number: int, head_sha: str, status: str, comment_id: int | None
         conn.close()
 
 
+def stored_comment_id(pr_number: int, head_sha: str) -> int | None:
+    """Comment id recorded by a previous (possibly crashed) run, if any."""
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT comment_id FROM seen_prs WHERE pr_number = ? AND head_sha = ?",
+            (pr_number, head_sha),
+        ).fetchone()
+        return row["comment_id"] if row else None
+    finally:
+        conn.close()
+
+
 # ── GitCode API ──────────────────────────────────────────────────────
 
 def fetch_open_prs() -> list[dict]:
-    """Return all open PRs on the upstream repo (any author)."""
+    """Return all open PRs on the upstream repo (any author).
+
+    Follows page-number pagination so repos with more than 100 open PRs
+    are fully scanned. The token travels in the Authorization header, not
+    the URL, so it never appears in proxy / debug logs.
+    """
     url = f"{API_BASE}/repos/{UPSTREAM}/pulls"
-    try:
-        resp = requests.get(url, params={"state": "open", "per_page": 100,
-                                         "access_token": GITCODE_TOKEN},
-                            timeout=15)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        log.warning("failed to fetch open PRs: %s", e)
-        return []
+    prs: list[dict] = []
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                url,
+                params={"state": "open", "per_page": 100, "page": page},
+                headers={"Authorization": f"Bearer {GITCODE_TOKEN}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+        except Exception as e:
+            log.warning("failed to fetch open PRs (page %d): %s", page, e)
+            return prs
+        if not isinstance(batch, list) or not batch:
+            return prs
+        prs.extend(batch)
+        if len(batch) < 100:
+            return prs
+        page += 1
 
 
 # ── Git operations ───────────────────────────────────────────────────
@@ -151,7 +193,9 @@ def ensure_repo() -> Path:
 
 def sync_pr(repo_dir: Path, pr_number: int) -> str | None:
     """Fetch the PR head ref and detach HEAD to it. Returns the SHA or None."""
-    for ref in (f"refs/pull/{pr_number}/head", f"refs/merge-requests/{pr_number}/head"):
+    # GitCode is Gitea-based: merge-requests is its native namespace, so try
+    # it first; the GitHub-style pull ref is kept as a fallback for mirrors.
+    for ref in (f"refs/merge-requests/{pr_number}/head", f"refs/pull/{pr_number}/head"):
         try:
             subprocess.run(["git", "fetch", "--quiet", "--force", "origin", ref],
                            cwd=repo_dir, check=True, capture_output=True, timeout=60)
@@ -171,6 +215,11 @@ def sync_pr(repo_dir: Path, pr_number: int) -> str | None:
 # ── Test execution ───────────────────────────────────────────────────
 
 # All available tiers: (pytest marker, junit stem)
+# The l1/l2/l3 markers are registered in pyproject.toml. L0 is the unmarked
+# subset; until tests carrying those markers are merged, L0 equals the full
+# suite and the l1/l2 tiers collect zero tests. An environment whose tiers
+# all collect zero tests is reported as FAIL (see collect_results), so a
+# misconfigured env can never show up as a silent pass.
 ALL_TIERS = [
     ("not l1 and not l2 and not l3", "l0"),
     ("l1", "l1"),
@@ -235,12 +284,16 @@ def collect_results(report_base: Path) -> list[dict]:
     for label, _ in ENVS:
         env_dir = report_base / label
         summaries = parse_report_dir(env_dir) if env_dir.exists() else {}
+        # An env is ok only if it actually ran something: empty summaries
+        # (missing report dir) or all-zero tiers must not pass — all([]) is
+        # True, which would report a never-executed env as green.
+        ran_any = any(s.get("total", 0) > 0 for s in summaries.values())
         rows.append({
             "env": label,
             "l0": tier_line(summaries.get("l0", {})),
             "l1": tier_line(summaries.get("l1", {})),
             "l2": tier_line(summaries.get("l2", {})),
-            "ok": all(s.get("ok", False) for s in summaries.values()),
+            "ok": ran_any and all(s.get("ok", False) for s in summaries.values()),
             "time": f"{sum(s.get('time', 0) for s in summaries.values()):.0f}s",
         })
     return rows
@@ -259,12 +312,19 @@ def process_pr(pr: dict) -> bool:
     log.info("=== PR #%d by %s  branch=%s  sha=%s ===", pr_number, author, branch, sha[:12])
     start = time.time()
 
-    # 1. Post "running" comment.
-    comment_id = None
+    # 1. Post "running" comment — or, when retrying a crashed run, edit the
+    # comment left behind instead of stacking a new one on the PR.
+    comment_id = stored_comment_id(pr_number, sha)
     try:
-        comment_id = post_comment(pr_number, format_running(branch, sha))
+        if comment_id:
+            edit_comment(comment_id, format_running(branch, sha))
+        else:
+            comment_id = post_comment(pr_number, format_running(branch, sha))
     except Exception as e:
         log.error("failed to post comment: %s", e)
+    # Persist the running state (with comment_id) so a crash mid-run can be
+    # detected, retried, and its stale comment edited on the next attempt.
+    mark_seen(pr_number, sha, "running", comment_id)
 
     # 2. Fetch + checkout.
     actual_sha = sync_pr(BASE_DIR, pr_number)
@@ -287,8 +347,10 @@ def process_pr(pr: dict) -> bool:
 
     elapsed = time.time() - start
 
-    # 4. Post results.
+    # 4. Post results. An env whose tiers produced zero tests fails the run
+    # (rows carry ok=False for it), not just the table cell.
     rows = collect_results(report_base)
+    all_ok = all_ok and all(r["ok"] for r in rows)
     body = format_result(branch, sha, rows, all_ok, elapsed)
     if comment_id:
         try:

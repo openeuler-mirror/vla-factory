@@ -31,13 +31,17 @@ def _token() -> str:
 
 
 def _api(method: str, path: str, body: dict | None = None) -> dict:
-    url = f"{API_BASE}{path}?access_token={_token()}"
+    # Token goes in the Authorization header, never the URL: a query-string
+    # token leaks into proxy / journal / HTTP debug logs. GitCode's gateway
+    # accepts the Bearer scheme (verified; the "token" scheme is rejected).
+    url = f"{API_BASE}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {_token()}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
