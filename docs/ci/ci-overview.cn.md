@@ -1,0 +1,338 @@
+# vla-factory CI 系统
+
+> 关联 Issue: #7（测试流水线构建）
+
+---
+
+## 一、背景与约束
+
+### 为什么不用 GitCode 原生 CI
+
+2026-07-29 在 fork 上推送了一个带 `on: push` 触发器的 `.gitcode/workflows/l0.yml`
+进行探测，**没有任何 job 运行**。进一步排查发现：openeuler 组织下**没有任何仓库**
+携带 `.gitcode/workflows/` 或 `.github/workflows/`，其 CI 由仓库根 `Jenkinsfile` +
+共享 `ci-scripts/` 驱动（Jenkins 在仓库外部配置）。接入该体系需要向
+sig-infrastructure 申请 onboarding，不是提交一个文件就能完成的。
+
+### GitCode API 能力（实测确认）
+
+| 能力 | 状态 | 备注 |
+|------|------|------|
+| PR 列表 / 详情 API | ✅ | `GET /pulls?state=open`，返回所有作者的 PR |
+| PR 评论 API | ✅ | 创建返回 `note_id`（数字，编辑用）和 `id`（hash） |
+| commit status API | ❌ 404 | `/statuses/{sha}`、`/commits/{sha}/statuses`、`/check-runs` 全部不存在 |
+| fork 上创建 webhook | ✅ | `push_events` / `merge_requests_events`（boolean flag），仅 basic auth 鉴权 |
+| upstream 上创建 webhook | ❌ 403 | 非 admin 无法操作 |
+
+---
+
+## 二、方案演进
+
+### 尝试 1：webhook on fork → 放弃
+
+最初设计在 fork 上挂 `push_events` webhook，VPS 接收后查 PR 列表入队。
+实测后发现根本限制：**webhook 挂在 fork 上只能捕获 fork owner 的 push**，
+其他贡献者从自己的 fork 提 PR 时不会触发。团队有多名贡献者（hezhenhao2、
+leningchen_admin 等），漏掉谁的 PR 都不可接受。
+
+### 尝试 2：VPS + webhook + 轮询兜底 → 简化
+
+为了覆盖所有作者，在 webhook 基础上加了轮询线程（每 30s 扫全部 open PR）。
+但既然轮询已经能覆盖所有 PR，webhook 的秒级低延迟优势变得鸡肋——多了一个
+公网端口、一份 basic auth、一个 payload 格式未知的依赖，得不偿失。
+
+### 最终方案：纯轮询，无 VPS，无 webhook
+
+去掉 webhook 和 VPS 中间层。一个 Python 进程跑在本地 GPU 机器上，直接轮询
+GitCode PR API，覆盖**所有贡献者**的 PR，只需要出站 HTTPS。
+
+---
+
+## 三、最终架构
+
+```
+┌─ 本地 GPU 机器 (单进程 daemon) ──────────────────────────┐
+│                                                          │
+│  每 30s:                                                 │
+│    1. GET GitCode /pulls?state=open                     │
+│       → 返回所有作者的 open PR                            │
+│    2. 比对本地 SQLite，发现新 head SHA → 处理             │
+│    3. git fetch PR head → checkout --detach              │
+│    4. 按环境 × tier 跑 pytest，产出 junit XML            │
+│    5. 解析结果 → 格式化 markdown 表格                     │
+│    6. POST / 编辑 PR 评论                                │
+│    7. SHA 记入 SQLite（去重）                             │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+         │  出站 HTTPS
+         ▼
+    GitCode API
+```
+
+### 设计要点
+
+| 选择 | 理由 |
+|------|------|
+| 纯轮询，无 webhook | webhook 只覆盖 fork owner；轮询覆盖**所有贡献者** |
+| 无 VPS 中间层 | 没有 webhook 就不需要公网端口；本地直连 GitCode API |
+| 本地 SQLite 去重 | `UNIQUE(pr_number, head_sha)` 保证同一 PR 同一 SHA 只跑一次 |
+| 结果走 PR 评论 | GitCode 没有 commit status API，别无选择 |
+| 编辑同一条评论 | 不追加新评论，避免 push 一次刷一条 |
+
+### 环境 × tier 分配
+
+每个测试环境只跑自己能覆盖的 tier，不重复：
+
+| 环境 | 依赖 | 跑哪些 tier | 覆盖的用例 |
+|------|------|------------|-----------|
+| **base** | core + `[dev]` | L0 | 全部 L0（162 例¹） |
+| **act** | + lerobot | L1 + L2 | lerobot parity + 过拟合冒烟（计划中，见 §4） |
+| **pi** | + openpi | L1 | openpi parity（计划中，见 §4） |
+
+¹ 以 master 上 `pytest --collect-only` 实际统计为准：161 个测试函数 +
+parametrize 扩展 1 例。测试新增后此数字会漂移，更新文档时重新统计。
+
+L1 测试通过 `pytest.importorskip` 自动分流：act 环境跑 lerobot 相关用例，
+pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不报错。
+
+> openpi 和 lerobot 无法共存于同一环境（openpi 通过 uv git source pin 了
+> 旧版 lerobot），所以必须分环境。见 `scripts/ci/build_ci_envs.sh`。
+
+---
+
+## 四、测试分层
+
+测试按「验证对象」分三层，用 pytest marker 隔离。
+
+| 层 | marker | 验证对象 | 成本 | 触发 |
+|----|--------|---------|------|------|
+| **L0** 单元 | 无（`not l1 and not l2 and not l3`） | 我们自己的代码：模块功能、边界条件、报错路径 | 秒级 CPU | 每次 PR |
+| **L1** parity | `@pytest.mark.l1` | 引进的上游语义：transform 链、归一化公式、PEFT 挂载 | 秒级 CPU | 每次 PR |
+| **L2** 冒烟 | `@pytest.mark.l2` | 端到端连通性：单条 episode 过拟合 | 分钟级 CPU/GPU | 每次 PR |
+
+marker 已在 `pyproject.toml` `[tool.pytest.ini_options] markers` 注册。当前
+master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `dev_ci-backup`
+分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例——daemon 对
+「某环境所有 tier 都收集 0 例」判 FAIL 而非 pass，防止空跑误报绿。
+
+### L0 — 单元测试（162 例）
+
+验证**我们自己的代码**。不依赖任何模型 extra，base 环境即可全跑。
+当前 master `test/` 下共 13 个文件、161 个测试函数（parametrize 扩展后
+收集 162 例）：
+
+**配置 / CLI**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `test_protocols_registry_config.py` | 4 | 协议契约（Observation/ActionSpec/VLA 层次/ModelMetadata）、注册表（注册/查找/重复/未知模型）、YAML→TrainRecipe 解析、`examples/*.yaml` 全部可解析 |
+| `test_cli_deploy.py` | 2 | `deploy` 命令注册/非法参数退出；`serve` 未注册 |
+
+**模型层 (model/)**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `test_base_contract.py` | 7 | checkpoint config.json 解析、合法/非法 camera_mapping、缺失/多余相机、无 contract 时告警 |
+| `test_act_model.py` | 15 | ACT lerobot adapter：协议合规、注册集成、observation_to、factory wrapper（compute_loss/predict/多相机/save-load）、profile 默认值 & recipe 覆盖 |
+| `test_pi0_model.py` | 4 | pi0 adapter（fake openpi）：metadata、camera_mapping 翻译、loss/predict 委托、空相机占位 |
+| `test_pi05_model.py` | 13 | pi05 与 pi0 的差异：factory variant 构建、discrete-state prompt、task 回退链、quantile normalize/unnormalize roundtrip |
+| `test_lora_strategy.py` | 8 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、legacy alias |
+
+**训练 (training/)**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `test_phase4_engine.py` | 8 | 训练引擎：策略分发（full/freeze/selective + 未知 raises）、recipe→training-args 映射、CPU 3 步训练循环 |
+
+**数据管道 (data/)**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `test_data_pipeline.py` | 43 | 端到端数据管道（bundled 3-episode lerobot 数据集）：LeRobotV3 reader、PyAV codec 解码、滑动窗口采样、manifest 构建（train/val 分割/无泄漏/确定性）、transforms、VLADataset、DataLoader 批处理 |
+| `test_robotwin_reader.py` | 7 | RoboTwin reader + codec 正常路径（合成数据集）：can_read、schema、episode 长度/范围、state/action 读取、帧解码、norm_stats |
+
+**部署 / 推理 (deploy/)**
+
+| 文件 | 例数 | 覆盖 |
+|------|------|------|
+| `test_inference_engine.py` | 31 | 推理引擎：ObsDict 构建/冻结、3 种执行策略（同步/receding-horizon/temporal-ensembling）、obs 归一化、训练↔推理一致性（30 函数 + 1 parametrize 扩展） |
+| `test_policy_runtime.py` | 7 | PolicyRunner 编排：fake transport+engine、predict/send、action-adapter、reset 控制 |
+| `test_robotwin_server.py` | 13 | RoboTwin 平台 adapter + 长度前缀传输：get_action roundtrip、obs 解析、numpy codec roundtrip |
+
+### L1 — parity 测试（计划中，尚未合入）
+
+> L1 parity 测试文件（`test/parity/*.py`）目前在 `dev_ci-backup` 分支，
+> **尚未合入 master**。daemon 在 master 上跑 `pytest -m l1` 收集 0 例，
+> 该 tier 显示 `— (skip)` 且所在环境判 FAIL（见 §3），因此在 parity
+> 文件合入前不要给 daemon 配置 act/pi 环境。以下为合入后生效的计划清单。
+
+验证**引进的上游语义**与官方实现一致。golden 值内嵌在测试代码中（常量/参考实现），
+不依赖外部 `.npz`。每个上游契约 pin 到源码 commit，缺依赖时 `importorskip` 自动 skip。
+
+| 文件（计划） | 例数 | 对照上游 | 验证的契约 |
+|------|------|---------|-----------|
+| `test/parity/utils.py` | — (helper) | — | `assert_tensor_parity`：报告首个不匹配元素位置/双方值/shape/dtype |
+| `test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps 是 per-model 上游契约；config eps 到达算术；两个数量级差异；openpi pin 未漂移 |
+| `test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | pi0/pi05 全链 parity：state/actions 逐元素相等、图像角色匹配、letterbox padding、prompt token 对齐 |
+| `test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | ACT 全链 parity：state/actions/images 逐元素相等、channels-first layout、ImageNet 归一化等价 |
+| `test_peft_parity.py` | 10 | peft (张量级) + openpi (契约级) | LoRA 挂载面张量一致、scaling 公式 == openpi、adapter 保持 float32 on bf16 base、merge 写入 delta |
+
+### L2 — 端到端冒烟（计划中，尚未合入）
+
+> 同 L1：L2 文件目前在 `dev_ci-backup` 分支，尚未合入 master。
+> 需要 `[act]` extra（ACT 可跑 CPU），pi0/pi05 需要 GPU。
+
+验证**端到端连通性**：单条 episode 训到近零 loss。联合断言——数据、归一化、
+模型输入契约、可训练参数集合，任何一环错了都过不去。
+
+| 文件（计划） | 覆盖 |
+|------|------|
+| `test/integration/test_overfit_smoke.py` | loss 数量级下降（vs degenerate baseline）、训练产物走推理路径重建同一条 episode、实际可训练参数集合 == `ModelMetadata.components` 声明集合、语言条件通路存活 |
+| `test/integration/thresholds.yaml` | per-model 过拟合判据阈值 |
+
+---
+
+## 五、使用方式
+
+### 首次准备
+
+```bash
+# 1. 准备测试环境（至少 base；L1 需要额外 act/pi）
+#    daemon 首次启动时会自动 clone 仓库，不需要手动 clone
+bash scripts/ci/build_ci_envs.sh base          # 最低要求：L0
+# bash scripts/ci/build_ci_envs.sh base act pi # 完整覆盖：L0 + L1 + L2
+```
+
+### 日常启动
+
+```bash
+python3 scripts/run_ci.sh
+```
+
+交互式配置（首次运行，之后存到 `~/.vlaf_ci.conf` 自动复用）：
+
+```
+============================================================
+  vla-factory CI daemon 配置
+  (方括号内为默认值, 直接回车采用)
+============================================================
+
+  GitCode token [13rYhn...]:              ← 从 config.json 自动读
+  CI 目录 (不存在会自动 clone) [~/vla-factory-ci]:  ← 默认值
+  轮询间隔 (秒) [30]:
+
+  测试环境 (act/pi 留空则跳过, 仅跑 L0):
+
+  base python (L0) [/.../python3.12]:    ← 当前解释器
+  act python (L1+L2, 留空跳过) []:
+  pi python (L1, 留空跳过) []:
+```
+
+配置完成后 daemon 开始轮询，看到新 PR 自动跑测试并发评论。
+
+### 后台常驻（systemd）
+
+```ini
+# /etc/systemd/system/vlaf-ci.service
+[Unit]
+Description=vla-factory CI daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/you/.vlaf_ci.conf
+WorkingDirectory=/home/you/vla-factory-ci
+ExecStart=/usr/bin/python3 scripts/ci/daemon.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now vlaf-ci
+```
+
+### 配置项参考
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `VLAF_GITCODE_TOKEN` | GitCode access token（必填） | 从 config.json 读 |
+| `VLAF_BASE_DIR` | CI 目录（不存在自动 clone） | `~/vla-factory-ci` |
+| `VLAF_ENV_BASE` | base 环境 python（必填） | 当前解释器 |
+| `VLAF_ENV_ACT` | act 环境 python（可选） | 空 |
+| `VLAF_ENV_PI` | pi 环境 python（可选） | 空 |
+| `VLAF_POLL_INTERVAL` | 轮询间隔秒 | 30 |
+| `VLAF_DB_PATH` | 去重 DB 路径 | `~/.vlaf_ci.db` |
+| `VLAF_UPSTREAM` | upstream 仓库 | `openeuler/vla-factory` |
+| `VLAF_ENV_BASE_TIERS` | base 环境跑哪些 tier（覆盖） | `l0` |
+| `VLAF_ENV_ACT_TIERS` | act 环境跑哪些 tier（覆盖） | `l1,l2` |
+| `VLAF_ENV_PI_TIERS` | pi 环境跑哪些 tier（覆盖） | `l1` |
+
+### PR 评论格式
+
+daemon 对每个 PR 先发一条「运行中」评论，跑完后编辑为结果表格：
+
+当前（仅 base 环境、L0 = 全套件）的实际输出形如：
+
+```markdown
+## CI 测试报告 — pass
+
+branch: `dev_ci` · commit: `517028f8f6fe` · all tests passed · 32s
+
+| 环境 | L0 单元 | L1 parity | L2 冒烟 | 耗时 |
+|------|---------|-----------|---------|------|
+| base | 159 passed, 3 skipped | — (skip) | — (skip) | 21s |
+```
+
+parity / 冒烟测试合入并配置 act/pi 环境后，表格会扩展为多环境多 tier。
+
+---
+
+## 六、组件与文件结构
+
+```
+scripts/
+  install.sh               模型环境安装 (pi0/pi05)
+  run_ci.sh                CI daemon 入口（薄壳, 转发到 ci/run_ci.py）
+  ci/
+    run_ci.py              交互式启动器（配置 → 存盘 → 启动 daemon）
+    daemon.py              核心 daemon（轮询 GitCode → 跑测试 → 发评论）
+    pr_reporter.py         GitCode PR 评论工具（创建/编辑/格式化）
+    parse_results.py       JUnit XML → 结构化结果摘要
+    build_ci_envs.sh       一条命令建 base/act/pi 三个 venv
+```
+
+**核心 daemon 循环**：
+
+```python
+while True:
+    prs = fetch_open_prs()              # GET /pulls?state=open（所有作者）
+    for pr in prs:
+        if is_seen(pr.number, pr.sha):  # SQLite 去重
+            continue
+        process_pr(pr)                  # fetch → pytest → comment
+        mark_seen(pr.number, pr.sha)    # 记录已处理
+    sleep(30)
+```
+
+`process_pr` 内部按环境 × tier 分配执行：base 跑 L0，act 跑 L1+L2，pi 跑 L1。
+每个 tier 直接调 `pytest --junitxml`，不依赖 PR 分支上的脚本（版本可能不一致）。
+单个 tier exit 5（无测试收集）不算失败，但**某环境所有 tier 都收集 0 例时该
+环境判 FAIL**——空 summaries 不允许报 pass，防止环境配置错误被静默吞掉。
+
+---
+
+## 七、安全与风险
+
+| 威胁 / 风险 | 对策 |
+|------------|------|
+| token 泄露 | 只存环境变量 / systemd unit，不进仓库；API 请求经 `Authorization: Bearer` 头携带，不进 URL（避免代理/日志泄露） |
+| 执行恶意 PR 代码 | `checkout --detach` + `git clean -qfd`，不碰工作区 |
+| PR 评论 API 限流 | SHA 去重 + 编辑同一条评论（不追加） |
+| GitCode PR API 变更 | 只用标准 `GET /pulls?state=open`，最稳定的端点 |
+| merge ref 不存在（冲突） | 捕获 → 评论报 "fetch failed" |
+| daemon 挂了漏掉 PR | SQLite 只把 `done`/`failed` 视为已完成；`running`/`crashed` 状态重启后自动重试，并复用记录的 comment_id 编辑原「运行中」评论（不留残骸） |
+| openpi + lerobot 环境冲突 | 三环境隔离（`build_ci_envs.sh`） |
