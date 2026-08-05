@@ -8,7 +8,7 @@ VLA Factory is a **recipe-driven** fine-tuning framework for robot Vision-Langua
 
 ## Architecture & Key Features
 
-![VLA Factory layered architecture](./docs/graph/vla-factory-layered-architecture.en.svg)
+![VLA Factory overall architecture](./docs/graph/vla-factory-layered-architecture.en.svg)
 
 Architecture overview: VLA Factory's core goal is to unify the data, model, training artifact, and deployment-entry contracts in a VLA fine-tuning workflow. Users describe experiment intent with a recipe; the framework turns external datasets into unified sample semantics, calls upstream model ecosystems through adapters, and produces reusable, verifiable training results.
 
