@@ -281,6 +281,41 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
 
 只有在调试时，`inspect` 和 `resolve --explain` 才展示框架推导出的内部事实；错误提示遵循局部暴露原则：例如相机映射歧义时，只展示目标模型槽位、候选相机和对应的 override 片段，不输出完整声明。CLI 提供四类能力：解析并预览三者组合；按主题解释 Mapping、Transform 和来源；检查实际数据、模型实例和机器人声明；把具身组合输出给下游或调试工具。这些命令应能在未安装可选模型重依赖、未初始化 GPU、未连接机器人平台的环境中运行。
 
+### 3.5 维度检查：inspect
+
+`inspect` 是上节第三类能力的具体形态：把数据集、模型、机器人三个维度的
+描述以结构化形式输出，让用户在组合解析之前就能直观看到「框架眼中的三样
+东西长什么样」。CLI 形式：
+
+```bash
+vlafactory-cli inspect data  --path <dataset> [--stats]
+vlafactory-cli inspect model --name <model> [--path <checkpoint>]
+vlafactory-cli inspect robot --name <robot>
+vlafactory-cli inspect --config <recipe.yaml>   # 按 recipe 一次输出三份
+```
+
+三个维度的输出共用一个信封：`{dimension, source, facts}`，
+默认人读 YAML，`--json` 供工具消费；key 顺序确定、可 diff。`facts` 内每项
+事实标注来源（`measured` / `inferred` / `undeclared`），例如
+`inspect model --path` 输出 ModelMetadata 与 BaseContract 的合并视图时，
+`action_dim: 32  # base_contract` 一眼可见该事实来自 checkpoint 自述。
+
+inspect 遵守三条纪律：
+
+- **不猜语义**——探测不到、也无法在受控词表下唯一推断的事实原样输出
+  null（`semantic: null (undeclared)`），宁可暴露空缺，也不做相似度
+  猜测；空缺正是解析器保守失败、要求受控 override 的依据。
+- **不触发重依赖**——`inspect model` 只读 registry 的 ModelMetadata 与
+  checkpoint 的 `config.json`（BaseContract），永不调用模型 factory；
+  全部子命令无 GPU、无可选 extras、无机器人连接可运行。
+- **不解析跨维度引用**——数据侧探测到的 `robot_ref`（如 lerobot
+  `robot_type`）原样输出字符串；它是否对应一个已注册的 RobotProfile
+  由组合解析层校验。
+
+`--stats` 是显式开销开关：统计量默认只出摘要。数据维度输出所依据的
+DataSchema 字段表与推断规则，见
+[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)。
+
 ---
 
 ## 4. 核心模块设计
@@ -321,6 +356,8 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 `NormStats` 是与具体数据内容绑定的归一化统计量（mean/std、min/max 或 quantile）。它与 DataSchema 一起由 reader 读取或由框架计算，但保持独立结构。
 
 数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用；它同时为推理侧保存并复用 schema、norm stats 和 recipe，保证训练与推理使用同一套数据标准。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明外部数据解析层与数据中间表示层的职责边界、`FormatReader` / `Episode` / `Frame` / `VideoRef` / `DatasetManifest` 等核心对象，以及新增数据格式、视频解码策略和 transform step 的扩展方式。
+
+数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。字段准入与推断规则见[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)（目标设计）。
 
 #### 4.1.2 VLA 模型：ModelMetadata 与 BaseContract
 
