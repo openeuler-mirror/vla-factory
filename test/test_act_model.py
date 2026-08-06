@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
     """Create a dummy Observation for testing."""
-    from vla_factory.model.protocols.observation import Observation
+    from vla_factory.model.interfaces.observation import Observation
 
     images = {cam: torch.randn(B, 3, *image_size) for cam in cameras}
     image_masks = {cam: torch.ones(B, dtype=torch.bool) for cam in cameras}
@@ -34,8 +34,8 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 
 def _make_recipe_and_schema(action_dim=6, action_horizon=10, cameras=("front",), state_dim=6):
     """Create a minimal TrainRecipe + DataSchema pair for factory calls."""
-    from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig
-    from vla_factory.config.defaults import resolve_recipe
+    from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig
+    from vla_factory.recipe.defaults import resolve_recipe
     from vla_factory.data.manifest import DataSchema
 
     recipe = resolve_recipe(TrainRecipe(
@@ -88,7 +88,7 @@ class TestAdapter:
     @skip_no_lerobot
     def test_protocol_compliance(self):
         """Wrapper satisfies VLAModelPyTorch and nn.Module."""
-        from vla_factory.model.protocols.model import VLAModelPyTorch, VLAModel
+        from vla_factory.model.interfaces.model import VLAModelPyTorch, VLAModel
         from vla_factory.model.registry import get_entry
 
         entry = get_entry("act")
@@ -128,7 +128,7 @@ class TestAdapter:
 
     def test_observation_to(self):
         """Observation.to() moves tensors to different dtype."""
-        from vla_factory.model.protocols.observation import Observation
+        from vla_factory.model.interfaces.observation import Observation
 
         obs = Observation(
             images={"front": torch.randn(2, 3, 224, 224)},
@@ -241,7 +241,7 @@ class TestLerobotIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Default profile loading (vla_factory/config/model/act.yaml) — no lerobot needed
+#  Default profile loading (vla_factory/recipe/model/act.yaml) — no lerobot needed
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -249,7 +249,7 @@ class TestDefaultProfile:
     """Model default profile + per-run override merge (config-layer only)."""
 
     def test_profile_exists_and_has_hyperparams(self):
-        from vla_factory.config.defaults import load_model_defaults
+        from vla_factory.recipe.defaults import load_model_defaults
 
         d = load_model_defaults("act")
         assert "dim_model" in d
@@ -291,7 +291,7 @@ class TestDefaultProfile:
         assert _schema_image_size(schema, "front") == (480, 640)
 
     def test_unknown_model_returns_empty(self):
-        from vla_factory.config.defaults import load_model_defaults
+        from vla_factory.recipe.defaults import load_model_defaults
 
         assert load_model_defaults("nonexistent_model") == {}
 
@@ -302,7 +302,7 @@ class TestDefaultProfile:
 
         entry = get_entry("act")
         recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        from vla_factory.config.defaults import resolve_recipe
+        from vla_factory.recipe.defaults import resolve_recipe
         recipe.model_config = {**recipe.model_config, "dim_model": 256}
         recipe = resolve_recipe(recipe)
         wrapper = entry.factory(recipe=recipe, schema=schema)

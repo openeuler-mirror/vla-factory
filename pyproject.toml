@@ -57,7 +57,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vlafactory-cli = "vla_factory.cli:main"
+vlafactory-cli = "vla_factory.recipe.cli:main"
 
 [project.optional-dependencies]
 # Per-model ecosystem deps. ACT wraps lerobot's ACTPolicy (standard PyPI, pip-friendly).
@@ -116,8 +116,9 @@ include = ["vla_factory*"]
 
 # Ship model default profiles (act.yaml, pi0.yaml, ...) with the package.
 [tool.setuptools.package-data]
-"vla_factory.config.model" = ["*.yaml"]
-"vla_factory.deploy.connectors" = ["*.yml"]
+"vla_factory.recipe.model" = ["*.yaml"]
+"vla_factory.inference.connectors" = ["*.yml"]
+"vla_factory.robot.profiles" = ["*.yaml"]
 
 # Collect only the repo test suite (a bare `pytest` must not pick up unrelated
 # local directories such as vendored skills or datasets).

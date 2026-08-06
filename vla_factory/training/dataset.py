@@ -26,12 +26,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.model.interfaces.observation import Observation
 
-from .formats.base import FormatReader, Frame
-from .codec.base import VideoCodec
-from .manifest import DatasetManifest, SampleLocator
-from .transforms.pipeline import TransformPipeline
+from vla_factory.data.formats.base import FormatReader, Frame
+from vla_factory.data.codec.base import VideoCodec
+from vla_factory.data.manifest import DatasetManifest, SampleLocator
+from vla_factory.assembly.transforms.pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
 

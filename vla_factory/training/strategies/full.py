@@ -23,8 +23,8 @@ import torch.nn as nn
 from vla_factory.utils.format import human_count
 
 if TYPE_CHECKING:
-    from vla_factory.config.recipe import TrainRecipe
-    from vla_factory.model.protocols.model import ModelMetadata
+    from vla_factory.recipe.recipe import TrainRecipe
+    from vla_factory.model.interfaces.model import ModelMetadata
 
 logger = logging.getLogger(__name__)
 

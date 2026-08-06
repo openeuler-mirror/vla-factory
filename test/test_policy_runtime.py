@@ -10,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from vla_factory.deploy.infer import ActionCommand
-from vla_factory.deploy.platforms.simulator import SimulatorAdapter
-from vla_factory.deploy.policy_runtime import PolicyClientTransport, PolicyRunner
+from vla_factory.inference.infer import ActionCommand
+from vla_factory.inference.platforms.simulator import SimulatorAdapter
+from vla_factory.inference.policy_runtime import PolicyClientTransport, PolicyRunner
 
 CAMERAS = ("front",)
 STATE_DIM = 3

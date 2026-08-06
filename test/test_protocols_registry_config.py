@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 def test_protocols():
     """Protocol layer: Observation, ActionSpec, ModelMetadata, VLAModel hierarchy."""
-    from vla_factory.model.protocols.observation import ActionSpec, Observation
-    from vla_factory.model.protocols.model import (
+    from vla_factory.model.interfaces.observation import ActionSpec, Observation
+    from vla_factory.model.interfaces.model import (
         ModelMetadata, VLAModel, VLAModelPyTorch, VLAModelJAX,
     )
 
@@ -99,7 +99,7 @@ def test_protocols():
 
 def test_registry():
     """Registry: register_vla, get_entry, list_entries."""
-    from vla_factory.model.protocols.model import ModelMetadata
+    from vla_factory.model.interfaces.model import ModelMetadata
     from vla_factory.model.registry import register_vla, get_entry, list_entries
 
     # Register a mock model
@@ -146,8 +146,8 @@ def test_registry():
 
 def test_config_parser():
     """Config: parse YAML → TrainRecipe."""
-    from vla_factory.config.parser import parse_recipe_from_string
-    from vla_factory.config.recipe import TrainRecipe
+    from vla_factory.recipe.parser import parse_recipe_from_string
+    from vla_factory.recipe.recipe import TrainRecipe
 
     # Minimal config
     minimal = "model:\n  name: act"
@@ -247,7 +247,7 @@ output_dir: outputs/pi0_lora
 
 def test_yaml_files():
     """Parse the actual YAML config files from examples/."""
-    from vla_factory.config.parser import parse_recipe
+    from vla_factory.recipe.parser import parse_recipe
 
     examples_dir = Path(__file__).resolve().parent.parent / "examples"
     if not examples_dir.exists():

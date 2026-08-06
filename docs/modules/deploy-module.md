@@ -647,7 +647,7 @@ When integrating a new simulator / real-robot wire protocol, a new
 observation adapter must be added; changing `InferenceEngine`, the execution
 policies, or the data pipeline for this is forbidden.
 
-1. Add an adapter file under `vla_factory/deploy/platforms/`.
+1. Add an adapter file under `vla_factory/inference/platforms/`.
 2. Implement `__call__(observation, task="") -> ObsDict`, satisfying the
    `PlatformObservationAdapter` protocol.
 3. Cameras must be selected by `camera_keys` and state validated by
@@ -667,7 +667,7 @@ When integrating a new wire transport / framing protocol, a new transport
 must be added; mixing protocol details into an adapter, the runner, or the
 engine is forbidden.
 
-1. Add a file under `vla_factory/deploy/transports/`: mirror
+1. Add a file under `vla_factory/inference/transports/`: mirror
    `ZmqPolicyClient` (connection + send/recv primitives) for a client-shaped
    form, or `LengthPrefixedJsonRpcServer` (RPC server) for a server-shaped
    form.
@@ -683,7 +683,7 @@ When the model dependencies and the platform runtime must live in two
 separate environments, provide a dependency-free connector for that
 platform:
 
-1. Add a module under `vla_factory/deploy/connectors/` with **no VLA Factory
+1. Add a module under `vla_factory/inference/connectors/` with **no VLA Factory
    imports whatsoever**, so it can load in a dependency-scarce platform env
    (via `PYTHONPATH` or the platform's policy plugin mechanism).
 2. The connector may only "wrap the native observation + drive the returned

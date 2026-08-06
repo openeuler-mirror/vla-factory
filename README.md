@@ -135,7 +135,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 ---
 
-**Model default profiles**: each model ships a baseline profile under `vla_factory/config/model/<name>.yaml` (e.g. [`vla_factory/config/model/act.yaml`](./vla_factory/config/model/act.yaml)). The factory loads it as the default and deep-merges the per-run `model.config` from the recipe on top — recipe values win, so the profile is the starting point for an experiment, not a frozen contract. Unknown keys surface as an error from the upstream config object (no silent failures from typos).
+**Model default profiles**: each model ships a baseline profile under `vla_factory/recipe/model/<name>.yaml` (e.g. [`vla_factory/recipe/model/act.yaml`](./vla_factory/recipe/model/act.yaml)). The factory loads it as the default and deep-merges the per-run `model.config` from the recipe on top — recipe values win, so the profile is the starting point for an experiment, not a frozen contract. Unknown keys surface as an error from the upstream config object (no silent failures from typos).
 
 ---
 

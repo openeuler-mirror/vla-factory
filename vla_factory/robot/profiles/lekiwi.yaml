@@ -1,0 +1,50 @@
+# LeKiwi robot profile (lerobot mobile manipulator).
+#
+# A wheeled base + 6-DoF arm. The 9-DoF action vector is the concatenation,
+# in robot-native order, of the 3 base commands and the 6 arm joints (the last
+# arm joint being the gripper). These are the stable body facts consumed by the
+# composition resolver; runtime transport / platform session info lives in the
+# inference module.
+
+name: lekiwi
+variant: so100-arm
+manufacturer: Hugging LeRobot
+
+# Stable semantic camera names exposed by the body.
+cameras: [front, wrist]
+
+# Robot-native joint order. base_x / base_y are planar translations,
+# base_z is the heading (continuous). The 6-DoF arm follows so100 conventions;
+# the final entry is the gripper.
+joints:
+  names: [base_x, base_y, base_z,
+          shoulder_pan, shoulder_lift, elbow_flex,
+          wrist_flex, wrist_roll, gripper]
+  units: radian
+  types: [prismatic, prismatic, continuous,
+          revolute, revolute, revolute,
+          revolute, revolute, prismatic]
+  # Per-joint position limits intentionally left unspecified here; populate from
+  # the URDF / calibration once a canonical source is pinned down.
+  limits_low: []
+  limits_high: []
+
+# Gripper DoF is the last joint of the arm vector; lerobot convention is
+# 0 = fully open, 1 = fully closed.
+gripper:
+  open_value: 0.0
+  close_value: 1.0
+  joint_index: 8
+
+control_modes: [joint_pos]
+native_action_type: joint_pos
+
+coordinate_frame: base_link
+urdf_ref: ""
+
+# Static safety bounds on the action vector; left unspecified until a canonical
+# source is pinned down. The resolver records (not silently applies) bounds.
+safety_bounds_low: []
+safety_bounds_high: []
+
+recommended_control_hz: 30

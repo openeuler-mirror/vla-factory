@@ -381,7 +381,7 @@ The logic that arranges `Observation` into an upstream model-library-native batc
 **Input transform** (training side):
 
 ```yaml
-# vla_factory/config/model/act.yaml
+# vla_factory/recipe/model/act.yaml
 transforms:
   inputs:
     - {type: image_to_float}
@@ -564,7 +564,7 @@ To add a transform step, subclass `TransformStep` and register it with `Transfor
 
 Basic steps:
 
-1. Add or extend a step under `vla_factory/data/transforms/`.
+1. Add or extend a step under `vla_factory/assembly/transforms/`.
 2. Register the type name with `@TransformRegistry.register("your_step")`.
 3. Implement `__call__(sample)`.
 4. If runtime context is needed, implement `from_config(cfg, ctx)`.

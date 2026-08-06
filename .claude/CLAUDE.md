@@ -37,31 +37,38 @@ Execution path:
 
 ```text
 YAML recipe → TrainRecipe → model registry (entries/<name>.py)
-  → data reader / codec / transforms / sampler → VLADataset / DataLoader
-  → VLATrainer (HF Trainer based) → checkpoint + inference_metadata
+  → data reader / codec (Canonical IR) → assembly transforms / training sampler
+  → VLADataset / DataLoader → VLATrainer (HF Trainer based)
+  → checkpoint + inference_metadata
   → InferenceEngine + platform adapters (simulator / lerobot host / robotwin)
 ```
+
+The composition layer (`assembly/`) is being introduced: `resolve_assembly()`
+combines the data schema × model metadata × robot profile into a
+`ResolvedAssembly`. Today a `vlafactory-cli resolve` dry-run exercises it; the
+training/inference loops do not yet consume it (architecture §7.4 phase 0).
 
 ---
 
 ## Code structure
 
-- **`vla_factory/cli.py`** — argparse CLI: `train`, `preprocess`, `list`,
-  `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli` (installed) or
-  `python -m vla_factory` (from source). This is where user commands land.
-- **`vla_factory/config/`** — recipe parsing & model defaults.
-  - `recipe.py` — `TrainRecipe` and sub-dataclasses (mirror the YAML).
+- **`vla_factory/recipe/cli.py`** — argparse CLI: `train`, `preprocess`, `list`,
+  `resolve`, `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli` (installed)
+  or `python -m vla_factory` (from source). This is where user commands land.
+- **`vla_factory/recipe/`** — user-expression layer: recipe parsing & model defaults.
+  - `recipe.py` — `TrainRecipe` and sub-dataclasses, incl. `RobotConfig` and
+    `AssemblyConfig` (composition selection + controlled override).
   - `parser.py` — `parse_recipe(path|dict) → TrainRecipe`.
   - `defaults.py` — `load_model_defaults()` + `resolve_recipe()`: deep-merges
-    `vla_factory/config/model/<name>.yaml` (baseline profile) under the
+    `vla_factory/recipe/model/<name>.yaml` (baseline profile) under the
     recipe's per-run `model.config` (recipe wins). OmegaConf-based, no Hydra
     runtime. Profiles are external/user-editable/diff-friendly; Hydra's
     `defaults: [model/<name>]` can adopt them later with no file change.
-- **`vla_factory/config/model/`** — per-model baseline profiles (`act.yaml`,
+- **`vla_factory/recipe/model/`** — per-model baseline profiles (`act.yaml`,
   `pi0.yaml`, …). Ships with the package (see `pyproject.toml`
   `package-data`).
 - **`vla_factory/model/`**
-  - `protocols/` — `ModelMetadata` (frozen descriptor: backend, action head
+  - `interfaces/` — `ModelMetadata` (frozen descriptor: backend, action head
     type, trainable components), `VLAModel` / `VLAModelPyTorch` /
     `VLAModelJAX` protocols, `Observation`/`ActionSpec`. Framework-agnostic
     contracts that flow between data and model layers.
@@ -75,18 +82,30 @@ YAML recipe → TrainRecipe → model registry (entries/<name>.py)
 - **`vla_factory/model/registry/entries/`** — the actual adapters, one file
   per model: `act.py`, `pi0.py`. **These are the canonical worked examples**
   for adding a new model — diff against them, don't start from scratch.
-- **`vla_factory/data/`** — unified data semantics.
-  - `formats/` — format readers (`lerobot_v3.py`), registry + `get_reader()`.
-  - `codec/` — video decode (`pyav.py`), `resolve_codec()`.
-  - `transforms/` — `TransformPipeline` + `TransformRegistry` (`@register`
-    steps: `resize_images`, `pad_dimensions`, `image_to_float`,
-    `image_layout`, `normalize`, `task_tokenize`, …). YAML-driven.
-  - `sampling/sampler.py`, `manifest.py` (`DataSchema`, `FeatureStats`,
-    `NormStats`), `dataset.py`, `loader.py` (`create_dataloaders`).
-- **`vla_factory/training/`** — `train.py` (orchestration: recipe → trained
-  model), `pytorch_trainer.py` (`VLATrainer`, wraps HF `Trainer`),
-  `strategies/` (`apply_strategy`: full / freeze / selective; LoRA is WIP).
-- **`vla_factory/deploy/`** — split into a transport-agnostic inference core
+- **`vla_factory/data/`** — read-only Canonical IR only (no sample building):
+  `formats/` (format readers: `lerobot_v3.py`, registry + `get_reader()`),
+  `codec/` (video decode: `pyav.py`, `resolve_codec()`), and `manifest.py`
+  (`DataSchema`, `FeatureStats`, `NormStats`, `Episode`/`Frame` IR).
+- **`vla_factory/robot/`** — robot body descriptions (`RobotProfile`):
+  `profile.py` + `registry.py` (`get_robot_profile()` / `list_robot_profiles()`)
+  and bundled `profiles/*.yaml` (e.g. `lekiwi.yaml`). Static body facts only —
+  no transport / platform session info.
+- **`vla_factory/assembly/`** — composition resolution layer
+  (data × model × robot). `resolver/` holds `resolve_assembly()` →
+  `ResolvedAssembly`, the serializable mapping/pipeline-spec types and the
+  structured `ResolutionError` (phase-0 skeleton: Load / Materialize / Validate
+  only). `transforms/` holds `TransformPipeline` + `TransformRegistry`
+  (`@register` steps: `resize_images`, `pad_dimensions`, `image_to_float`,
+  `image_layout`, `normalize`, `task_tokenize`, …) — YAML-driven, shared by
+  training and inference.
+- **`vla_factory/training/`** — training orchestration + sample building.
+  `train.py` (recipe → trained model), `pytorch_trainer.py` (`VLATrainer`,
+  wraps HF `Trainer`), `strategies/` (`apply_strategy`: full / freeze /
+  selective; LoRA is WIP), plus the sample-construction pipeline moved out of
+  `data/`: `dataset.py` (`VLADataset` / `collate_fn`), `loader.py`
+  (`create_dataloaders`), `sampling/` (`SlidingWindowSampler`),
+  `manifest.py` (`build_manifest`).
+- **`vla_factory/inference/`** — split into a transport-agnostic inference core
   and pluggable sub-layers (see `docs/modules/deploy-module.md`):
   - `infer.py` — the inference core: `InferenceEngine` + `ObsDict`, the
     `ActionChunk`/`ActionCommand` contracts, the execution policies
@@ -137,7 +156,8 @@ engine on a dataset sample / per-episode L1.
 
 The transform pipeline is the contract bridge: each model's baseline profile
 declares which `TransformRegistry` steps it needs (e.g. pi0 needs
-`image_to_float` with `range: [-1,1]` HWC); the data layer runs them. The
+`image_to_float` with `range: [-1,1]` HWC); the training/inference layers run
+them (the steps themselves live in `assembly/transforms`). The
 adapter never rescales images itself — the pipeline must produce the exact
 layout/range the upstream model expects.
 
@@ -170,7 +190,7 @@ overrides (`--steps`, `--batch-size`, `--output-dir`) tweak without editing
 the file. `examples/reference.yaml` documents every field.
 
 **Model defaults vs recipe config.** A model ships a baseline profile under
-`vla_factory/config/model/<name>.yaml`; the recipe's `model.config` is
+`vla_factory/recipe/model/<name>.yaml`; the recipe's `model.config` is
 deep-merged on top and **recipe wins**. The profile is a starting point, not
 a frozen contract. Unknown keys surface as an error from the upstream config
 object (no silent typo failures).
@@ -199,7 +219,7 @@ vla_factory only fine-tunes, so a thin wrapper is the correct boundary.)
 
 Follow `entries/pi0.py` (or `act.py`) as the worked example. Steps:
 
-1. **Baseline profile** — add `vla_factory/config/model/<name>.yaml`
+1. **Baseline profile** — add `vla_factory/recipe/model/<name>.yaml`
    declaring the transform steps + defaults the model needs. Register it in
    `pyproject.toml` `package-data` if it should ship with installs.
 2. **Entry module** — create `vla_factory/model/registry/entries/<name>.py`:

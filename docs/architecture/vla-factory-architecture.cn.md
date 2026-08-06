@@ -63,7 +63,7 @@ VLA Factory 是一个 recipe 驱动的机器人视觉-语言-动作（Vision-Lan
 
 一次训练应由 recipe 完整描述。模型选择、数据路径、机器人选择、采样窗口、动作空间、微调策略、训练步数、输出目录等都来自配置，而不是散落在脚本里。
 
-recipe 是用户最高优先级的配置入口。recipe 的顶层字段表达实验意图（模型/数据/机器人选择、微调策略、训练参数、输出）；模型自身的能力与默认值由模型声明（ModelMetadata）承载，不在 recipe 里；需要调整数据/模型/机器人三者之间的关系时，写在 `composition` 区。这样实验配置是可审计的，用户能在一份文件里看到本次实验主动覆盖了什么，而不是到脚本和隐式默认值里追踪行为来源。
+recipe 是用户最高优先级的配置入口。recipe 的顶层字段表达实验意图（模型/数据/机器人选择、微调策略、训练参数、输出）；模型自身的能力与默认值由模型声明（ModelMetadata）承载，不在 recipe 里；需要调整数据/模型/机器人三者之间的关系时，写在 `assembly` 区。这样实验配置是可审计的，用户能在一份文件里看到本次实验主动覆盖了什么，而不是到脚本和隐式默认值里追踪行为来源。
 
 模型相关默认值（默认预处理、图像尺寸、相机槽位布局、推理步数等）随模型声明 YAML 发布，用户不可在 recipe 中修改；recipe 只承载用户的组合选择、组合调整与训练参数。
 
@@ -126,7 +126,7 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 
 - **用户表达层**：`vlafactory-cli | YAML recipe | API | ……`，框架入口，recipe 描述本次实验的数据、模型、机器人和微调配置。
 - **微调层 / 推理层**：两个对等的执行引擎。微调层挂接 LoRA / PiSSA / GaLore 等微调策略；推理层对接 RoboTwin / LIBERO / ManiSkill 等仿真与评估环境。
-- **组合解析层**：在三种统一描述之上，把数据、VLA 模型、机器人三者进一步组合为**具身组合**（成功产出 `ResolvedComposition`，失败抛出 `ResolutionError`），供微调层与推理层共用。本层不接入外部生态。
+- **组合解析层**：在三种统一描述之上，把数据、VLA 模型、机器人三者进一步组合为**具身组合**（成功产出 `ResolvedAssembly`，失败抛出 `ResolutionError`），供微调层与推理层共用。本层不接入外部生态。
 - **数据 / VLA 模型 / 机器人**：三大维度，各自建立统一描述——统一的数据描述（`DataSchema`）、统一的模型描述（`ModelMetadata`）、统一的机器人描述（`RobotProfile`），即框架的「三个统一」。各维度接入具体生态：数据侧 LeRobot / RLDS / HDF5、模型侧 GR00T / OpenPI / OpenVLA、机器人侧 SO101 / Lekiwi / Franka。
 
 依赖关系：recipe 驱动两个执行引擎；三大维度的描述汇入组合解析层；具身组合再交给微调层与推理层。微调层和推理层只消费具身组合，不再独立推导三者之间的对应关系。
@@ -144,8 +144,8 @@ vla_factory/
 ├── data/            # 数据 reader 与中间表示
 │   ├── formats/     # FormatReader 接口与各外部格式实现（LeRobot / HDF5 / RLDS / Zarr）
 │   └── ...          # DataSchema / Episode / Frame / NormStats 中间表示（只读，不构建样本）
-├── composition/     # 数据集 × 机器人 × VLA 模型的组合解析
-│   ├── resolver/    # 具身组合解析器（Resolver / ResolvedComposition）
+├── assembly/     # 数据集 × 机器人 × VLA 模型的组合解析
+│   ├── resolver/    # 具身组合解析器（Resolver / ResolvedAssembly）
 │   ├── transforms/  # TransformStep / TransformPipeline / TransformRegistry 及各 step 实现
 │   └── ...
 ├── model/           # 模型抽象与上游 adapter
@@ -166,7 +166,7 @@ vla_factory/
 └── test/            # 单元测试、标准测试和集成 smoke test
 ```
 
-**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation`、`ModelMetadata` / `BaseContract`，三者都不反向依赖上层。`composition/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/interfaces/`，被 `composition/`、`training/`、`inference/` 共同依赖，而 `model/` 不反向依赖它们——整体无环。
+**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation`、`ModelMetadata` / `BaseContract`，三者都不反向依赖上层。`assembly/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/interfaces/`，被 `assembly/`、`training/`、`inference/` 共同依赖，而 `model/` 不反向依赖它们——整体无环。
 
 ---
 
@@ -196,7 +196,7 @@ robot:
 **② 组合调整区（可选）**——默认情况下，三者之间的对应关系由组合解析层（4.2 节）从三者描述自动推导；只有解析器无法唯一确定、或用户想用非默认策略时，才在这里显式写出（4.2 节称之为「受控 override」）：
 
 ```yaml
-composition:                    # 可选，默认留空
+assembly:                    # 可选，默认留空
   camera_mapping:               # 模型视觉槽位 -> 数据/机器人相机（歧义时指定）
     base_0_rgb: front
     left_wrist_0_rgb: wrist
@@ -227,14 +227,14 @@ output:
 
 ### 3.2 字段概览
 
-下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/config/recipe.py`）：
+下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/recipe/recipe.py`）：
 
 | 区 | 块 | 主要字段 | 说明 |
 |---|---|---|---|
 | 组合选择 | `model` | `name`、`path` | 模型选择；`path` 微调时必填，从零训练可省 |
 | 组合选择 | `data.source` | `path`、`format`、`video_codec` | 数据集路径与格式，`format: auto` 自动识别 |
 | 组合选择 | `robot` | `name` | 机器人本体声明 |
-| 组合调整（可选） | `composition` | `camera_mapping`、`state_mapping`、`action_mapping`、`joint_mapping`、`language_mapping`/`default_task`、`accept_fps_mismatch`、`gripper_flip` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限） |
+| 组合调整（可选） | `assembly` | `camera_mapping`、`state_mapping`、`action_mapping`、`joint_mapping`、`language_mapping`/`default_task`、`accept_fps_mismatch`、`gripper_flip` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限） |
 | 训练参数 | `data.sampler` | `type`、`n_obs_steps`、`action_horizon` | 把 episode 切成训练样本的窗口策略 |
 | 训练参数 | `data.split` | `strategy`、`train_ratio`、`seed` | 训练/验证集划分 |
 | 训练参数 | `finetuning` | `strategy`、`lora`、`freeze_components`、`trainable_components` | 微调策略与组件选择 |
@@ -242,7 +242,7 @@ output:
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
 | 扩展 | `transforms.imports` | 自定义 transform 模块路径 | 注册用户自定义 transform |
 
-`vla_factory/config/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。
+`vla_factory/recipe/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。
 
 ### 3.3 配置来源与优先级
 
@@ -268,7 +268,7 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
 | 模型静态能力 | ModelMetadata |
 | 模型实例事实 | BaseContract，在 ModelMetadata 能力范围内优先 |
 | 机器人事实 | RobotProfile / URDF |
-| 三者关系 | 解析器生成；歧义时由 recipe 的 `composition` 区显式指定 |
+| 三者关系 | 解析器生成；歧义时由 recipe 的 `assembly` 区显式指定 |
 
 具身组合（4.2）必须记录每个最终字段的来源。普通用户不需要先阅读 DataSchema 或 RobotProfile 字段参考——首次使用流程是：
 
@@ -280,6 +280,41 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
 ```
 
 只有在调试时，`inspect` 和 `resolve --explain` 才展示框架推导出的内部事实；错误提示遵循局部暴露原则：例如相机映射歧义时，只展示目标模型槽位、候选相机和对应的 override 片段，不输出完整声明。CLI 提供四类能力：解析并预览三者组合；按主题解释 Mapping、Transform 和来源；检查实际数据、模型实例和机器人声明；把具身组合输出给下游或调试工具。这些命令应能在未安装可选模型重依赖、未初始化 GPU、未连接机器人平台的环境中运行。
+
+### 3.5 维度检查：inspect
+
+`inspect` 是上节第三类能力的具体形态：把数据集、模型、机器人三个维度的
+描述以结构化形式输出，让用户在组合解析之前就能直观看到「框架眼中的三样
+东西长什么样」。CLI 形式：
+
+```bash
+vlafactory-cli inspect data  --path <dataset> [--stats]
+vlafactory-cli inspect model --name <model> [--path <checkpoint>]
+vlafactory-cli inspect robot --name <robot>
+vlafactory-cli inspect --config <recipe.yaml>   # 按 recipe 一次输出三份
+```
+
+三个维度的输出共用一个信封：`{dimension, source, facts}`，
+默认人读 YAML，`--json` 供工具消费；key 顺序确定、可 diff。`facts` 内每项
+事实标注来源（`measured` / `inferred` / `undeclared`），例如
+`inspect model --path` 输出 ModelMetadata 与 BaseContract 的合并视图时，
+`action_dim: 32  # base_contract` 一眼可见该事实来自 checkpoint 自述。
+
+inspect 遵守三条纪律：
+
+- **不猜语义**——探测不到、也无法在受控词表下唯一推断的事实原样输出
+  null（`semantic: null (undeclared)`），宁可暴露空缺，也不做相似度
+  猜测；空缺正是解析器保守失败、要求受控 override 的依据。
+- **不触发重依赖**——`inspect model` 只读 registry 的 ModelMetadata 与
+  checkpoint 的 `config.json`（BaseContract），永不调用模型 factory；
+  全部子命令无 GPU、无可选 extras、无机器人连接可运行。
+- **不解析跨维度引用**——数据侧探测到的 `robot_ref`（如 lerobot
+  `robot_type`）原样输出字符串；它是否对应一个已注册的 RobotProfile
+  由组合解析层校验。
+
+`--stats` 是显式开销开关：统计量默认只出摘要。数据维度输出所依据的
+DataSchema 字段表与推断规则，见
+[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)。
 
 ---
 
@@ -322,9 +357,11 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用；它同时为推理侧保存并复用 schema、norm stats 和 recipe，保证训练与推理使用同一套数据标准。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明外部数据解析层与数据中间表示层的职责边界、`FormatReader` / `Episode` / `Frame` / `VideoRef` / `DatasetManifest` 等核心对象，以及新增数据格式、视频解码策略和 transform step 的扩展方式。
 
+数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。字段准入与推断规则见[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)（目标设计）。
+
 #### 4.1.2 VLA 模型：ModelMetadata 与 BaseContract
 
-模型维度的描述（接口能力、默认预处理、相机槽位布局、输入尺寸、推理步数等）放在**模型自身的声明 YAML** 里，随模型发布，作为 Model 维度的事实在此体现；它不进 recipe，用户不可逐 run 修改。若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `composition` 区表达（见第 3 章），而不是改模型声明。详细设计见 [模型抽象模块设计](../modules/model-module.cn.md)（TODO）。
+模型维度的描述（接口能力、默认预处理、相机槽位布局、输入尺寸、推理步数等）放在**模型自身的声明 YAML** 里，随模型发布，作为 Model 维度的事实在此体现；它不进 recipe，用户不可逐 run 修改。若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `assembly` 区表达（见第 3 章），而不是改模型声明。详细设计见 [模型抽象模块设计](../modules/model-module.cn.md)（TODO）。
 
 ##### ModelMetadata
 
@@ -414,11 +451,11 @@ def load_act(recipe, schema):
 
 ### 4.2 组合解析层
 
-组合解析层把三者解析为统一的具身组合，是微调层和推理层共同的上游；它是确定性的纯逻辑层，也是目标架构的演进方向。详细设计见 [组合解析层模块设计](../modules/composition-module.cn.md)（TODO）。
+组合解析层把三者解析为统一的具身组合，是微调层和推理层共同的上游；它是确定性的纯逻辑层，也是目标架构的演进方向。详细设计见 [组合解析层模块设计](../modules/assembly-module.cn.md)（TODO）。
 
-#### 4.2.1 具身组合（ResolvedComposition）
+#### 4.2.1 具身组合（ResolvedAssembly）
 
-**「具身组合」是本框架定义的核心概念。** 它是组合解析器把「数据集 × 机器人 × VLA 模型」三者解析成功后的**唯一产物**，代码中对应 `ResolvedComposition`。
+**「具身组合」是本框架定义的核心概念。** 它是组合解析器把「数据集 × 机器人 × VLA 模型」三者解析成功后的**唯一产物**，代码中对应 `ResolvedAssembly`。
 
 之所以要专门定义一个概念，是因为训练模块和推理模块都需要知道「这次到底用的是哪三样东西、它们之间是什么关系」，而这恰恰是最容易出错、最容易被各自私自假设的地方。具身组合把这部分知识从训练代码和推理代码里抽出来，固化成一个不可绕过的交接对象。
 
@@ -427,7 +464,7 @@ def load_act(recipe, schema):
 具身组合包含四类信息，共同回答「使用了哪些描述、最终接口是什么、字段如何对应、需要执行哪些转换」：
 
 ```text
-具身组合 ResolvedComposition
+具身组合 ResolvedAssembly
 ├─ 三者描述的规范化引用
 │   ├─ 数据集描述（DataSchema + NormStats）
 │   ├─ VLA 模型描述（ModelMetadata + BaseContract）
@@ -478,7 +515,7 @@ def load_act(recipe, schema):
 
 #### 4.2.2 组合解析器（Resolver）
 
-组合解析器是三者的组合解析入口，公共入口为 `resolve_composition()`。它是一个**确定性的纯逻辑组件**：
+组合解析器是三者的组合解析入口，公共入口为 `resolve_assembly()`。它是一个**确定性的纯逻辑组件**：
 
 - 不创建模型；
 - 不构造 DataLoader；
@@ -671,7 +708,7 @@ parse recipe
     -> save final/model.pt
 ```
 
-随着 4.2 节组合解析能力落地，训练入口会先调用 `resolve_composition()` 得到具身组合，再从具身组合中读取数据描述、模型描述和 Mapping，替代当前散落在 train() 里的手工字段解析。
+随着 4.2 节组合解析能力落地，训练入口会先调用 `resolve_assembly()` 得到具身组合，再从具身组合中读取数据描述、模型描述和 Mapping，替代当前散落在 train() 里的手工字段解析。
 
 微调层负责把数据层产出的 Canonical IR（`Episode` / `Frame`）按具身组合中解析得到的 `data_to_model` TransformPipeline 组装成 `Observation` 样本，再做窗口采样与批处理，交给 `VLATrainer`。
 
@@ -942,7 +979,7 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 ```text
 legacy action_spec / embodiment fields
     -> 临时的数据/模型/机器人描述
-    -> resolve_composition
+    -> resolve_assembly
     -> warning with migration suggestion
 ```
 

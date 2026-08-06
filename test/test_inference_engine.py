@@ -24,13 +24,13 @@ import torch
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vla_factory.config.recipe import ActionSpecConfig, TrainRecipe
+from vla_factory.recipe.recipe import ActionSpecConfig, TrainRecipe
 from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
-from vla_factory.deploy.infer import (
+from vla_factory.inference.infer import (
     InferenceEngine,
     ObsDict,
 )
-from vla_factory.deploy.infer import (
+from vla_factory.inference.infer import (
     ActionChunk,
     ActionCommand,
     PolicyExecutor,
@@ -321,7 +321,7 @@ class TestObsNormalization:
 
     def test_imagenet_normalization_values(self):
         """Verify ImageNet constants are correct."""
-        from vla_factory.data.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
         np.testing.assert_allclose(IMAGENET_MEAN, [0.485, 0.456, 0.406], atol=1e-6)
         np.testing.assert_allclose(IMAGENET_STD, [0.229, 0.224, 0.225], atol=1e-6)
 
@@ -362,7 +362,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_fallback_imagenet(self):
         """When norm_stats.images is None, both paths use ImageNet."""
-        from vla_factory.data.transforms.normalize import Normalize
+        from vla_factory.assembly.transforms.normalize import Normalize
 
         norm_stats = NormStats(
             state=FeatureStats(mean=[0.0] * 6, std=[1.0] * 6),
@@ -379,7 +379,7 @@ class TestTrainInferNormalizationConsistency:
         train_result = sample_train["images.front"]
 
         # ── Inference path: _obs_to_observation logic (same code) ──
-        from vla_factory.data.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
         img_inf = img_hwc.transpose(2, 0, 1).copy()
         infer_result = (img_inf - IMAGENET_MEAN[:, None, None]) / IMAGENET_STD[:, None, None]
 
@@ -387,7 +387,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_with_per_camera_stats(self):
         """use_imagenet_stats=False makes Normalize consume per-camera stats."""
-        from vla_factory.data.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         custom_mean = [0.3, 0.4, 0.5]
         custom_std = [0.2, 0.3, 0.4]
@@ -420,7 +420,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_state_normalization_uses_saved_stats(self):
         """Both paths use norm_stats.state for z-score."""
-        from vla_factory.data.transforms.normalize import Normalize
+        from vla_factory.assembly.transforms.normalize import Normalize
 
         state_mean = [1.0, 2.0, 3.0]
         state_std = [0.5, 1.0, 1.5]
@@ -447,7 +447,7 @@ class TestTrainInferNormalizationConsistency:
         Default True → fixed ImageNet constants (the pretrained-backbone default).
         Explicit False → per-camera dataset stats from stats.images.
         """
-        from vla_factory.data.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         img_hwc = np.full((16, 16, 3), 0.5, dtype=np.float32)
         img = img_hwc.transpose(2, 0, 1).copy()
@@ -484,7 +484,7 @@ class TestTrainInferNormalizationConsistency:
 
 class TestZMQObsAdapter:
     def test_basic_conversion(self):
-        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+        from vla_factory.inference.platforms.simulator import SimulatorAdapter
 
         adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
@@ -501,7 +501,7 @@ class TestZMQObsAdapter:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_missing_camera_raises(self):
-        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+        from vla_factory.inference.platforms.simulator import SimulatorAdapter
 
         adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
@@ -517,7 +517,7 @@ class TestZMQObsAdapter:
 
 class TestReplayPolicy:
     def test_replay_sequence(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.infer import ReplayPolicy
 
         data = [
             {"action": np.array([1.0, 2.0])},
@@ -532,7 +532,7 @@ class TestReplayPolicy:
         np.testing.assert_array_equal(policy.predict(obs).values, [[5.0, 6.0]])
 
     def test_replay_exhausted(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.infer import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -541,7 +541,7 @@ class TestReplayPolicy:
             policy.predict(obs)
 
     def test_replay_reset(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.infer import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -603,7 +603,7 @@ class TestLerobotHostAdapters:
     sorting, no auto-detection (which would scramble dimensions)."""
 
     def test_obs_adapter_assembles_state_in_key_order(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         state_keys = ("shoulder", "elbow", "wrist")
         # Host dict deliberately in scrambled insertion order.
@@ -615,7 +615,7 @@ class TestLerobotHostAdapters:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_obs_adapter_missing_state_key_raises(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=(), state_keys=("a", "b"), state_dim=2,
@@ -625,7 +625,7 @@ class TestLerobotHostAdapters:
 
     def test_obs_adapter_count_mismatch_raises(self):
         """Contract check must be a real raise (survives `python -O`)."""
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         with pytest.raises(ValueError, match="state_keys count"):
             LerobotHostObsAdapter(
@@ -633,7 +633,7 @@ class TestLerobotHostAdapters:
             )
 
     def test_action_adapter_maps_each_dim(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostActionAdapter
 
         keys = ("shoulder", "elbow", "wrist")
         adapter = LerobotHostActionAdapter(action_dim=3, action_keys=keys)
@@ -642,13 +642,13 @@ class TestLerobotHostAdapters:
 
     def test_action_adapter_count_mismatch_raises(self):
         """Contract check must be a real raise (survives `python -O`)."""
-        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostActionAdapter
 
         with pytest.raises(ValueError, match="action_keys count"):
             LerobotHostActionAdapter(action_dim=3, action_keys=("a", "b"))
 
     def test_obs_adapter_missing_camera_raises(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=("front",), state_keys=("a",), state_dim=1,

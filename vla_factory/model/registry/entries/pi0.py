@@ -36,9 +36,9 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
-from vla_factory.config.recipe import TrainRecipe
-from vla_factory.model.protocols.model import ModelMetadata
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.recipe.recipe import TrainRecipe
+from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.model.interfaces.observation import Observation
 from vla_factory.model.registry.registry import register_vla
 
 logger = logging.getLogger(__name__)
@@ -196,7 +196,7 @@ def load_pi0(recipe, schema) -> PI0ModelWrapper:
 
 def _resolve_pi0_config(recipe: TrainRecipe, model_name: str = "pi0") -> dict:
     """Merge the framework default profile with the recipe's model.config."""
-    from vla_factory.config.defaults import load_model_defaults
+    from vla_factory.recipe.defaults import load_model_defaults
 
     merged = OmegaConf.merge(
         load_model_defaults(model_name),

@@ -198,7 +198,7 @@ class TestSlidingWindowSampler(unittest.TestCase):
     """Test SlidingWindowSampler logic."""
 
     def test_per_frame_sampling(self):
-        from vla_factory.data.sampling.sampler import SlidingWindowSampler
+        from vla_factory.training.sampling.sampler import SlidingWindowSampler
         sampler = SlidingWindowSampler(n_obs_steps=1, action_horizon=ACTION_HORIZON)
         locators = sampler.sample_episode(0, FRAMES_PER_EPISODE)
         self.assertEqual(len(locators), FRAMES_PER_EPISODE)
@@ -206,25 +206,25 @@ class TestSlidingWindowSampler(unittest.TestCase):
             self.assertEqual(loc.start_frame_index, i)
 
     def test_n_obs_steps_2(self):
-        from vla_factory.data.sampling.sampler import SlidingWindowSampler
+        from vla_factory.training.sampling.sampler import SlidingWindowSampler
         sampler = SlidingWindowSampler(n_obs_steps=2, action_horizon=ACTION_HORIZON)
         locators = sampler.sample_episode(0, FRAMES_PER_EPISODE)
         self.assertEqual(len(locators), FRAMES_PER_EPISODE - 1)
 
     def test_short_episode(self):
-        from vla_factory.data.sampling.sampler import SlidingWindowSampler
+        from vla_factory.training.sampling.sampler import SlidingWindowSampler
         sampler = SlidingWindowSampler(n_obs_steps=1, action_horizon=ACTION_HORIZON)
         locators = sampler.sample_episode(0, 50)
         self.assertEqual(len(locators), 50)
 
     def test_empty_episode(self):
-        from vla_factory.data.sampling.sampler import SlidingWindowSampler
+        from vla_factory.training.sampling.sampler import SlidingWindowSampler
         sampler = SlidingWindowSampler(n_obs_steps=1, action_horizon=ACTION_HORIZON)
         locators = sampler.sample_episode(0, 0)
         self.assertEqual(len(locators), 0)
 
     def test_single_frame_episode(self):
-        from vla_factory.data.sampling.sampler import SlidingWindowSampler
+        from vla_factory.training.sampling.sampler import SlidingWindowSampler
         sampler = SlidingWindowSampler(n_obs_steps=1, action_horizon=ACTION_HORIZON)
         locators = sampler.sample_episode(0, 1)
         self.assertEqual(len(locators), 1)
@@ -238,7 +238,7 @@ class TestManifestBuild(unittest.TestCase):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.data.formats.lerobot_v3 import LeRobotV3Reader
-        from vla_factory.data.manifest import build_manifest
+        from vla_factory.training.manifest import build_manifest
 
         cls.reader = LeRobotV3Reader()
         cls.schema = cls.reader.get_schema(DATASET_PATH)
@@ -275,7 +275,7 @@ class TestManifestBuild(unittest.TestCase):
         self.assertEqual(len(train_eps & val_eps), 0)
 
     def test_deterministic_split(self):
-        from vla_factory.data.manifest import build_manifest
+        from vla_factory.training.manifest import build_manifest
         manifest2 = build_manifest(
             schema=self.schema,
             norm_stats=self.norm_stats,
@@ -296,7 +296,7 @@ class TestTransforms(unittest.TestCase):
     """Test individual transforms (numpy-based)."""
 
     def test_normalize(self):
-        from vla_factory.data.transforms.normalize import Normalize
+        from vla_factory.assembly.transforms.normalize import Normalize
         from vla_factory.data.manifest import NormStats, FeatureStats
         stats = NormStats(
             state=FeatureStats(mean=[1.0, 2.0], std=[0.5, 0.5]),
@@ -314,7 +314,7 @@ class TestTransforms(unittest.TestCase):
         np.testing.assert_allclose(result["actions"][0], [1.0, 1.0])
 
     def test_resize_images_noop(self):
-        from vla_factory.data.transforms.resize_images import ResizeImages
+        from vla_factory.assembly.transforms.resize_images import ResizeImages
         resize = ResizeImages(0, 0)  # no-op
         img = np.random.rand(3, IMAGE_H, IMAGE_W).astype(np.float32)
         sample = {
@@ -326,20 +326,20 @@ class TestTransforms(unittest.TestCase):
         self.assertEqual(result["images.front"].shape, (3, IMAGE_H, IMAGE_W))
 
     def test_resize_images_without_size_is_noop(self):
-        from vla_factory.data.transforms import TransformContext
-        from vla_factory.data.transforms.resize_images import ResizeImages
+        from vla_factory.assembly.transforms import TransformContext
+        from vla_factory.assembly.transforms.resize_images import ResizeImages
 
         self.assertIsNone(ResizeImages.from_config({"type": "resize_images"}, TransformContext(model_config={})))
 
     def test_resize_images_requires_height_and_width_together(self):
-        from vla_factory.data.transforms import TransformContext
-        from vla_factory.data.transforms.resize_images import ResizeImages
+        from vla_factory.assembly.transforms import TransformContext
+        from vla_factory.assembly.transforms.resize_images import ResizeImages
 
         with self.assertRaisesRegex(ValueError, "height.*width"):
             ResizeImages.from_config({"type": "resize_images", "height": 224}, TransformContext(model_config={}))
 
     def test_pad_dimensions(self):
-        from vla_factory.data.transforms.pad_dimensions import PadDimensions
+        from vla_factory.assembly.transforms.pad_dimensions import PadDimensions
         pad = PadDimensions(target_dim=32)
         actions = np.random.rand(10, ACTION_DIM).astype(np.float32)
         sample = {"actions": actions}
@@ -349,7 +349,7 @@ class TestTransforms(unittest.TestCase):
         np.testing.assert_array_equal(result["actions"][:, ACTION_DIM:], 0)
 
     def test_pad_dimensions_noop(self):
-        from vla_factory.data.transforms.pad_dimensions import PadDimensions
+        from vla_factory.assembly.transforms.pad_dimensions import PadDimensions
         pad = PadDimensions(target_dim=ACTION_DIM)  # already 8, no-op
         actions = np.random.rand(10, ACTION_DIM).astype(np.float32)
         sample = {"actions": actions}
@@ -367,8 +367,8 @@ class TestVLADataset(unittest.TestCase):
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.data.formats.lerobot_v3 import LeRobotV3Reader
         from vla_factory.data.codec.pyav import PyAVCodec
-        from vla_factory.data.manifest import build_manifest
-        from vla_factory.data.dataset import VLADataset
+        from vla_factory.training.manifest import build_manifest
+        from vla_factory.training.dataset import VLADataset
 
         cls.reader = LeRobotV3Reader()
         cls.codec = PyAVCodec()
@@ -471,8 +471,8 @@ class TestDataLoaderBatching(unittest.TestCase):
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.data.formats.lerobot_v3 import LeRobotV3Reader
         from vla_factory.data.codec.pyav import PyAVCodec
-        from vla_factory.data.manifest import build_manifest
-        from vla_factory.data.dataset import VLADataset, collate_fn
+        from vla_factory.training.manifest import build_manifest
+        from vla_factory.training.dataset import VLADataset, collate_fn
 
         cls.reader = LeRobotV3Reader()
         cls.codec = PyAVCodec()
@@ -541,12 +541,12 @@ class TestBuildTransforms(unittest.TestCase):
     """Test _build_transforms logic in loader.py."""
 
     def test_empty(self):
-        from vla_factory.data.loader import _build_transforms
+        from vla_factory.training.loader import _build_transforms
         with self.assertRaises(ValueError):
             _build_transforms()
 
     def test_normalize_only(self):
-        from vla_factory.data.loader import _build_transforms
+        from vla_factory.training.loader import _build_transforms
         from vla_factory.data.manifest import NormStats, FeatureStats
         norm_stats = NormStats(
             action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
@@ -563,11 +563,11 @@ class TestBuildTransforms(unittest.TestCase):
             },
         )
         self.assertEqual(len(transforms), 1)
-        from vla_factory.data.transforms.normalize import NormalizeVector
+        from vla_factory.assembly.transforms.normalize import NormalizeVector
         self.assertIsInstance(transforms[0], NormalizeVector)
 
     def test_normalize_and_pad(self):
-        from vla_factory.data.loader import _build_transforms
+        from vla_factory.training.loader import _build_transforms
         from vla_factory.data.manifest import NormStats, FeatureStats
         norm_stats = NormStats(
             action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
@@ -586,10 +586,10 @@ class TestBuildTransforms(unittest.TestCase):
         self.assertEqual(len(transforms), 2)
 
     def test_act_profile_image_pipeline(self):
-        from vla_factory.config.parser import parse_recipe_from_string
-        from vla_factory.data.loader import _build_transforms
+        from vla_factory.recipe.parser import parse_recipe_from_string
+        from vla_factory.training.loader import _build_transforms
         from vla_factory.data.manifest import DataSchema, NormStats, FeatureStats
-        from vla_factory.config.defaults import resolve_recipe
+        from vla_factory.recipe.defaults import resolve_recipe
 
         recipe = parse_recipe_from_string("model:\n  name: act\n")
         recipe = resolve_recipe(recipe)
@@ -624,9 +624,9 @@ class TestEndToEnd(unittest.TestCase):
     def setUpClass(cls):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
-        from vla_factory.config.parser import parse_recipe
-        from vla_factory.config.defaults import resolve_recipe
-        from vla_factory.data.loader import create_dataloaders
+        from vla_factory.recipe.parser import parse_recipe
+        from vla_factory.recipe.defaults import resolve_recipe
+        from vla_factory.training.loader import create_dataloaders
 
         yaml_path = Path(_project_root) / "vla_factory" / "examples" / "act_aloha.yaml"
         if not yaml_path.exists():

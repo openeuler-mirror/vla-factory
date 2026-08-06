@@ -29,8 +29,8 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import numpy as np
 
-from vla_factory.deploy.infer import ActionCommand, PolicyExecutor
-from vla_factory.deploy.platforms.base import PlatformObservationAdapter
+from vla_factory.inference.infer import ActionCommand, PolicyExecutor
+from vla_factory.inference.platforms.base import PlatformObservationAdapter
 
 logger = logging.getLogger(__name__)
 

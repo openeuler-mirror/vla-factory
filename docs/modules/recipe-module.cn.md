@@ -5,11 +5,11 @@
 
 ## 0. 职责
 
-用户表达层是 VLA Factory 的入口。它把用户可读的 YAML recipe 解析成训练和推理都能消费的结构化对象（`TrainRecipe` 及子 dataclass），并提供 CLI / API 入口。recipe 只承载用户的组合选择（数据/模型/机器人）、组合调整（`composition`）与训练参数，不承载数据/模型/机器人三者之间的关系。
+用户表达层是 VLA Factory 的入口。它把用户可读的 YAML recipe 解析成训练和推理都能消费的结构化对象（`TrainRecipe` 及子 dataclass），并提供 CLI / API 入口。recipe 只承载用户的组合选择（数据/模型/机器人）、组合调整（`assembly`）与训练参数，不承载数据/模型/机器人三者之间的关系。
 
 ## 1. 核心对象
 
-- `TrainRecipe` 及子 dataclass：`DataConfig` / `SamplerConfig` / `SplitConfig` / `LoraConfig` / `OutputConfig` / `AugmentationConfig` 等（见 `vla_factory/config/recipe.py`）。
+- `TrainRecipe` 及子 dataclass：`DataConfig` / `SamplerConfig` / `SplitConfig` / `LoraConfig` / `OutputConfig` / `AugmentationConfig` 等（见 `vla_factory/recipe/recipe.py`）。
 - `parser.py`：YAML → `TrainRecipe`。
 - `vlafactory-cli`：统一命令行入口（train / list / resolve / inspect ...）。
 

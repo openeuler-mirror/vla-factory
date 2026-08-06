@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..manifest import NormStats
+from vla_factory.data.manifest import NormStats
 from .base import TransformStep
 from .registry import TransformRegistry
 

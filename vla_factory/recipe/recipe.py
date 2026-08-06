@@ -234,6 +234,41 @@ class AugmentationConfig:
     color_jitter: float = 0.0
 
 
+# ── Robot / assembly (composition selection + controlled override) ──
+
+
+@dataclass
+class RobotConfig:
+    """Robot selection (mirrors YAML ``robot``).
+
+    Only the robot *name* is declared here — it resolves to a ``RobotProfile``.
+    All body facts (joints, gripper, safety bounds, …) live in the profile, not
+    in the recipe.
+    """
+
+    name: str = ""
+
+
+@dataclass
+class AssemblyConfig:
+    """Controlled overrides for the data × model × robot composition.
+
+    These are only consulted when the composition resolver cannot uniquely
+    determine a relationship, or when the user wants a non-default strategy
+    (architecture §3.1 "组合调整区"). Every field is optional and defaults to
+    "unset". They never override objective facts (shapes, checkpoint slots,
+    joint topology, fixed dim caps).
+
+    Consumed by the ``resolve`` dry-run today; ``train()`` behaviour is
+    unchanged until the resolver takes over downstream execution.
+    """
+
+    camera_mapping: dict[str, str] | None = None
+    accept_fps_mismatch: bool | None = None
+    gripper_flip: bool | None = None
+    default_task: str | None = None
+
+
 # ── Top-level recipe ──────────────────────────────────────────────
 
 
@@ -296,6 +331,10 @@ class TrainRecipe:
 
     # Data
     data: DataConfig = field(default_factory=DataConfig)
+
+    # Robot / assembly (composition selection + controlled override)
+    robot: RobotConfig = field(default_factory=RobotConfig)
+    assembly: AssemblyConfig = field(default_factory=AssemblyConfig)
 
     # Fine-tuning
     finetuning_strategy: str = "full"

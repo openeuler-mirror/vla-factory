@@ -18,7 +18,7 @@ import torch.nn as nn
 
 import vla_factory.model.registry.entries.pi0 as pi0_mod
 from vla_factory.model.registry import get_entry
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.model.interfaces.observation import Observation
 
 
 # ── Fake openpi (so _to_openpi_observation works without openpi installed) ──

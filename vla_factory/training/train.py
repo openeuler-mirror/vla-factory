@@ -31,10 +31,10 @@ import torch.nn as nn
 import yaml
 from transformers import TrainingArguments
 
-from vla_factory.config.parser import parse_recipe
-from vla_factory.config.defaults import resolve_recipe
-from vla_factory.config.recipe import TrainRecipe
-from vla_factory.data.loader import create_dataloaders
+from vla_factory.recipe.parser import parse_recipe
+from vla_factory.recipe.defaults import resolve_recipe
+from vla_factory.recipe.recipe import TrainRecipe
+from vla_factory.training.loader import create_dataloaders
 from vla_factory.data.formats import get_reader
 from vla_factory.data.manifest import resolve_vector_keys
 from vla_factory.training.pytorch_trainer import VLATrainer
@@ -464,6 +464,11 @@ def _recipe_to_yaml_dict(recipe: TrainRecipe) -> dict:
             "sampler": asdict(recipe.data.sampler),
             "split": asdict(recipe.data.split),
         },
+        "robot": asdict(recipe.robot) if recipe.robot.name else None,
+        "assembly": (
+            {k: v for k, v in asdict(recipe.assembly).items() if v is not None}
+            or None
+        ),
         "finetuning": {
             "strategy": recipe.finetuning_strategy,
             "lora": asdict(recipe.lora_config) if recipe.lora_config is not None else None,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from vla_factory.deploy.infer import ObsDict
+from vla_factory.inference.infer import ObsDict
 
 
 @runtime_checkable

@@ -46,6 +46,15 @@ def main():
              "(base cameras, action_dim) + camera_mapping check, instead of listing all models.",
     )
 
+    # ── resolve ──
+    resolve_parser = subparsers.add_parser(
+        "resolve",
+        help="Dry-run: resolve the data × model × robot composition and print "
+             "a summary or a structured ResolutionError. No GPU / no optional "
+             "model extras required.",
+    )
+    resolve_parser.add_argument("--config", required=True, help="Path to YAML recipe file.")
+
     # ── evaluate ──
     eval_parser = subparsers.add_parser(
         "evaluate",
@@ -186,7 +195,7 @@ def main():
         print(f"Training complete. Final metrics: {metrics}")
 
     elif args.command == "preprocess":
-        from vla_factory.config.parser import parse_recipe
+        from vla_factory.recipe.parser import parse_recipe
         from vla_factory.data.codec.pyav import preprocess_dataset
         recipe = parse_recipe(args.config)
         data_path = Path(recipe.data.source.path)
@@ -198,8 +207,8 @@ def main():
             # Describe one recipe: model contract (base cameras, action_dim) +
             # camera_mapping validation against the base + dataset cameras.
             from pathlib import Path as _Path
-            from vla_factory.config.parser import parse_recipe
-            from vla_factory.config.defaults import resolve_recipe
+            from vla_factory.recipe.parser import parse_recipe
+            from vla_factory.recipe.defaults import resolve_recipe
             from vla_factory.model.base_contract import describe_model_config
 
             recipe = resolve_recipe(parse_recipe(args.config))
@@ -227,10 +236,13 @@ def main():
                 install = meta.install_hint or "-"
                 print(f"  {name:20s} backend={meta.backend}  head={meta.action_head_type}  install={install}")
 
+    elif args.command == "resolve":
+        _run_resolve(args.config)
+
     elif args.command == "evaluate":
         import numpy as np
         from pathlib import Path as _Path
-        from vla_factory.deploy.infer import InferenceEngine, ObsDict
+        from vla_factory.inference.infer import InferenceEngine, ObsDict
         from vla_factory.data.formats import get_reader
         from vla_factory.data.codec import resolve_codec
 
@@ -314,7 +326,7 @@ def main():
 
     elif args.command == "infer":
         import torch
-        from vla_factory.deploy.infer import infer_from_dataset_sample
+        from vla_factory.inference.infer import infer_from_dataset_sample
         device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # If no --config given, use the saved recipe from inference_metadata
@@ -346,11 +358,11 @@ def main():
 
     elif args.command == "deploy":
         import torch
-        from vla_factory.deploy.infer import (
+        from vla_factory.inference.infer import (
             PolicyExecutor,
             build_execution_policy,
         )
-        from vla_factory.deploy.infer import InferenceEngine
+        from vla_factory.inference.infer import InferenceEngine
         if args.max_loop_freq_hz <= 0:
             parser.error("--max-loop-freq-hz must be a positive number")
         device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -371,9 +383,9 @@ def main():
         policy = PolicyExecutor(engine, execution_policy)
 
         if args.platform == "robotwin":
-            from vla_factory.deploy.platforms.robotwin import RoboTwinAdapter
-            from vla_factory.deploy.policy_runtime import RemotePolicyModel
-            from vla_factory.deploy.transports.length_prefixed_json import (
+            from vla_factory.inference.platforms.robotwin import RoboTwinAdapter
+            from vla_factory.inference.policy_runtime import RemotePolicyModel
+            from vla_factory.inference.transports.length_prefixed_json import (
                 LengthPrefixedJsonRpcServer,
             )
 
@@ -399,14 +411,14 @@ def main():
         else:
             # ZMQ-host platforms (simulator / lerobot) share one client-shaped
             # deployment loop; the platform difference is only the adapters.
-            from vla_factory.deploy.policy_runtime import PolicyRunner
-            from vla_factory.deploy.transports.zmq import (
+            from vla_factory.inference.policy_runtime import PolicyRunner
+            from vla_factory.inference.transports.zmq import (
                 ZmqPolicyClient,
                 ZmqPolicyClientConfig,
             )
 
             if args.platform == "lerobot":
-                from vla_factory.deploy.platforms.lerobot import (
+                from vla_factory.inference.platforms.lerobot import (
                     LerobotHostObsAdapter,
                     LerobotHostActionAdapter,
                 )
@@ -430,7 +442,7 @@ def main():
                 )
             else:
                 # Default: simulator platform (observation.images.X keys)
-                from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+                from vla_factory.inference.platforms.simulator import SimulatorAdapter
 
                 obs_adapter = SimulatorAdapter(engine.camera_keys)
                 action_adapter = None
@@ -466,6 +478,131 @@ def main():
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_resolve(config_path: str) -> None:
+    """``vlafactory-cli resolve --config <recipe>`` dry-run handler.
+
+    Parses the recipe, gathers the three descriptions (data schema/norm_stats,
+    model metadata, optional base contract + robot profile), runs
+    ``resolve_assembly`` and prints either a summary or a structured
+    ``ResolutionError``. Runs without GPU and without optional model extras —
+    it never triggers the model factory.
+    """
+    from pathlib import Path as _Path
+
+    from vla_factory.recipe.parser import parse_recipe
+    from vla_factory.recipe.defaults import resolve_recipe
+    from vla_factory.model.registry import list_entries
+    from vla_factory.assembly.resolver import (
+        make_error,
+        resolve_assembly,
+        ResolutionError,
+        UNKNOWN_MODEL,
+        UNKNOWN_ROBOT,
+    )
+
+    recipe = resolve_recipe(parse_recipe(config_path))
+
+    # ── Model metadata (registry only — no factory, no heavy deps) ──
+    entries = list_entries()
+    metadata = entries.get(recipe.model_name)
+    if metadata is None:
+        err = make_error(
+            UNKNOWN_MODEL, "model.name",
+            model_name=recipe.model_name, known=sorted(entries),
+        )
+        _print_resolution_error(err)
+        sys.exit(1)
+
+    # ── Optional base contract (from the checkpoint's config.json) ──
+    base_contract = None
+    if recipe.model_path:
+        try:
+            from vla_factory.model.base_contract import load_base_contract
+            base_contract = load_base_contract(recipe.model_path)
+        except Exception as e:  # unreadable / offline — keep going without it
+            print(f"(skipped base contract read: {e})")
+
+    # ── Optional robot profile ──
+    robot_profile = None
+    if recipe.robot.name:
+        try:
+            from vla_factory.robot import get_robot_profile, list_robot_profiles
+            robot_profile = get_robot_profile(recipe.robot.name)
+        except Exception:
+            err = make_error(
+                UNKNOWN_ROBOT, "robot.name",
+                robot_name=recipe.robot.name, known=list_robot_profiles(),
+            )
+            _print_resolution_error(err)
+            sys.exit(1)
+
+    # ── Data schema + norm_stats (best-effort; meta files only) ──
+    schema = None
+    norm_stats = None
+    data_path = recipe.data.source.path
+    if data_path:
+        try:
+            from vla_factory.data.formats import get_reader
+            reader = get_reader(recipe.data.source.format, path=_Path(data_path))
+            schema = reader.get_schema(_Path(data_path))
+            norm_stats = reader.get_norm_stats(_Path(data_path))
+        except Exception as e:
+            print(f"(skipped dataset read: {e})")
+
+    # ── Controlled overrides from the recipe's ``assembly`` block ──
+    overrides = {
+        k: v for k, v in (
+            ("camera_mapping", recipe.assembly.camera_mapping),
+            ("accept_fps_mismatch", recipe.assembly.accept_fps_mismatch),
+            ("gripper_flip", recipe.assembly.gripper_flip),
+            ("default_task", recipe.assembly.default_task),
+        ) if v is not None
+    }
+
+    try:
+        assembly = resolve_assembly(
+            schema=schema,
+            norm_stats=norm_stats,
+            metadata=metadata,
+            base_contract=base_contract,
+            robot_profile=robot_profile,
+            overrides=overrides or None,
+        )
+    except ResolutionError as e:
+        _print_resolution_error(e)
+        sys.exit(1)
+
+    _print_assembly_summary(assembly)
+
+
+def _print_assembly_summary(assembly) -> None:
+    ci = assembly.canonical_interface
+    print("Resolved assembly:")
+    print(f"  model:      {assembly.metadata_ref.get('name')}")
+    contract = assembly.contract_ref
+    print(f"  base:       {contract.get('repo_or_path') if contract else '(none)'}")
+    print(f"  robot:      {assembly.robot_ref.get('name') if assembly.robot_ref else '(none)'}")
+    print(f"  cameras:    {list(ci.cameras) or '(none)'}")
+    print(f"  action:     dim={ci.action_dim} horizon={ci.action_horizon}")
+    print(f"  state:      dim={ci.state_dim}")
+    print(f"  language:   {'required' if ci.requires_language else 'not required'}")
+    mapped = sum(
+        1 for m in (
+            assembly.camera_mapping, assembly.state_mapping,
+            assembly.action_mapping, assembly.language_mapping,
+            assembly.joint_mapping,
+        ) if m.resolved
+    )
+    print(f"  mappings:   {mapped}/5 resolved (phase-0 skeleton)")
+
+
+def _print_resolution_error(err: ResolutionError) -> None:
+    print("Resolution failed:")
+    print(f"  code: {err.code}")
+    print(f"  path: {err.path}")
+    print(f"  params: {err.params}")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Usage::
 
     from vla_factory.model.registry import register_vla
-    from vla_factory.model.protocols import ModelMetadata
+    from vla_factory.model.interfaces import ModelMetadata
 
     @register_vla(ModelMetadata(name="act", ...))
     def load_act(model_path, action_spec, **kw):
@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from vla_factory.model.protocols.model import ModelMetadata
+from vla_factory.model.interfaces.model import ModelMetadata
 
 logger = logging.getLogger(__name__)
 

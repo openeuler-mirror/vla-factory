@@ -20,12 +20,12 @@ from typing import Any
 
 import torch
 
-from vla_factory.config.recipe import TrainRecipe
-from .formats import get_reader
-from .codec import resolve_codec
-from .manifest import build_manifest
-from .dataset import VLADataset, collate_fn
-from .transforms import build_preprocessor, TransformContext, TransformPipeline
+from vla_factory.recipe.recipe import TrainRecipe
+from vla_factory.data.formats import get_reader
+from vla_factory.data.codec import resolve_codec
+from vla_factory.training.manifest import build_manifest
+from vla_factory.training.dataset import VLADataset, collate_fn
+from vla_factory.assembly.transforms import build_preprocessor, TransformContext, TransformPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _build_transforms(
         model_name = recipe.model_name if recipe is not None else "<unknown>"
         raise ValueError(
             "No transform pipeline configured. Add `transforms.inputs` to "
-            f"vla_factory/config/model/{model_name}.yaml or "
+            f"vla_factory/recipe/model/{model_name}.yaml or "
             "`model.config.transforms.inputs` in the recipe."
         )
     return build_preprocessor(transform_items, ctx)
@@ -72,7 +72,7 @@ def _resolve_transform_inputs(recipe: TrainRecipe) -> tuple[list[dict] | None, d
     if transform_inputs is None:
         raise ValueError(
             "No transform pipeline configured. Add `transforms.inputs` to "
-            f"vla_factory/config/model/{recipe.model_name}.yaml or "
+            f"vla_factory/recipe/model/{recipe.model_name}.yaml or "
             "`model.config.transforms.inputs` in the recipe."
         )
     return list(transform_inputs), recipe.model_config

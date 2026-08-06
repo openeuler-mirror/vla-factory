@@ -1,11 +1,11 @@
 """Model default-profile loader.
 
-Each model may ship a baseline profile under ``vla_factory/config/model/<name>.yaml``.
+Each model may ship a baseline profile under ``vla_factory/recipe/model/<name>.yaml``.
 The factory loads it and deep-merges the recipe's per-run ``model.config``
 on top (recipe wins). This keeps model defaults external, user-editable, and
 diff-friendly without coupling the framework to Hydra's runtime.
 
-The ``vla_factory/config/model/`` directory follows Hydra's group convention
+The ``vla_factory/recipe/model/`` directory follows Hydra's group convention
 (``conf/<group>/<name>.yaml``), so these profiles can be adopted by Hydra's
 ``defaults: [model/<name>]`` mechanism later with no file changes.
 """
@@ -19,9 +19,9 @@ import yaml
 from omegaconf import OmegaConf
 
 from vla_factory.utils.constants import MODEL_CONFIG_DIR
-from vla_factory.config.recipe import TrainRecipe
+from vla_factory.recipe.recipe import TrainRecipe
 
-# vla_factory/config/model/ — this file lives in vla_factory/config/.
+# vla_factory/recipe/model/ — this file lives in vla_factory/config/.
 _MODEL_CONFIG_DIR = Path(__file__).resolve().parent / MODEL_CONFIG_DIR
 
 

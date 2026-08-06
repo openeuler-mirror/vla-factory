@@ -9,7 +9,7 @@ differences (openpi pi0_config.py):
   * the action expert uses adaRMSNorm to inject the flow-matching timestep,
     and ``max_token_len`` defaults to 200 (vs 48 for pi0).
 
-Data-side differences live in ``config/model/pi05.yaml``: quantile
+Data-side differences live in ``recipe/model/pi05.yaml``: quantile
 normalisation for state/actions (openpi ``use_quantile_norm``) and
 ``task_tokenize`` with ``discrete_state: true`` running BEFORE
 ``pad_dimensions`` (state is digitized at its native dimension).
@@ -23,7 +23,7 @@ Requires openpi (uv install):: bash scripts/install.sh .venv pi05
 
 from __future__ import annotations
 
-from vla_factory.model.protocols.model import ModelMetadata
+from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.model.registry.registry import register_vla
 
 from .pi0 import PI0ModelWrapper, _load_pi0, _try_import_openpi

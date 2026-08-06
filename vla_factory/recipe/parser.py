@@ -12,13 +12,15 @@ from typing import Any
 
 import yaml
 
-from vla_factory.config.recipe import (
+from vla_factory.recipe.recipe import (
     ActionSpecConfig,
+    AssemblyConfig,
     AugmentationConfig,
     DataConfig,
     DataSourceConfig,
     LoraConfig,
     OutputConfig,
+    RobotConfig,
     SamplerConfig,
     SplitConfig,
     TrainRecipe,
@@ -72,6 +74,23 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         split=_pop_dataclass(data_block.get("split", {}), SplitConfig),
     )
 
+    # ── Robot / assembly (composition selection + controlled override) ──
+    robot_block = raw.get("robot", {})
+    robot_config = _pop_dataclass(robot_block, RobotConfig) if isinstance(robot_block, dict) else RobotConfig()
+    # Accept ``robot: <name>`` shorthand too.
+    if isinstance(robot_block, str):
+        robot_config = RobotConfig(name=robot_block)
+
+    assembly_block = raw.get("assembly", {})
+    if isinstance(assembly_block, dict):
+        # Translate a legacy ``composition:`` block name for forwards compat.
+        assembly_config = _pop_dataclass(assembly_block, AssemblyConfig)
+    else:
+        assembly_config = AssemblyConfig()
+    legacy_composition = raw.get("composition")
+    if isinstance(legacy_composition, dict) and not isinstance(assembly_block, dict):
+        assembly_config = _pop_dataclass(legacy_composition, AssemblyConfig)
+
     # ── Fine-tuning ──
     ft_block = raw.get("finetuning", {})
     strategy = ft_block.get("strategy", "full")
@@ -106,6 +125,8 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         transform_imports=transform_imports,
         action_spec=action_spec,
         data=data_config,
+        robot=robot_config,
+        assembly=assembly_config,
         finetuning_strategy=strategy,
         lora_config=lora_config,
         freeze_components=freeze_components,

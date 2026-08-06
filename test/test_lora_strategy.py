@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 import torch.nn as nn
 
-from vla_factory.config.parser import parse_recipe_from_string
-from vla_factory.config.recipe import LoraConfig, TrainRecipe
+from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.recipe.recipe import LoraConfig, TrainRecipe
 from vla_factory.training.strategies.lora import apply_lora
 
 

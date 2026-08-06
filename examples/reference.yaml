@@ -19,7 +19,7 @@ model:
                                #   - 示例: "outputs/openpi/pi0.5", "openvla/openvla-7b"
 
   # config:                    # [可选] 逐 run 的模型配置，深度合并到
-  #                            #   vla_factory/config/model/<name>.yaml 之上 (recipe 优先)
+  #                            #   vla_factory/recipe/model/<name>.yaml 之上 (recipe 优先)
   #   camera_mapping:          # [pi0/pi05 必填] {模型相机角色: 数据集相机名}
   #     base_0_rgb: front      #   角色以 base checkpoint 的 config.json 为准，
   #     left_wrist_0_rgb: wrist#   用 `vlafactory-cli list --config <recipe>` 查询/校验；
@@ -99,6 +99,27 @@ data:
 
     train_ratio: 0.9           # 训练集比例 (0.0 - 1.0); 剩余部分自动分配给验证集
     seed: 42                   # 随机种子
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 组合选择 + 组合调整（可选） ───────────────────────────────────────
+#   ① robot 区只声明本体，不描述连接/transport；
+#   ② assembly 区只在解析器无法唯一确定、或想用非默认策略时显式写出，且不能
+#      改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。
+#   三者之间的默认对应关系由组合解析层自动推导；本区默认留空即可。
+#   目前由 `vlafactory-cli resolve --config <recipe>` dry-run 消费。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+robot:
+  name: ""                     # [可选] 机器人本体 profile 名 (见 vla_factory/robot/profiles/*.yaml)
+                               #   示例: "lekiwi"。留空表示不绑定具体本体。
+
+assembly:                      # [可选, 默认留空]
+  # camera_mapping:            # 模型视觉槽位 -> 数据/机器人相机 (歧义时显式指定)
+  #   base_0_rgb: front
+  #   left_wrist_0_rgb: wrist
+  # accept_fps_mismatch: true  # 显式接受 数据 fps 与 模型/机器人 频率差异
+  # gripper_flip: true         # 显式接受夹爪 convention 翻转
+  # default_task: "pick up the block"  # 语言兜底 (数据/部署无 task 时使用)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

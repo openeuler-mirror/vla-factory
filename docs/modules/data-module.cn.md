@@ -80,6 +80,13 @@ transform 配置，并向训练和部署提供统一数据标准。训练产物�
   - [7.4 manifest 持久化](#74-manifest-持久化)
   - [7.5 数据可视化](#75-数据可视化)
   - [7.6 数据格式互转](#76-数据格式互转)
+- [8. 数据集描述（目标设计）](#8-数据集描述目标设计)
+  - [8.1 取向：全部事实来自读取数据集本身](#81-取向全部事实来自读取数据集本身)
+  - [8.2 字段准入原则](#82-字段准入原则)
+  - [8.3 DataSchema 字段表](#83-dataschema-字段表)
+  - [8.4 探测不到的语义：受控 override 与框架级约定承担](#84-探测不到的语义受控-override-与框架级约定承担)
+  - [8.5 推断规则](#85-推断规则)
+  - [8.6 消费方与演进节奏](#86-消费方与演进节奏)
 
 ## 1. 数据流全景
 
@@ -427,7 +434,7 @@ Episode  (dataclass)
 **input transform**（训练侧）：
 
 ```yaml
-# vla_factory/config/model/act.yaml
+# vla_factory/recipe/model/act.yaml
 transforms:
   inputs:
     - {type: image_to_float}
@@ -617,7 +624,7 @@ pipeline 之间的图像标准。
 
 基本步骤：
 
-1. 在 `vla_factory/data/transforms/` 下新增或扩展 step。
+1. 在 `vla_factory/assembly/transforms/` 下新增或扩展 step。
 2. 使用 `@TransformRegistry.register("your_step")` 注册类型名。
 3. 实现 `__call__(sample)`。
 4. 如需 runtime context，实现 `from_config(cfg, ctx)`。
@@ -744,3 +751,222 @@ manifest 持久化后需要明确它与 live dataset metadata 的一致性检查
 `Frame` 和 `VideoRef`，并在导出时显式声明目标格式支持哪些字段、哪些 metadata
 会被保留、哪些信息需要降级或丢弃。这样可以避免每两个格式之间都实现一套
 点对点转换逻辑。
+
+## 8. 数据集描述（目标设计）
+
+> **状态：目标设计，尚未实现。** 本章对齐架构文档 §7.4 阶段1（"让 reader 补充
+> 可探测的数据语义"）与 §3.5 的 `inspect` 能力，描述数据维度描述的目标形态。
+> 落地前本章是设计评审对象，落地后按实现修订为"现在是什么样"。
+> **设计取向：数据描述的所有字段来自对数据集的实际探测与确定性推断，
+> 不引入数据集侧声明文件**；探测不到的语义不进数据描述，由 recipe 的
+> 受控 override 在组合解析时按需补齐（见 8.4）。
+
+### 8.1 取向：全部事实来自读取数据集本身
+
+数据描述不设配置面：所有字段由 Reader 从实际数据产出，按来源分三种：
+
+- **measured**：直接探测（维度、分辨率、fps、episode 边界、逐维 names、
+  `robot_type`……）；
+- **inferred**：在受控词表下由确定性规则唯一推断（如相机 key
+  `cam_left_wrist` 唯一命中 `wrist_left`），唯一匹配才自动（见 8.5）；
+- **undeclared**：探测不到也推不出，字段为 null。null 不是错误——它是
+  解析器保守失败、要求 recipe 受控 override 的依据。
+
+### 8.2 字段准入原则
+
+一个字段进入第一版必须同时满足两条，否则不进：
+
+1. **可产出**——至少一种格式的 Reader 能探测它，或能在受控规则下
+   确定性推断它；
+2. **有消费方**——组合解析兼容性矩阵（架构 §4.2.2）的某行检查、某类
+   Mapping 生成、样本构建或 inspect 需要它。
+
+### 8.3 DataSchema 字段表
+
+下表按块列出字段、来源与消费方；所有字段均由 Reader 探测（measured）
+或确定性推断（inferred）产出，探测不到即为 null（undeclared）。
+三类通道统一为**逐条目表**——cameras 逐相机、state/action 逐维，
+每条记录携带该通道/维度的全部属性，不使用靠下标对齐的平行数组。
+
+**identity —— 数据集身份**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `name` | 数据集目录名 | 日志、golden test 标识 |
+| `source_format` | Reader 自报（`lerobot_v3` / `robotwin_hdf5` / …） | inspect、错误提示 |
+| `episodes` / `total_frames` | Reader 探测 | manifest 校验、inspect |
+
+**robot_ref —— 数据来自哪个本体**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `robot_ref: {name}` | Reader 探测（如 lerobot `robot_type`），探测不到为 null | 数据×机器人两两检查（关节顺序、夹爪约定对账） |
+
+引用以字符串形式保留，**是否能在 RobotProfile 注册表中找到由解析器校验**，
+Reader 与 inspect 不解析引用（分层纪律，§6 同源）。多本体混合数据集
+（一份数据来自多种机器人）推迟——当前解析器只接受单一 `robot_ref`。
+
+**observation.cameras[] —— 逐相机条目（取代现有的 `cameras: tuple[str]`）**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `key` | 数据文件中的字段名 | Frame 读取、CameraMapping 训练来源 |
+| `resolution` | Reader 探测 | resize 规划、兼容检查 |
+| `fps` | Reader 探测 | 频率检查 |
+| `encoding` | Reader 探测（info.json 视频编码） | codec 选择 |
+| `semantic` | **inferred**：相机 key 在受控词表下唯一匹配（8.5），否则 null | **CameraMapping 槽位匹配的主依据**；null 时解析器要求 `assembly.camera_mapping` override |
+
+`semantic` 受控词表（首批）：`third_person_front` / `third_person_top` /
+`third_person_side` / `wrist_left` / `wrist_right` / `wrist`（单臂）。
+**相机内参（intrinsics）推迟**——只有 T2 级坐标转换需要，条件不足时
+解析器本就拒绝生成 T2。
+
+**observation.state —— 本体感知向量（逐维条目表）**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `dims[]` | Reader 探测，每维一条记录 | StateMapping、JointMapping、维度检查、Frame 读取 |
+
+`dims` 是有序列表，向量第 i 维对应第 i 条记录 `{name, source_field}`：
+
+- `name`：逐维名称，**保留原始后缀不剥离**（lerobot features `names`，
+  如 `shoulder_pan.pos`），探测不到为 null；
+- `source_field`：该维来自数据中的哪个字段。lerobot 通常整段来自
+  `observation.state`；RoboTwin 的向量由 `/joint_action/left_arm`、
+  `left_gripper` 等多个字段拼接而成——逐维记录把拼接布局从 reader
+  代码里的隐式事实变成 schema 里的显式事实。
+
+维度数即 `len(dims)`，不设单独的 `dim` 字段。语义分段（哪几维是左臂、
+哪一维是夹爪）**不在数据描述中声明**——解析器用 `dims[].name` 与
+RobotProfile 的关节名做确定性对账，对不上时保守失败。
+
+**action —— 动作事实（逐维条目表）**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `dims[]` | Reader 探测 + 逐维推断（见下） | ActionMapping、维度检查、控制模式检查、Frame 读取 |
+| `frequency_hz` | Reader 探测 | 频率检查 |
+
+`dims` 结构同 state，每条记录多一个 `mode`：`{name, source_field, mode}`。
+**没有全局 control_mode 字段**——人形等异构本体的动作向量本来就是多种
+模式的混合（腿部速度/力矩 + 手臂位置 + 灵巧手），全局标量只能退化成
+不携带信息的 "mixed"；聚合摘要（如"6 维 joint_pos + 3 维 joint_vel"）
+由 inspect 从 `dims` 现算展示，不落存储。
+
+`mode` 的取值域与来源规则：
+
+- **取值域**（第一版，关节空间）：`joint_pos`（绝对关节位置）/
+  `joint_delta` / `joint_vel`，探测不到为 null。词表与 RobotProfile 的
+  `control_modes` 共用；模型输出的 tokenized 表示是模型维度的事实
+  （`action_head_type`），不属于控制模式词表。
+- **来源必须有证据**：格式规范绑定生产管线的，reader 直接产出
+  measured（如 RoboTwin `/joint_action/*` 即 qpos 目标）；容器格式
+  （lerobot 可承载任意转换来源，格式本身不保证 action 语义）从
+  `name` 后缀逐维推断（`.pos` / `.vel` → inferred）；两类证据都
+  没有 → 该维 mode 为 null，**不按格式设默认值**。
+- **null 的消费规则**：`data_to_model` 路径放行；`model_to_robot`
+  规划要求每一维 mode 已知，存在 null 维即保守失败，要求
+  `assembly.control_mode` 断言（第一版 override 为单值、作用于全部
+  null 维；逐维 override 按需扩展）。
+
+逐维记录是「分段」的退化形态（每段恰好 1 维），在关节空间的世界里
+即完备。EEF 类模式（`eef_pos` / `eef_delta`）、`rotation_repr` 与
+跨维分段**作为一组**推迟，三者准入边界重合：eef 动作的旋转部分是
+多维原子块（euler 3 维 / axis-angle 3 维 / quaternion 4 维 / 6D 6 维），
+不知道编码连 action 向量都无法切分，编码间转换虽是确定性数学，但
+轴序、内旋/外旋、弧度制等约定不全时即 T3 失败——引入 EEF 类模型
+适配时，`dims` 条目随对应解析规则一起升级为可跨维的分段记录。
+`joint_torque` 等力控量纲在 VLA 数据中极少，需要时向量纲轴追加，
+不预留。
+
+**temporal —— 时序事实**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `fps` | Reader 探测 | 频率检查、采样窗口 |
+
+action 与 obs 的时间对齐约定（`alignment`）探测不到，不进第一版；当前
+样本构建沿用统一的 `action_t_follows_obs_t` 假设（4.4.1），该假设成为
+框架文档化的约定而非逐数据集字段。
+
+**instruction —— 语言指令**
+
+| 字段 | 来源 | 消费方 |
+|---|---|---|
+| `task_field` | Reader 探测（tasks 文件存在性，取代现有 `has_language`） | LanguageMapping |
+| `granularity` | Reader 探测（`per_episode` / `per_step`，由 tasks 结构判断） | 样本构建 |
+
+**stats —— 统计量**
+
+`NormStats` 由框架计算或 Reader 读取，天然是实测事实。inspect 默认只输出
+统计类型与维度摘要，`--stats` 才展开逐维数值。
+
+**明确不进第一版的字段**（探测不到且无消费方，或另有归属）：
+
+| 字段/块 | 处理 |
+|---|---|
+| `provenance`（采集方式、转换链、`outcome_labels`） | 数据飞轮/审计价值，无解析器消费方；留待数据质检方向立项 |
+| `splits` | 划分归 recipe `data.split` 持有，双事实源违反单一来源原则 |
+| 夹爪 `convention`、`mount`、`alignment`、`repr`/`rotation_repr` | 探测不到；缺口由 recipe 受控 override 或框架级约定承担（8.4） |
+| `intrinsics`、`sync_quality_ms`、`content_fingerprint` | 仅 T2 转换 / 数据质检工具需要 |
+| `extra_modalities`（depth/tactile/ft） | 无 Reader 生产方；结构预留同 cameras |
+
+### 8.4 探测不到的语义：受控 override 与框架级约定承担
+
+不进数据描述的语义缺口，按性质分流到两个既有机制，不新增概念：
+
+| 语义缺口 | 承担机制 |
+|---|---|
+| 相机语义无法唯一推断（如 `cam_0` / `cam_1`） | recipe `assembly.camera_mapping` 受控 override |
+| 控制模式无证据（转换来源不明的数据） | recipe `assembly.control_mode` 受控 override；仅 `model_to_robot` 规划强制要求，纯训练不打扰 |
+| 夹爪方向约定（1 是开还是关） | recipe `assembly.gripper_flip` 受控 override |
+| 数据无语言指令而模型需要 | recipe `assembly.default_task` |
+| 数据 fps 与模型/机器人不一致 | recipe `assembly.accept_fps_mismatch` |
+| action 与 obs 的时间对齐 | 框架级统一约定（`action_t_follows_obs_t`，见 4.4.1），文档化而非逐数据集配置 |
+
+远期方向：当框架掌握数据采集与格式转换链路（7.6）后，转换工具在产出
+数据集时把语义直接写进数据集自身的 `meta/`——那时这些字段自然升级为
+可探测事实进入 schema。
+
+### 8.5 推断规则
+
+`inferred` 类字段（当前为 `cameras[].semantic` 与 `action.dims[].mode`）
+的产出规则：
+
+- **唯一匹配才自动**：与受控词表的匹配规则是确定性的（相机 key 含
+  `wrist` + `left` → `wrist_left`，含 `top`/`high` →
+  `third_person_top`；action 维名后缀 `.pos` → 位置、`.vel` → 速度），
+  且仅当恰有一个词表项命中时才写入；多个候选或零候选一律 null——
+  不依赖字典序、不做相似度猜测（架构 §1.7）。
+- **容器格式不等于语义**：只有格式规范与生产管线绑定时（如 RoboTwin），
+  格式本身才构成 measured 证据；通用容器格式（lerobot 可承载任意转换
+  来源）不设按格式的默认值。
+- **来源可见**：每项事实标注 `source`（`measured` / `inferred` /
+  `undeclared`），随 `DataSchema` 序列化进
+  `inference_metadata/schema.json`，供 inspect 与 `resolve --explain`
+  展示——用户能一眼看出哪些语义是框架推断的，错了用 override 纠正。
+- **推断规则归框架维护**：词表和匹配规则是框架代码的一部分（随版本
+  演进、可测试），不是数据集或用户的配置面。
+
+### 8.6 消费方与演进节奏
+
+本章字段与组合解析兼容性矩阵（架构 §4.2.2）的对应关系：
+
+| 字段 | 解析器消费 |
+|---|---|
+| `cameras[].semantic`（inferred） | CameraMapping 槽位匹配主依据；null 时要求 override |
+| `state.dims[].name` / `action.dims[].name` | StateMapping、JointMapping（与 RobotProfile 关节名对账）、维度检查 |
+| `action.dims[].mode` | 控制模式检查；存在 null 维时 `data_to_model` 放行、`model_to_robot` 规划保守失败（要求 `assembly.control_mode` 断言） |
+| `temporal.fps` / `action.frequency_hz` | 频率检查（默认 warning） |
+| `instruction.task_field` | LanguageMapping、语言输入检查 |
+| `robot_ref` | 数据×机器人对账入口 |
+
+落地节奏（与架构 §7.4 对齐）：
+
+1. **第一版**：Reader 补齐可探测字段（结构化相机条目、encoding、
+   state/action 逐维 `dims` 条目表、temporal、`robot_ref`），`source`
+   标注与 semantic / mode 推断规则上线，配 reader contract test；
+   inspect 即可展示；
+2. **后续**：provenance 块与数据质检测量（fingerprint、sync_quality），
+   服务数据飞轮方向，另行评审；语义写进数据集 `meta/` 的转换工具方向
+   见 8.4 末尾。

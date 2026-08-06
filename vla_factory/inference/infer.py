@@ -15,13 +15,13 @@ from typing import Any
 import numpy as np
 import torch
 
-from vla_factory.config.parser import parse_recipe
-from vla_factory.config.recipe import TrainRecipe
+from vla_factory.recipe.parser import parse_recipe
+from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
-from vla_factory.data.transforms import build_transforms, TransformContext
+from vla_factory.assembly.transforms import build_transforms, TransformContext
 from vla_factory.data.formats import get_reader
 from vla_factory.data.codec import resolve_codec
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.model.interfaces.observation import Observation
 from vla_factory.utils.constants import (
     INFERENCE_META_DIR, SCHEMA_FILE, NORM_STATS_FILE, RECIPE_FILE,
     FINAL_DIR, MODEL_WEIGHTS_FILE,

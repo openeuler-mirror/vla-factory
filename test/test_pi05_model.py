@@ -17,13 +17,13 @@ import pytest
 import torch.nn as nn
 
 import vla_factory.model.registry.entries.pi0 as pi0_mod
-from vla_factory.config.parser import parse_recipe_from_string
+from vla_factory.recipe.parser import parse_recipe_from_string
 from vla_factory.data.manifest import FeatureStats, NormStats
-from vla_factory.data.transforms.normalize import (
+from vla_factory.assembly.transforms.normalize import (
     NormalizeVector,
     UnnormalizeActionQuantileStep,
 )
-from vla_factory.data.transforms.task_tokenize import TaskTokenize, build_prompt
+from vla_factory.assembly.transforms.task_tokenize import TaskTokenize, build_prompt
 from vla_factory.model.registry import get_entry
 
 

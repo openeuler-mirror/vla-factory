@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # avoid runtime import cycles
-    from vla_factory.config.recipe import TrainRecipe
+    from vla_factory.recipe.recipe import TrainRecipe
     from vla_factory.data.manifest import DataSchema
 
 

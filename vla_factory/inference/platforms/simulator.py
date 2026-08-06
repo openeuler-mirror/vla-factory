@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vla_factory.deploy.infer import ObsDict
+from vla_factory.inference.infer import ObsDict
 
 
 class SimulatorAdapter:

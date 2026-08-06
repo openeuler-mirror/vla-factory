@@ -16,7 +16,7 @@ Example
 
 from __future__ import annotations
 
-from ..manifest import SampleLocator
+from vla_factory.data.manifest import SampleLocator
 
 
 class SlidingWindowSampler:

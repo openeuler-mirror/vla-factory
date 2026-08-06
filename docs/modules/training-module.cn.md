@@ -18,7 +18,7 @@
 
 TODO，后续补充：
 
-- `train()` 的完整流程（parse recipe → prepare output_dir → resolve_composition → build dataloaders → VLATrainer.train → save final）。
+- `train()` 的完整流程（parse recipe → prepare output_dir → resolve_assembly → build dataloaders → VLATrainer.train → save final）。
 - `Observation` 样本构建与 `collate_fn` 的细节。
 - 各微调策略的参数选择规则与 LoRA（`target_components` → peft `target_modules`）映射。
 - TrainingArguments 构建与混合精度 / 梯度累积 / 梯度检查点。

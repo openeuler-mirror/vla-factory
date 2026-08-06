@@ -12,6 +12,6 @@ NORM_STATS_FILE = "norm_stats.json"
 FINAL_DIR = "final"
 MODEL_WEIGHTS_FILE = "model.pt"
 
-# Per-model default-profile directory. Lives under vla_factory/config/,
-# following Hydra's group convention (group "model" → config/model/<name>.yaml).
+# Per-model default-profile directory. Lives under vla_factory/recipe/,
+# following Hydra's group convention (group "model" → recipe/model/<name>.yaml).
 MODEL_CONFIG_DIR = "model"

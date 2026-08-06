@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from vla_factory import cli
+from vla_factory.recipe import cli
 
 
 def _run_invalid_deploy(monkeypatch, command: str) -> None:

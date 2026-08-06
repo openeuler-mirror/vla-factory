@@ -528,7 +528,7 @@ RoboTwin (SAPIEN 进程，零模型依赖)          VLA Factory (模型进程)
 接入一个新仿真器 / 真机线协议时，必须新增 observation adapter；禁止为此改动
 `InferenceEngine`、执行策略或数据管线。
 
-1. 在 `vla_factory/deploy/platforms/` 下新增 adapter 文件。
+1. 在 `vla_factory/inference/platforms/` 下新增 adapter 文件。
 2. 实现 `__call__(observation, task="") -> ObsDict`，满足
    `PlatformObservationAdapter` 协议。
 3. 相机必须按 `camera_keys` 选取、state 必须按 `state_dim` 校验；缺字段 / 维度
@@ -546,7 +546,7 @@ RoboTwin (SAPIEN 进程，零模型依赖)          VLA Factory (模型进程)
 接入一种新的线传输 / 分帧协议时，必须新增 transport；禁止把协议细节混进
 adapter、runner 或 engine。
 
-1. 在 `vla_factory/deploy/transports/` 下新增文件：客户端形态参照
+1. 在 `vla_factory/inference/transports/` 下新增文件：客户端形态参照
    `ZmqPolicyClient`（连接 + 收发原语），服务端形态参照
    `LengthPrefixedJsonRpcServer`（RPC 服务端）。
 2. transport 只搬字节 / 消息，不解释 observation 语义；编排（adapter 装配、
@@ -557,7 +557,7 @@ adapter、runner 或 engine。
 
 当模型依赖与平台运行时必须分处两个环境时，为该平台提供一个零依赖 connector：
 
-1. 在 `vla_factory/deploy/connectors/` 下新增模块，**禁止引入任何 VLA Factory
+1. 在 `vla_factory/inference/connectors/` 下新增模块，**禁止引入任何 VLA Factory
    import**，以便在缺依赖的平台环境里加载（通过 `PYTHONPATH` 或平台的 policy
    插件机制）。
 2. connector 只允许“包裹原生 observation + 驱动返回的 action”；字段映射、相机

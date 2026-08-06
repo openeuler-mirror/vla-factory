@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 import torch
 
-from vla_factory.deploy.infer import ActionCommand, ObsDict, PolicyExecutor
+from vla_factory.inference.infer import ActionCommand, ObsDict, PolicyExecutor
 
 logger = logging.getLogger(__name__)
 

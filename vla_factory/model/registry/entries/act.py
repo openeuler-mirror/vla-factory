@@ -26,11 +26,11 @@ from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 
-from vla_factory.model.protocols.model import ModelMetadata
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.model.interfaces.observation import Observation
 from vla_factory.model.registry.registry import register_vla
-from vla_factory.config.defaults import load_model_defaults
-from vla_factory.config.recipe import TrainRecipe
+from vla_factory.recipe.defaults import load_model_defaults
+from vla_factory.recipe.recipe import TrainRecipe
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
     state_dim = schema.state_dim or action_spec.action_dim
     camera_names = list(schema.cameras) if schema.cameras else ["top"]
 
-    # Configuration: the framework default profile (vla_factory/config/model/act.yaml) is
+    # Configuration: the framework default profile (vla_factory/recipe/model/act.yaml) is
     # the baseline; the recipe's per-run model.config deep-merges on top
     # (recipe wins). Unknown keys surface as a TypeError from ACTConfig rather
     # than being silently dropped — the upstream config object is the schema.

@@ -41,7 +41,7 @@ skip_no_lerobot = pytest.mark.skipif(
 
 def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
     """Create a dummy Observation for testing."""
-    from vla_factory.model.protocols.observation import Observation
+    from vla_factory.model.interfaces.observation import Observation
 
     images = {cam: torch.randn(B, 3, *image_size) for cam in cameras}
     image_masks = {cam: torch.ones(B, dtype=torch.bool) for cam in cameras}
@@ -51,8 +51,8 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 
 def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_components=None):
     """Create an ACT model wrapper and matching TrainRecipe (requires lerobot)."""
-    from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
-    from vla_factory.config.defaults import resolve_recipe
+    from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+    from vla_factory.recipe.defaults import resolve_recipe
     from vla_factory.data.manifest import DataSchema
     from vla_factory.model.registry import get_entry
 
@@ -170,7 +170,7 @@ class TestTrainingArgsMapping:
 
     def test_recipe_to_training_args(self):
         """TrainRecipe fields map to correct TrainingArguments."""
-        from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
         from vla_factory.training.train import _build_training_args
 
         recipe = TrainRecipe(
@@ -210,8 +210,8 @@ class TestCPUTrainingLoop:
         from vla_factory.training.pytorch_trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
-        from vla_factory.config.defaults import resolve_recipe
+        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
 
         # 1. Create model
@@ -245,7 +245,7 @@ class TestCPUTrainingLoop:
             obs_list = [item["observation"] for item in batch]
             actions = torch.cat([item["actions"] for item in batch], dim=0)
 
-            from vla_factory.model.protocols.observation import Observation
+            from vla_factory.model.interfaces.observation import Observation
             merged_obs = Observation(
                 images={k: torch.cat([o.images[k] for o in obs_list]) for k in obs_list[0].images},
                 image_masks={k: torch.cat([o.image_masks[k] for o in obs_list]) for k in obs_list[0].image_masks},
@@ -294,8 +294,8 @@ class TestCPUTrainingLoop:
         from vla_factory.training.pytorch_trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.config.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
-        from vla_factory.config.defaults import resolve_recipe
+        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
         from transformers import TrainingArguments
 
@@ -325,7 +325,7 @@ class TestCPUTrainingLoop:
                 }
 
         def dummy_collate(batch):
-            from vla_factory.model.protocols.observation import Observation
+            from vla_factory.model.interfaces.observation import Observation
             obs_list = [item["observation"] for item in batch]
             merged_obs = Observation(
                 images={k: torch.cat([o.images[k] for o in obs_list]) for k in obs_list[0].images},
@@ -373,7 +373,7 @@ class TestObservationTo:
 
     def test_to_with_token_masks(self):
         """Observation.to() moves all fields including token_ar_mask."""
-        from vla_factory.model.protocols.observation import Observation
+        from vla_factory.model.interfaces.observation import Observation
 
         obs = Observation(
             images={"front": torch.randn(2, 3, 224, 224)},
