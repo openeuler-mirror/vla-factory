@@ -253,7 +253,10 @@ deprecation warning；`infer.py` 的 ready 日志打印生效值与来源。
   能力边界的内容**，实测槽位必须落在声明 slots 内。
 - `assembly/resolver/resolver.py:_materialize`：合并新字段，越界即
   `METADATA_CONTRACT_CONFLICT`，逐项记录来源（`metadata` / `base_contract`）——
-  现在只有 `action_dim` 一例，扩展到全部合并字段。
+  **已完成**：不只 `action_dim`，`dim_policy`/`dim_policy_max`/
+  `vector_normalization`/`expected_hz`/`vision_slot_names` 均已纳入合并，
+  外加 `vision_slots` 的能力边界检查（实测槽位必须落在声明内）。此前这里
+  写的「现在只有 action_dim 一例」已过期，于阶段 2 摸底时更正。
 
 测试：三个 entry 的 metadata contract test；BaseContract 越界冲突用例（槽位不在声明内、
 分辨率超界）；`resolve` 输出中来源标注正确。

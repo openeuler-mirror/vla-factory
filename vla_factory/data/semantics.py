@@ -51,19 +51,40 @@ def infer_camera_semantic(key: str) -> str | None:
     return role if role in CAMERA_SEMANTICS else None
 
 
+# lerobot-style names carry the source as a suffix (``.pos`` / ``.vel`` /
+# ``.delta``). Single source of truth for both the mode inference below and
+# the resolver's joint-order matching (architecture §7.4 phase-2 decision D4)
+# — a dataset name and a robot joint name refer to the same joint iff they are
+# equal after stripping one of these.
+_SUFFIX_TO_MODE = {"pos": "joint_pos", "vel": "joint_vel", "delta": "joint_delta"}
+
+
 def infer_action_mode(name: str) -> str | None:
     """Map an action dim name suffix to a ``CONTROL_MODES`` value.
 
-    lerobot-style names carry the source as a suffix (``.pos`` / ``.vel`` /
-    ``.delta``). Returns the unique match or ``None`` (undeclared) — including
-    for an empty/``None`` name.
+    Returns the unique match or ``None`` (undeclared) — including for an
+    empty/``None`` name.
     """
     if not name:
         return None
     suffix = name.lower().rsplit(".", 1)[-1] if "." in name else ""
-    mapping = {"pos": "joint_pos", "vel": "joint_vel", "delta": "joint_delta"}
-    mode = mapping.get(suffix)
+    mode = _SUFFIX_TO_MODE.get(suffix)
     return mode if mode in CONTROL_MODES else None
+
+
+def strip_known_suffix(name: str) -> str:
+    """Strip a trailing ``.pos`` / ``.vel`` / ``.delta`` suffix, if present.
+
+    Used to compare a dataset dim name (``shoulder_pan.pos``, suffix kept per
+    data-module §8.3) against a robot's joint name (``shoulder_pan``, no
+    suffix) on equal footing. Names without a known suffix pass through
+    unchanged — the resolver's joint-order match then falls through to "no
+    match", not a false strip.
+    """
+    if "." not in name:
+        return name
+    base, suffix = name.rsplit(".", 1)
+    return base if suffix.lower() in _SUFFIX_TO_MODE else name
 
 
 # Source-label convenience (kept as plain strings for JSON serialization).

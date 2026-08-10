@@ -7,8 +7,6 @@
 # info lives in the inference module.
 
 name: robotwin
-variant: bimanual-dual-arm
-manufacturer: RoboTwin
 
 cameras: [head_camera, left_camera, right_camera]
 

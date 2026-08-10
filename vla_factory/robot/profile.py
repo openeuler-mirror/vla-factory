@@ -127,8 +127,6 @@ class RobotProfile:
 
     # ── Identity ──
     name: str
-    variant: str = ""                # body variant, e.g. "so100-arm", "v2"
-    manufacturer: str = ""
 
     # ── Sensors ──
     cameras: tuple[str, ...] = ()    # stable semantic camera names
@@ -184,8 +182,6 @@ class RobotProfile:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "variant": self.variant,
-            "manufacturer": self.manufacturer,
             "cameras": list(self.cameras),
             "joints": self.joints.to_dict(),
             "gripper": self.gripper.to_dict(),
@@ -204,8 +200,6 @@ class RobotProfile:
         gripper = GripperConvention.from_dict(d.get("gripper") or {})
         return cls(
             name=d.get("name", ""),
-            variant=d.get("variant", ""),
-            manufacturer=d.get("manufacturer", ""),
             cameras=tuple(d.get("cameras") or ()),
             joints=joints,
             gripper=gripper,

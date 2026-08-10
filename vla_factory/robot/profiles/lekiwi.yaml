@@ -7,8 +7,6 @@
 # inference module.
 
 name: lekiwi
-variant: so100-arm
-manufacturer: Hugging LeRobot
 
 # Stable semantic camera names exposed by the body.
 cameras: [front, wrist]
