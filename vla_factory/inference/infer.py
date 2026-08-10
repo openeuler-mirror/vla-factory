@@ -18,6 +18,7 @@ import torch
 from vla_factory.recipe.parser import parse_recipe
 from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
+from vla_factory.assembly.action_facts import resolve_action_dim, resolve_action_horizon
 from vla_factory.assembly.transforms import build_transforms, TransformContext
 from vla_factory.data.formats import get_reader
 from vla_factory.data.codec import resolve_codec
@@ -240,7 +241,8 @@ def infer_from_dataset_sample(
     obs = ObsDict(video=video, state=state, language=obs_frame.language)
 
     # ── 4. Ground-truth actions (raw / dataset scale) ────────────────
-    action_horizon = recipe.action_spec.action_horizon
+    # Same horizon the engine predicts with, so the L1 comparison lines up.
+    action_horizon = engine.action_horizon
     gt_list: list[np.ndarray] = []
     for i in range(action_horizon):
         fi = frame_idx + i
@@ -312,19 +314,7 @@ def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, Norm
     try:
         with open(schema_file) as f:
             schema_d = json.load(f)
-        schema = DataSchema(
-            state_dim=schema_d.get("state_dim", 0),
-            action_dim=schema_d.get("action_dim", 0),
-            cameras=tuple(schema_d.get("cameras", ())),
-            image_sizes={k: tuple(v) for k, v in schema_d.get("image_sizes", {}).items()},
-            fps=schema_d.get("fps", 30),
-            has_language=schema_d.get("has_language", False),
-            total_episodes=schema_d.get("total_episodes", 0),
-            total_frames=schema_d.get("total_frames", 0),
-            robot_type=schema_d.get("robot_type", "unknown"),
-            state_keys=tuple(schema_d.get("state_keys", ())),
-            action_keys=tuple(schema_d.get("action_keys", ())),
-        )
+        schema = DataSchema.from_dict(schema_d)
     except Exception as e:
         logger.warning('Failed to load schema from %s: %s', schema_file, e)
 
@@ -518,12 +508,10 @@ class InferenceEngine:
         # here; the training dataset is never re-read at inference time.
         # Missing or mismatched keys mean the checkpoint metadata is incomplete
         # and fail here before any platform adapter is constructed.
+        # The schema carries the names on its per-dim entries, so validating is
+        # all that is left — there is nothing to write back (`state_keys` /
+        # `action_keys` are derived views over `state_dims` / `action_dims`).
         self.state_keys, self.action_keys = resolve_vector_keys(self.schema)
-        self.schema = replace(
-            self.schema,
-            state_keys=self.state_keys,
-            action_keys=self.action_keys,
-        )
 
         # Camera key ordering: explicit > schema > default "front"
         if camera_names:
@@ -542,13 +530,33 @@ class InferenceEngine:
         model.to(self.device)
         model.eval()
         self._model = model
-        self.action_horizon = recipe.action_spec.action_horizon
-        self.action_dim = recipe.action_spec.action_dim
+        # WP3 — the same action-fact routing the training path uses, so a
+        # checkpoint infers with the dims/horizon it was actually trained on.
+        # It also keeps action_dim equal to len(schema.action_keys), which the
+        # platform action adapters assert on.
+        self.action_horizon = resolve_action_horizon(
+            metadata=entry.metadata, base_contract=None,
+            recipe_action_horizon=recipe.action_spec.action_horizon,
+        )
+        self.action_dim = resolve_action_dim(
+            schema=schema, metadata=entry.metadata,
+            recipe_action_dim=recipe.action_spec.action_dim,
+        )
         # Flow-matching / diffusion heads (pi0) denoise over N steps at inference
-        # (ModelMetadata.inference_num_steps, e.g. pi0=10). Plumbed into
-        # predict_actions so the adapter doesn't hardcode the count and openpi
-        # doesn't receive num_steps=None (which crashes its time-step loop).
-        self.num_inference_steps = entry.metadata.inference_num_steps
+        # (pi0=10, ACT's regression head=1). Plumbed into predict_actions so the
+        # adapter doesn't hardcode the count and openpi doesn't receive
+        # num_steps=None (which crashes its time-step loop).
+        #
+        # This is a tunable, not a fact: the value comes from the resolved
+        # recipe, where the model's declared default already sits under any
+        # per-run `model.config` override. Reading the declaration directly here
+        # is what used to make `num_inference_steps` silently unoverridable.
+        steps = (recipe.model_config or {}).get("num_inference_steps")
+        steps_source = "recipe"
+        if steps is None:
+            steps = (entry.metadata.params or {}).get("num_inference_steps", 1)
+            steps_source = "model default"
+        self.num_inference_steps = int(steps)
 
         # ── 3.5 Forward + reverse transform pipelines ────────────
         # Built solely from the resolved recipe saved in inference_metadata.
@@ -560,12 +568,13 @@ class InferenceEngine:
             )
         tctx = TransformContext(
             norm_stats=norm_stats,
-            model_action_dim=entry.metadata.action_dim or recipe.action_spec.action_dim,
+            model_action_dim=entry.metadata.action_dim or self.action_dim,
             dataset_action_dim=schema.action_dim,
             recipe=recipe,
             schema=schema,
             model_config=recipe.model_config,
             split="infer",
+            metadata=entry.metadata,
         )
         self.preprocessor, self.postprocessor = build_transforms(
             transform_inputs, tctx
@@ -573,9 +582,10 @@ class InferenceEngine:
 
         logger.info(
             "InferenceEngine ready: model=%s checkpoint=%s cameras=%s "
-            "action_dim=%d action_horizon=%d device=%s",
+            "action_dim=%d action_horizon=%d inference_steps=%d (%s) device=%s",
             recipe.model_name, ckpt_file, self.camera_keys,
             self.action_dim, self.action_horizon,
+            self.num_inference_steps, steps_source,
             self.device,
         )
         logger.info(

@@ -62,6 +62,9 @@ class TransformContext:
     schema: Any | None = None
     model_config: dict[str, Any] | None = None
     split: str = "train"
+    # The model's ModelMetadata — the single source for model-side transform
+    # facts (image range/normalize, vector normalization) per decision D3.
+    metadata: Any | None = None
 
 def build_preprocessor(
     transform_types: Iterable[dict] | None,

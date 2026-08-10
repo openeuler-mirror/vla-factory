@@ -6,6 +6,7 @@ dataclass defaults so a minimal config (just model name + data path) works.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ from vla_factory.recipe.recipe import (
     SplitConfig,
     TrainRecipe,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def parse_recipe(path: str | Path) -> TrainRecipe:
@@ -114,6 +117,25 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     augmentation = _pop_dataclass(
         train_block.get("augmentation", {}), AugmentationConfig
     )
+
+    # Denoising steps are a model knob, not a training knob: the inference engine
+    # reads `model.config.num_inference_steps`. `training.inference_steps` is the
+    # legacy location and drove nothing, so forward it once and say so rather
+    # than leaving the value silently inert.
+    if "inference_steps" in train_block:
+        if "num_inference_steps" in (model_config or {}):
+            logger.warning(
+                "training.inference_steps is deprecated and ignored here because "
+                "model.config.num_inference_steps is already set (that one wins)."
+            )
+        else:
+            model_config = dict(model_config or {})
+            model_config["num_inference_steps"] = int(train_block["inference_steps"])
+            logger.warning(
+                "training.inference_steps is deprecated — move it to "
+                "model.config.num_inference_steps. Forwarding %s for this run.",
+                model_config["num_inference_steps"],
+            )
 
     # ── Output ──
     output_config = _pop_dataclass(raw.get("output", {}), OutputConfig)

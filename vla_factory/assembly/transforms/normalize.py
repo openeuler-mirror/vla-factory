@@ -15,10 +15,16 @@ from __future__ import annotations
 import numpy as np
 
 from vla_factory.data.manifest import NormStats
-from .base import TransformStep
+from .base import TransformStep, model_fact
 from .registry import TransformRegistry
 
 _EPS = 1e-8  # matches lerobot's NormalizationProcessor default
+
+# ModelMetadata.vector_normalization vocabulary → NormalizeVector method name.
+_NORMALIZATION_TO_METHOD = {
+    "mean_std": "zscore",
+    "quantile": "quantile",
+}
 
 # ImageNet normalization — lerobot overrides image stats with these when
 # DatasetConfig.use_imagenet_stats=True (the default).
@@ -158,10 +164,14 @@ class NormalizeVector(TransformStep):
         stats = getattr(ctx, "norm_stats", None)
         if stats is None:
             return None
+        # Vector normalization is a model fact, not a per-run knob.
+        norm = model_fact(cfg, "method", ctx, "vector_normalization",
+                          "normalize_vector.method")
+        method = _NORMALIZATION_TO_METHOD[norm]
         return cls(
             stats=stats,
             fields=tuple(cfg.get("fields", ("state", "actions"))),
-            method=cfg.get("method", "zscore"),
+            method=method,
         )
 
     def _normalize(self, x, stats, field_name: str):

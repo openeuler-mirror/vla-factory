@@ -26,11 +26,12 @@ from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 
+from vla_factory.assembly.action_facts import resolve_action_dim, resolve_action_horizon
 from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.model.interfaces.observation import Observation
 from vla_factory.model.registry.registry import register_vla
-from vla_factory.recipe.defaults import load_model_defaults
 from vla_factory.recipe.recipe import TrainRecipe
+from vla_factory.utils.tracked_config import TrackedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -219,13 +220,28 @@ class ACTModelWrapper(nn.Module):
         """
         batch = {"observation.state": observation.state}
 
-        # Map observation cameras → config image keys by position
-        obs_cameras = sorted(observation.images.keys())
-        config_keys = self._image_keys or [
-            f"observation.images.{cam}" for cam in obs_cameras
-        ]
-        for obs_cam, config_key in zip(obs_cameras, config_keys):
-            batch[config_key] = observation.images[obs_cam]
+        # Map observation cameras → lerobot config keys by NAME, not position.
+        # ``self._image_keys`` is in the canonical ``schema.cameras`` order the
+        # model was built with (factory builds input_features from schema.cameras
+        # in order). Sorting ``observation.images.keys()`` here would reorder by
+        # dict order and silently swap cameras when that differs from the schema
+        # order (architecture §4.2.3 forbids dictionary-order guessing) — so we
+        # iterate the build-time correspondence directly and require each camera
+        # to be present.
+        if self._image_keys:
+            for config_key in self._image_keys:
+                cam = config_key.split("observation.images.", 1)[-1]
+                if cam not in observation.images:
+                    raise KeyError(
+                        f"observation is missing expected camera {cam!r}; model expects "
+                        f"{self._image_keys}, got {sorted(observation.images.keys())}."
+                    )
+                batch[config_key] = observation.images[cam]
+        else:
+            # Fallback for direct construction without config keys: use the
+            # observation's own camera names as the config keys.
+            for cam in observation.images:
+                batch[f"observation.images.{cam}"] = observation.images[cam]
 
         if actions is not None:
             batch["action"] = actions
@@ -269,8 +285,15 @@ _ACT_METADATA = ModelMetadata(
     support_lora=False,
     support_full=True,
     support_freeze=True,
-    inference_num_steps=1,
     install_hint='pip install -e ".[act]"',
+    # ── Interface contract (model-module §4.3) ──
+    # ACT trains its own projection layers from scratch → flexible dim; vision
+    # slots follow the dataset; images are ImageNet-normalized in [0,1].
+    dim_policy="flexible",
+    image_input_range=(0.0, 1.0),
+    image_normalize_mode="imagenet",
+    vector_normalization="mean_std",
+    control_mode_pref=("joint_pos",),
     # Trainable-component name patterns.  The wrapper holds the lerobot policy
     # as ``self.model`` and the policy holds the ACT network as ``self.model``,
     # so every parameter is prefixed ``model.model.<component>.``.
@@ -278,6 +301,44 @@ _ACT_METADATA = ModelMetadata(
         "backbone": ["model.model.backbone."],
         "transformer": ["model.model.encoder.", "model.model.decoder."],
         "cvae": ["model.model.vae_encoder."],
+    },
+    # ── Tunable defaults (recipe ``model.config`` overrides these) ──
+    # The framework's recommended baseline for running ACT — what VLA Factory
+    # ships and evolves, not a mechanical copy of lerobot's ACTConfig defaults.
+    # Only pure upstream hyperparameters live here; data-derived fields
+    # (chunk_size / n_action_steps / input_features / output_features) are
+    # computed by the factory from the recipe + schema, and anything omitted
+    # falls back to lerobot's own ACTConfig defaults.
+    params={
+        # ── Transformer / CVAE ──
+        "dim_model": 512,
+        "n_heads": 8,
+        "dim_feedforward": 3200,
+        "n_encoder_layers": 4,
+        "n_decoder_layers": 1,
+        "latent_dim": 32,
+        "n_vae_encoder_layers": 4,
+        "kl_weight": 10.0,
+        "dropout": 0.1,
+        # ACT's regression head is deterministic — one forward, no denoising.
+        "num_inference_steps": 1,
+        # ── Data transforms ──
+        # Dataset images are raw HWC uint8; this chain produces the tensor
+        # contract lerobot ACT expects (CHW float32, ImageNet-normalized). ACT
+        # does not resize by default — image feature shapes come from
+        # DataSchema; add resize_images with height/width only when an
+        # experiment explicitly wants it. The model-side facts (input range,
+        # imagenet mode, vector normalization) are read from the named fields
+        # above and must not be repeated in the step configs.
+        "transforms": {
+            "inputs": [
+                {"type": "image_to_float"},
+                {"type": "image_layout", "to": "CHW"},
+                {"type": "image_normalize"},
+                {"type": "normalize_vector", "fields": ["state", "actions"]},
+                {"type": "pad_dimensions", "fields": ["actions"]},
+            ],
+        },
     },
 )
 
@@ -305,24 +366,24 @@ def load_act(recipe, schema) -> ACTModelWrapper:
     return _load_lerobot(recipe, schema)
 
 
-def _resolve_act_config(recipe_or_config) -> dict:
+def _resolve_act_config(recipe_or_config) -> TrackedConfig:
     """Resolve ACT config for adapter construction.
 
     Normal training/deployment passes a ``TrainRecipe`` whose ``model_config``
-    has already been prepared by the entrypoint or loaded from checkpoint
-    metadata. The dict fallback is retained for direct unit tests and low-level
-    adapter calls that pass an authoring-style override dictionary.
+    already carries the merged defaults — ``resolve_recipe()`` folds
+    ``ModelMetadata.params`` in once at the entrypoint. The dict fallback is
+    retained for direct unit tests and low-level adapter calls that pass an
+    authoring-style override dictionary; there the declared params are merged
+    the same way.
+
+    Returns a :class:`TrackedConfig` so the factory can assert every declared
+    key was actually read (see ``utils/tracked_config.py``).
     """
     if isinstance(recipe_or_config, TrainRecipe):
-        return OmegaConf.to_container(
-            OmegaConf.create(recipe_or_config.model_config or {}),
-            resolve=True,
-        )
+        merged = OmegaConf.create(recipe_or_config.model_config or {})
     else:
-        model_config = recipe_or_config or {}
-
-    merged = OmegaConf.merge(load_model_defaults("act"), model_config)
-    return OmegaConf.to_container(merged, resolve=True)
+        merged = OmegaConf.merge(_ACT_METADATA.params, recipe_or_config or {})
+    return TrackedConfig(OmegaConf.to_container(merged, resolve=True))
 
 
 def _resolve_resize_image_size(cfg: dict) -> tuple[int, int] | None:
@@ -367,20 +428,37 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
     from lerobot.configs.types import FeatureType, PolicyFeature
 
     action_spec = recipe.action_spec
-    state_dim = schema.state_dim or action_spec.action_dim
+    # WP3 — action facts come from the dimension that owns them: the dataset
+    # decides how many action dims exist, and ACT (from_scratch) legitimately
+    # lets the recipe pick the chunk size. The recipe stays the fallback, and a
+    # disagreement warns rather than silently building a head that does not
+    # match what the dataloader feeds it.
+    action_dim = resolve_action_dim(
+        schema=schema, metadata=_ACT_METADATA,
+        recipe_action_dim=action_spec.action_dim,
+    )
+    action_horizon = resolve_action_horizon(
+        metadata=_ACT_METADATA, base_contract=None,
+        recipe_action_horizon=action_spec.action_horizon,
+    )
+    # Stateless datasets fall back to the action width (ACT always takes a state
+    # input); kept as an explicit rule for the resolver to take over in phase 3.
+    state_dim = schema.state_dim or action_dim
     camera_names = list(schema.cameras) if schema.cameras else ["top"]
 
-    # Configuration: the framework default profile (vla_factory/recipe/model/act.yaml) is
-    # the baseline; the recipe's per-run model.config deep-merges on top
-    # (recipe wins). Unknown keys surface as a TypeError from ACTConfig rather
-    # than being silently dropped — the upstream config object is the schema.
+    # Configuration: ACT's declared ``ModelMetadata.params`` are the baseline and
+    # the recipe's per-run model.config deep-merges on top (recipe wins), folded
+    # in once by resolve_recipe(). Unknown keys are rejected by resolve_recipe()
+    # against the declared key set, and anything reaching ACTConfig that it does
+    # not know raises a TypeError there — no silent typo failures either way.
     cfg = _resolve_act_config(recipe)
 
     # Framework-managed keys are computed from the recipe/schema and must not
     # pass through to ACTConfig. Image feature sizes come from resize_images
     # when configured, otherwise from the dataset schema's native image size.
     resize_image_size = _resolve_resize_image_size(cfg)
-    for fw_key in ("chunk_size", "n_action_steps", "input_features", "output_features", "transforms"):
+    for fw_key in ("chunk_size", "n_action_steps", "input_features", "output_features",
+                   "transforms", "num_inference_steps"):
         cfg.pop(fw_key, None)
 
     # Build input_features dynamically from dataset cameras
@@ -399,20 +477,24 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
 
     # NOTE: PolicyFeature.type must be FeatureType enum (not string) — lerobot
     # uses `is` identity comparison in PreTrainedConfig.image_features.
-    # Remaining cfg keys are pure model hyperparameters; any the profile/recipe
-    # omits fall back to ACTConfig's own defaults.
+    # Remaining cfg keys are pure model hyperparameters; any the declaration and
+    # recipe both omit fall back to ACTConfig's own defaults.
     config = ACTConfig(
-        chunk_size=action_spec.action_horizon,
-        n_action_steps=action_spec.action_horizon,
+        chunk_size=action_horizon,
+        n_action_steps=action_horizon,
         input_features=input_features,
         output_features={
             "action": PolicyFeature(
                 type=FeatureType.ACTION,
-                shape=(action_spec.action_dim,),
+                shape=(action_dim,),
             ),
         },
         **cfg,
     )
+    # Every declared key must have been read by now (``**cfg`` counts as a read
+    # for the pass-through hyperparameters); a leftover means the declaration
+    # carries a knob nothing consumes.
+    cfg.assert_all_consumed("act")
 
     policy = ACTPolicy(config)
 

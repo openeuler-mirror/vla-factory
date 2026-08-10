@@ -8,6 +8,7 @@ Run:
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
 import os
 import sys
@@ -67,6 +68,35 @@ class TestLeRobotV3Reader(unittest.TestCase):
         self.assertEqual(schema.robot_type, "so101_follower")
         self.assertEqual(schema.image_sizes["front"], (IMAGE_H, IMAGE_W))
         self.assertEqual(schema.image_sizes["wrist"], (IMAGE_H, IMAGE_W))
+
+    def test_schema_entry_table_facts(self):
+        """WP1: the reader fills the entry-table structure with source labels."""
+        schema = self.reader.get_schema(DATASET_PATH)
+
+        # identity + robot_ref
+        self.assertEqual(schema.source_format, "lerobot_v3")
+        self.assertEqual(schema.identity_name, DATASET_PATH.name)
+        self.assertEqual(schema.robot_ref, "so101_follower")
+
+        # cameras: per-entry resolution + inferred semantic (front/wrist unique)
+        cams = {c.key: c for c in schema.cameras_entries}
+        self.assertEqual(cams["front"].semantic, "third_person_front")
+        self.assertEqual(cams["front"].semantic_source, "inferred")
+        self.assertEqual(cams["wrist"].semantic, "wrist")
+        self.assertEqual(cams["wrist"].semantic_source, "inferred")
+        self.assertEqual(cams["front"].resolution, (IMAGE_H, IMAGE_W))
+        self.assertIsNotNone(cams["front"].encoding)
+
+        # state dims: one per dim, names kept with raw suffix
+        self.assertEqual(len(schema.state_dims), STATE_DIM)
+        self.assertTrue(all(d.name and d.source_field for d in schema.state_dims))
+
+        # action dims: lerobot is a container format → mode undeclared (no default)
+        self.assertEqual(len(schema.action_dims), ACTION_DIM)
+        self.assertTrue(all(d.mode_source == "undeclared" for d in schema.action_dims))
+
+        # instruction
+        self.assertEqual(schema.instruction_task_field, "task")
 
     def test_norm_stats(self):
         stats = self.reader.get_norm_stats(DATASET_PATH)
@@ -548,6 +578,7 @@ class TestBuildTransforms(unittest.TestCase):
     def test_normalize_only(self):
         from vla_factory.training.loader import _build_transforms
         from vla_factory.data.manifest import NormStats, FeatureStats
+        from vla_factory.model.interfaces.model import ModelMetadata
         norm_stats = NormStats(
             action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
         )
@@ -557,6 +588,9 @@ class TestBuildTransforms(unittest.TestCase):
         transforms = _build_transforms(
             norm_stats=norm_stats,
             model_metadata={
+                # The normalization method is a model fact, so it comes from the
+                # declaration rather than the step config (which now rejects it).
+                "metadata": ModelMetadata(name="stub", vector_normalization="mean_std"),
                 "transform_inputs": [
                     {"type": "normalize_vector", "fields": ["actions"]},
                 ],
@@ -569,6 +603,7 @@ class TestBuildTransforms(unittest.TestCase):
     def test_normalize_and_pad(self):
         from vla_factory.training.loader import _build_transforms
         from vla_factory.data.manifest import NormStats, FeatureStats
+        from vla_factory.model.interfaces.model import ModelMetadata
         norm_stats = NormStats(
             action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
         )
@@ -576,6 +611,7 @@ class TestBuildTransforms(unittest.TestCase):
             norm_stats=norm_stats,
             model_metadata={
                 "action_dim": 32,
+                "metadata": ModelMetadata(name="stub", vector_normalization="mean_std"),
                 "transform_inputs": [
                     {"type": "normalize_vector", "fields": ["actions"]},
                     {"type": "pad_dimensions", "fields": ["actions"]},
@@ -593,6 +629,7 @@ class TestBuildTransforms(unittest.TestCase):
 
         recipe = parse_recipe_from_string("model:\n  name: act\n")
         recipe = resolve_recipe(recipe)
+        from vla_factory.model.registry import get_entry
         transforms = _build_transforms(
             norm_stats=NormStats(
                 state=FeatureStats(mean=[0.0] * STATE_DIM, std=[1.0] * STATE_DIM),
@@ -600,12 +637,13 @@ class TestBuildTransforms(unittest.TestCase):
             ),
             model_metadata={
                 "action_dim": ACTION_DIM,
+                "metadata": get_entry("act").metadata,
                 "profile": recipe.model_config,
                 "transform_inputs": recipe.model_config["transforms"]["inputs"],
             },
             action_dim=ACTION_DIM,
             recipe=recipe,
-            schema=DataSchema(state_dim=STATE_DIM, action_dim=ACTION_DIM, cameras=("front",)),
+            schema=make_schema(state_dim=STATE_DIM, action_dim=ACTION_DIM, cameras=("front",)),
         )
         sample = {
             "images.front": np.zeros((IMAGE_H, IMAGE_W, 3), dtype=np.uint8),

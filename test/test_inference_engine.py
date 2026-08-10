@@ -10,6 +10,7 @@ Run:
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
 import json
 import sys
@@ -64,7 +65,7 @@ def _make_schema(
     cameras: tuple[str, ...] = ("front",),
     has_language: bool = False,
 ) -> DataSchema:
-    return DataSchema(
+    return make_schema(
         state_dim=state_dim,
         action_dim=action_dim,
         cameras=cameras,
@@ -557,14 +558,14 @@ class TestResolveVectorKeys:
     """The dimension→key order is a data/model contract.
 
     The checkpoint schema (populated from dataset ``names`` at train time) is
-    the sole source — the training dataset is never re-read. Resolution is
-    strict: every non-empty vector must carry exactly one key per dimension so
-    checkpoint metadata remains complete and self-contained.
+    the sole source — the training dataset is never re-read. With the per-entry
+    dim table, "one key per dim" is structural: every dim of a non-empty
+    vector must carry a canonical ``name``; an empty vector resolves to ().
     """
 
     def test_schema_keys_returned(self, caplog):
         """Dataset ``names`` (in schema) are returned when present."""
-        schema = DataSchema(
+        schema = make_schema(
             state_dim=3, action_dim=2,
             state_keys=("s0", "s1", "s2"), action_keys=("a0", "a1"),
         )
@@ -572,24 +573,24 @@ class TestResolveVectorKeys:
         assert sk == ("s0", "s1", "s2")
         assert ak == ("a0", "a1")
 
-    def test_raises_when_missing(self):
-        """A non-empty vector without keys violates the schema contract."""
-        schema = DataSchema(state_dim=3, action_dim=3)
-        with pytest.raises(ValueError, match=r"schema\.state_keys is empty"):
+    def test_raises_when_dim_has_no_name(self):
+        """A non-empty vector with a nameless dim violates the schema contract."""
+        schema = make_schema(state_dim=3, action_dim=3)  # dims present, no names
+        with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)
 
-    def test_length_mismatch_raises(self):
-        """A resolved key count must agree exactly with the vector dimension."""
-        schema = DataSchema(
+    def test_partial_names_raises(self):
+        """A dim without a name (keys shorter than dim count) fails."""
+        schema = make_schema(
             state_dim=3, action_dim=2,
-            state_keys=("a", "b"), action_keys=("x", "y"),  # state: 2 != 3; action: 2 == 2
+            state_keys=("a", "b"), action_keys=("x", "y"),  # 3rd state dim unnamed
         )
-        with pytest.raises(ValueError, match=r"schema\.state_keys has 2 entries"):
+        with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)
 
     def test_dim_zero_returns_empty(self):
         """A stateless vector (dim 0) resolves to empty keys without warning."""
-        schema = DataSchema(state_dim=0, action_dim=2, action_keys=("x", "y"))
+        schema = make_schema(state_dim=0, action_dim=2, action_keys=("x", "y"))
         sk, ak = resolve_vector_keys(schema)
         assert sk == ()
         assert ak == ("x", "y")

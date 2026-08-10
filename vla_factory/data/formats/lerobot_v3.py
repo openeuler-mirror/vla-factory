@@ -103,53 +103,77 @@ class LeRobotV3Reader:
 
     def get_schema(self, path: Path) -> DataSchema:
         """Infer ``DataSchema`` from ``meta/info.json``."""
+        from vla_factory.data.semantics import (
+            DATA_INFERRED,
+            DATA_MEASURED,
+            DATA_UNDECLARED,
+            infer_action_mode,
+            infer_camera_semantic,
+        )
+        from vla_factory.data.manifest import ActionDim, CameraEntry, StateDim
+
         info = _load_json(path / "meta" / "info.json")
         features: dict[str, Any] = info.get("features", {})
 
-        state_dim = 0
-        action_dim = 0
-        cameras: list[str] = []
-        image_sizes: dict[str, tuple[int, int]] = {}
-        state_keys: list[str] = []
-        action_keys: list[str] = []
+        state_dims: list[StateDim] = []
+        action_dims: list[ActionDim] = []
+        cameras: list[CameraEntry] = []
 
         for key, spec in features.items():
             dtype = spec.get("dtype", "")
             shape = spec.get("shape", [])
             names = spec.get("names")
+            video_info = spec.get("video_info") or spec.get("info") or {}
+
             if key == "action":
-                action_dim = shape[0] if shape else 0
-                if isinstance(names, list):
-                    action_keys = names
+                dim = shape[0] if shape else 0
+                name_list = list(names) if isinstance(names, list) else []
+                for i in range(dim):
+                    nm = name_list[i] if i < len(name_list) else None
+                    mode = infer_action_mode(nm) if nm else None
+                    action_dims.append(ActionDim(
+                        name=nm,
+                        source_field="action",
+                        mode=mode,
+                        mode_source=DATA_INFERRED if mode else DATA_UNDECLARED,
+                    ))
             elif "state" in key.lower() and dtype != "video":
-                state_dim = shape[0] if shape else 0
-                if isinstance(names, list):
-                    state_keys = names
+                dim = shape[0] if shape else 0
+                name_list = list(names) if isinstance(names, list) else []
+                for i in range(dim):
+                    nm = name_list[i] if i < len(name_list) else None
+                    state_dims.append(StateDim(name=nm, source_field=key))
             elif dtype == "video" or ("image" in key.lower() and len(shape) == 3):
                 cam_name = key.split(".")[-1]
-                cameras.append(cam_name)
                 size = _camera_size(spec, shape)
-                if size is not None:
-                    image_sizes[cam_name] = size
+                semantic = infer_camera_semantic(cam_name)
+                cameras.append(CameraEntry(
+                    key=cam_name,
+                    resolution=size,
+                    encoding=video_info.get("video.codec") or None,
+                    semantic=semantic,
+                    semantic_source=DATA_INFERRED if semantic else DATA_UNDECLARED,
+                ))
 
-        # Check language
         has_language = (
             (path / "meta" / "tasks.parquet").exists()
             or (path / "meta" / "tasks.jsonl").exists()
         )
+        robot_type = info.get("robot_type", "unknown")
 
         return DataSchema(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            cameras=tuple(cameras),
-            image_sizes=image_sizes,
-            fps=info.get("fps", 30),
-            has_language=has_language,
-            total_episodes=info.get("total_episodes", 0),
+            identity_name=path.name,
+            source_format="lerobot_v3",
+            episodes=info.get("total_episodes", 0),
             total_frames=info.get("total_frames", 0),
-            robot_type=info.get("robot_type", "unknown"),
-            state_keys=tuple(state_keys),
-            action_keys=tuple(action_keys),
+            robot_ref=None if robot_type in (None, "", "unknown") else str(robot_type),
+            cameras_entries=tuple(cameras),
+            state_dims=tuple(state_dims),
+            action_dims=tuple(action_dims),
+            action_frequency_hz=None,
+            temporal_fps=info.get("fps", 30),
+            instruction_task_field="task" if has_language else None,
+            instruction_granularity=None,
         )
 
     def get_norm_stats(self, path: Path) -> NormStats:

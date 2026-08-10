@@ -180,6 +180,14 @@ class RoboTwinReader:
 
     def get_schema(self, path: Path) -> DataSchema:
         """Infer ``DataSchema`` from the first episode's hdf5."""
+        from vla_factory.data.semantics import (
+            DATA_INFERRED,
+            DATA_MEASURED,
+            DATA_UNDECLARED,
+            infer_camera_semantic,
+        )
+        from vla_factory.data.manifest import ActionDim, CameraEntry, StateDim
+
         h5py = _load_h5py()
         files = _episode_files(path)
         if not files:
@@ -191,25 +199,50 @@ class RoboTwinReader:
         first = next(iter(files.values()))
         with h5py.File(str(first), "r") as f:
             dims = _joint_dims(f)
-            state_keys = _state_keys(dims)
-            state_dim = len(state_keys)
-            cameras = _camera_names(f)
-            image_sizes = {cam: _decode_hw(f, cam) for cam in cameras}
+            cam_names = _camera_names(f)
+            cam_hw = {cam: _decode_hw(f, cam) for cam in cam_names}
+
+        # Expand the concatenated joint layout into per-dim entries, making the
+        # reader's implicit _JOINT_ORDER concatenation an explicit schema fact.
+        state_dims: list[StateDim] = []
+        action_dims: list[ActionDim] = []
+        for seg in _JOINT_ORDER:
+            width = dims[seg]
+            for i in range(width):
+                name = seg if width == 1 else f"{seg}_{i}"
+                src = f"/joint_action/{seg}"
+                state_dims.append(StateDim(name=name, source_field=src))
+                # RoboTwin /joint_action/* is qpos target — measured joint_pos.
+                action_dims.append(ActionDim(
+                    name=name, source_field=src,
+                    mode="joint_pos", mode_source=DATA_MEASURED,
+                ))
+
+        cameras = [
+            CameraEntry(
+                key=cam,
+                resolution=cam_hw.get(cam),
+                semantic=(sem := infer_camera_semantic(cam)),
+                semantic_source=DATA_INFERRED if sem else DATA_UNDECLARED,
+            )
+            for cam in cam_names
+        ]
 
         has_language = (path / "instructions").is_dir()
 
         return DataSchema(
-            state_dim=state_dim,
-            action_dim=state_dim,  # qpos action space == joint state space
-            cameras=tuple(cameras),
-            image_sizes=image_sizes,
-            fps=25,  # RoboTwin does not persist fps; 25 is its common default
-            has_language=has_language,
-            total_episodes=len(files),
+            identity_name=path.name,
+            source_format="robotwin_hdf5",
+            episodes=len(files),
             total_frames=total_frames,
-            robot_type="robotwin",
-            state_keys=state_keys,
-            action_keys=state_keys,
+            robot_ref="robotwin",
+            cameras_entries=tuple(cameras),
+            state_dims=tuple(state_dims),
+            action_dims=tuple(action_dims),
+            action_frequency_hz=None,
+            temporal_fps=25,  # RoboTwin does not persist fps; 25 is its common default
+            instruction_task_field="instruction" if has_language else None,
+            instruction_granularity=None,
         )
 
     def get_norm_stats(self, path: Path) -> NormStats:

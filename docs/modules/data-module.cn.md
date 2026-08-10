@@ -434,7 +434,7 @@ Episode  (dataclass)
 **input transform**（训练侧）：
 
 ```yaml
-# vla_factory/recipe/model/act.yaml
+# ACT 的 ModelMetadata.params["transforms"]
 transforms:
   inputs:
     - {type: image_to_float}
@@ -754,11 +754,10 @@ manifest 持久化后需要明确它与 live dataset metadata 的一致性检查
 
 ## 8. 数据集描述（目标设计）
 
-> **状态：目标设计，尚未实现。** 本章对齐架构文档 §7.4 阶段1（"让 reader 补充
-> 可探测的数据语义"）与 §3.5 的 `inspect` 能力，描述数据维度描述的目标形态。
-> 落地前本章是设计评审对象，落地后按实现修订为"现在是什么样"。
-> **设计取向：数据描述的所有字段来自对数据集的实际探测与确定性推断，
-> 不引入数据集侧声明文件**；探测不到的语义不进数据描述，由 recipe 的
+> **状态：已实现（阶段1）。** 本章对齐架构文档 §7.4 阶段1（"让 reader 补充
+> 可探测的数据语义"）与 §3.5 的 `inspect` 能力，描述数据维度描述的当前形态。
+> 数据描述的所有字段来自对数据集的实际探测与确定性推断，
+> 不引入数据集侧声明文件；探测不到的语义不进数据描述，由 recipe 的
 > 受控 override 在组合解析时按需补齐（见 8.4）。
 
 ### 8.1 取向：全部事实来自读取数据集本身

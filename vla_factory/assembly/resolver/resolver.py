@@ -101,25 +101,39 @@ def _materialize(
 
     The checkpoint can self-state some instance facts (camera roles, real
     action/state dims, image resolution). Those refine the metadata but must
-    stay within the model family's capability boundary — a checkpoint declaring
-    *more* action dims than the model supports is a hard conflict.
+    stay within the model family's capability boundary:
+
+    - a checkpoint declaring *more* action dims than the model supports is a
+      hard conflict;
+    - a checkpoint's measured camera slots must fall within the model's declared
+      ``vision_slots`` (a role the model family does not expose is a conflict).
 
     Returns the merged, JSON-friendly fact dict used to build the canonical
-    interface. Records the source of the action-dim fact.
+    interface. Each instance-refined fact records its source
+    (``metadata`` / ``base_contract``).
     """
     facts: dict[str, Any] = {
         "name": metadata.name,
         "backend": metadata.backend,
         "action_dim": metadata.action_dim,
+        "action_dim_source": "metadata",
         "action_horizon": metadata.action_horizon,
+        "action_horizon_source": "metadata",
         "action_head_type": metadata.action_head_type,
         "requires_prompt": metadata.requires_prompt,
+        # New interface facts (model-module §4.3) — declared by metadata;
+        # BaseContract may refine a few of them below.
+        "dim_policy": metadata.dim_policy,
+        "dim_policy_max": metadata.dim_policy_max,
+        "vector_normalization": metadata.vector_normalization,
+        "expected_hz": metadata.expected_hz,
+        "vision_slot_names": tuple(s.name for s in metadata.vision_slots),
     }
     if base_contract is not None:
-        # Capability-boundary check on action_dim. ModelMetadata.action_dim is
-        # the model family's internal max (0 == "from data, no fixed cap", e.g.
-        # ACT trained from scratch). A checkpoint may declare fewer dims
-        # (padding covers the rest) but never more.
+        # ── action_dim capability boundary ──
+        # ModelMetadata.action_dim is the family's internal max (0 == "from
+        # data, no fixed cap", e.g. ACT from scratch). A checkpoint may declare
+        # fewer dims (padding covers the rest) but never more.
         if (
             metadata.action_dim > 0
             and base_contract.action_dim is not None
@@ -137,6 +151,23 @@ def _materialize(
             facts["action_dim_source"] = "base_contract"
         if base_contract.state_dim is not None:
             facts["state_dim_from_contract"] = base_contract.state_dim
+
+        # ── vision-slot capability boundary ──
+        # When the model family declares fixed slots, every slot the checkpoint
+        # actually exposes must be among them (a checkpoint cannot invent a slot
+        # the family does not have). Empty declared slots (e.g. ACT, follows the
+        # data) skips this check.
+        if metadata.vision_slots:
+            declared = {s.name for s in metadata.vision_slots}
+            extra = [r for r in base_contract.camera_role_names if r not in declared]
+            if extra:
+                raise make_error(
+                    METADATA_CONTRACT_CONFLICT,
+                    "model.vision_slots",
+                    field_name="vision_slots",
+                    metadata_value=sorted(declared),
+                    contract_value=base_contract.camera_role_names,
+                )
     return facts
 
 
@@ -224,7 +255,7 @@ def resolve_assembly(
     )
 
     return ResolvedAssembly(
-        schema_ref=_to_jsonable(schema),
+        schema_ref=schema.to_dict(),
         norm_stats_ref=_to_jsonable(norm_stats),
         metadata_ref=_to_jsonable(metadata),
         contract_ref=_to_jsonable(base_contract) if base_contract is not None else None,

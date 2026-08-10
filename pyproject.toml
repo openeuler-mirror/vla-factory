@@ -114,9 +114,9 @@ include-package-data = true
 where = ["."]
 include = ["vla_factory*"]
 
-# Ship model default profiles (act.yaml, pi0.yaml, ...) with the package.
+# Model defaults ship inside the entry modules (ModelMetadata.params), so only
+# genuinely external declarations need packaging here.
 [tool.setuptools.package-data]
-"vla_factory.recipe.model" = ["*.yaml"]
 "vla_factory.inference.connectors" = ["*.yml"]
 "vla_factory.robot.profiles" = ["*.yaml"]
 

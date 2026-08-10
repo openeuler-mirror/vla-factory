@@ -269,6 +269,52 @@ class AssemblyConfig:
     default_task: str | None = None
 
 
+def get_camera_mapping(recipe: "TrainRecipe", *, warn_legacy: bool = True):
+    """Resolve the camera mapping with the architecture §3.1 zone priority.
+
+    ``assembly.camera_mapping`` (组合调整区) is the preferred home; the legacy
+    ``model.config.camera_mapping`` (组合选择区) is accepted for backwards
+    compatibility with a deprecation warning. Returns a plain dict or None.
+    """
+    import logging
+
+    if recipe.assembly.camera_mapping:
+        return dict(recipe.assembly.camera_mapping)
+    legacy = (recipe.model_config or {}).get("camera_mapping")
+    if legacy:
+        if warn_legacy:
+            logging.getLogger(__name__).warning(
+                "camera_mapping is declared under model.config (legacy). Move it "
+                "to the `assembly:` block (architecture §3.1) — model.config "
+                "support will be removed once the resolver owns this relationship."
+            )
+        return dict(legacy)
+    return None
+
+
+def get_default_task(recipe: "TrainRecipe", *, warn_legacy: bool = True) -> str | None:
+    """Resolve the task-text fallback with the architecture §3.1 zone priority.
+
+    Same split as :func:`get_camera_mapping`: the language fallback describes a
+    data/model relationship, so it belongs to the ``assembly:`` block; the legacy
+    ``model.config.default_task`` still works with a deprecation warning.
+    """
+    import logging
+
+    if recipe.assembly.default_task:
+        return recipe.assembly.default_task
+    legacy = (recipe.model_config or {}).get("default_task")
+    if legacy:
+        if warn_legacy:
+            logging.getLogger(__name__).warning(
+                "default_task is declared under model.config (legacy). Move it "
+                "to the `assembly:` block (architecture §3.1) — model.config "
+                "support will be removed once the resolver owns this relationship."
+            )
+        return legacy
+    return None
+
+
 # ── Top-level recipe ──────────────────────────────────────────────
 
 
@@ -312,8 +358,10 @@ class TrainRecipe:
     gradient_checkpointing : bool
         Enable gradient checkpointing to reduce VRAM at the cost of ~30% speed.
     inference_steps : int
-        Number of denoising / flow-matching steps at inference time.
-        1 for deterministic heads (ACT, OpenVLA), 10 for flow matching (PI0).
+        **Deprecated** — use ``model.config.num_inference_steps``. Denoising
+        steps are a model knob, not a training one; the parser forwards a value
+        set here (with a warning) and the field is removed when the recipe is
+        slimmed down. Nothing reads this field directly.
     augmentation : AugmentationConfig
         Training-time data augmentation settings.
     output_dir : str

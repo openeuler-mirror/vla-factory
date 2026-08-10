@@ -146,9 +146,10 @@ class TaskTokenize(TransformStep):
             repo = getattr(recipe, "model_path", None) if recipe else None
         default_task = cfg.get("default_task")
         if default_task is None and ctx is not None:
+            from vla_factory.recipe.recipe import get_default_task
+
             recipe = getattr(ctx, "recipe", None)
-            mc = getattr(recipe, "model_config", None) or {}
-            default_task = mc.get("default_task")
+            default_task = get_default_task(recipe) if recipe is not None else None
         return cls(
             tokenizer_repo=repo,
             max_length=cfg.get("max_length", 48),

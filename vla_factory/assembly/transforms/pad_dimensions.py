@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import TransformStep
+from .base import TransformStep, reject_fact_override
 from .registry import TransformRegistry
 
 
@@ -30,10 +30,12 @@ class PadDimensions(TransformStep):
 
     @classmethod
     def from_config(cls, cfg: dict, ctx=None) -> "PadDimensions | None":
-        target_dim = cfg.get("target_dim")
-        if target_dim is None and ctx is not None:
-            target_dim = getattr(ctx, "model_action_dim", 0)
-        target_dim = int(target_dim or 0)
+        # The pad target is the model's dimension policy, not a per-run knob:
+        # it comes from ModelMetadata (dim_policy_max / action_dim) via the
+        # context. Setting it in a recipe would silently contradict the model.
+        reject_fact_override(cfg, "target_dim", "dim_policy_max",
+                             "pad_dimensions.target_dim")
+        target_dim = int(getattr(ctx, "model_action_dim", 0) or 0) if ctx is not None else 0
         fields = tuple(cfg.get("fields", ("actions",)))
         if target_dim <= 0:
             return None

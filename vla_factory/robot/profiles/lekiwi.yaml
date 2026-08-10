@@ -13,9 +13,17 @@ manufacturer: Hugging LeRobot
 # Stable semantic camera names exposed by the body.
 cameras: [front, wrist]
 
-# Robot-native joint order. base_x / base_y are planar translations,
-# base_z is the heading (continuous). The 6-DoF arm follows so100 conventions;
-# the final entry is the gripper.
+# Robot-native joint order — this is the *command* vector, not the URDF joint
+# list. base_x / base_y are planar translations and base_z is the heading; the
+# URDF models the base as three omni wheels (base_left_wheel / base_right_wheel
+# / base_back_wheel) that the platform derives from these three commands, so
+# they have no URDF counterpart. The 6-DoF arm follows so100 conventions and the
+# final entry is the gripper.
+#
+# Arm names are the lerobot motor keys (shoulder_pan, ...), which is what the
+# dataset's per-dim names carry; the URDF prefixes the same joints with `arm_`.
+# Keep the lerobot spelling — the resolver reconciles these against the data
+# side, not against the URDF.
 joints:
   names: [base_x, base_y, base_z,
           shoulder_pan, shoulder_lift, elbow_flex,
@@ -24,8 +32,13 @@ joints:
   types: [prismatic, prismatic, continuous,
           revolute, revolute, revolute,
           revolute, revolute, prismatic]
-  # Per-joint position limits intentionally left unspecified here; populate from
-  # the URDF / calibration once a canonical source is pinned down.
+  # Still unspecified: the upstream URDF (see urdf_ref) declares all nine
+  # actuated joints as `continuous` and carries **zero** <limit> elements, so it
+  # cannot supply ranges — including for the gripper, which obviously cannot
+  # rotate freely. That is an exporter artifact, not a physical claim, which is
+  # also why the `types` above are not taken from it. Real ranges have to come
+  # from the STS3215 servo spec or a per-unit calibration file; until one of
+  # those is pinned down, leaving these empty is correct (do not guess).
   limits_low: []
   limits_high: []
 
@@ -40,10 +53,12 @@ control_modes: [joint_pos]
 native_action_type: joint_pos
 
 coordinate_frame: base_link
-urdf_ref: ""
+urdf_ref: https://github.com/SIGRobotics-UIUC/LeKiwi/blob/main/URDF/LeKiwi.urdf
 
-# Static safety bounds on the action vector; left unspecified until a canonical
-# source is pinned down. The resolver records (not silently applies) bounds.
+# Static safety bounds on the action vector; unspecified for the same reason as
+# the joint limits above — the URDF carries no ranges. The resolver records
+# (not silently applies) bounds, so an empty pair means "no static bound
+# declared", not "unbounded is safe".
 safety_bounds_low: []
 safety_bounds_high: []
 

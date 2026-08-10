@@ -65,7 +65,7 @@ A training run should be fully described by a recipe. Model selection, data path
 
 The recipe is the user's highest-priority configuration entry point. The top-level fields of the recipe express experiment intent (model/data/robot selection, fine-tuning strategy, training parameters, output); the model's own capabilities and defaults are carried by the model declaration (ModelMetadata) and are not in the recipe; adjustments to the relationships among data/model/robot go in the `assembly` block. This keeps experiment configuration auditable: the user can see every intentional override in one file, rather than tracing behavior through scripts and implicit defaults.
 
-Model-related defaults (default preprocessing, image size, camera slot layout, inference steps, etc.) are published with the model declaration YAML and cannot be modified in the recipe; the recipe only carries the user's composition selection, composition adjustments, and training parameters.
+Model-related **facts** (preprocessing semantics, image value range, camera slot layout, dimension policy, ...) are published with the model declaration `ModelMetadata` and cannot be modified in the recipe; the model's **tunable hyperparameters** (depth, inference steps, compile mode, ...) ship their defaults in the same declaration but may be overridden per-run in the recipe's `model.config`. The recipe carries the user's composition selection, composition adjustments, model hyperparameter overrides, and training parameters.
 
 The CLI may provide a few temporary overrides such as `--steps`, `--batch-size`, `--output-dir` for smoke tests or debugging, but the recipe remains the primary contract.
 
@@ -324,7 +324,14 @@ The data module parses external datasets into VLA Factory's Canonical IR (`DataS
 
 #### 4.1.2 VLA Model: ModelMetadata and BaseContract
 
-The model-dimension description (interface capability, default preprocessing, camera slot layout, input size, inference steps, etc.) lives in the **model's own declaration YAML**, is published with the model, and is reflected here as the Model dimension's facts; it is not in the recipe and cannot be modified per-run. If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `assembly` block (see Chapter 3) rather than editing the model declaration. Detailed design: [Model Abstraction Module Design](../modules/model-module.cn.md) (TODO).
+The model-dimension description lives in **one declaration published with the model**, `ModelMetadata` (one entry file per model). It has two halves, and **the container is the attribute**:
+
+- **Named fields = facts** — interface capability, camera slot layout, input size and image value range, dimension policy, normalization method: everything the composition resolver reads. They are not in the recipe and cannot be modified per-run; changing one would make the embodiment composition disagree with the model that actually runs.
+- **`params` = tunables** — that model's own upstream hyperparameters (depth, width, dropout, inference steps, compile mode, ...) plus the default transform step list, each with a default value that the recipe's `model.config` may override.
+
+A model author therefore classifies nothing: framework-level facts have named fields and types, everything else goes in `params`. The `params` key set doubles as the basis for two checks — a `model.config` key the model never declared is an error (with the closest candidates suggested), and a declared key nothing consumes is an error at model construction, which is what keeps "I changed it and nothing happened" from being possible.
+
+If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `assembly` block (see Chapter 3) rather than editing the model declaration. Detailed design: [Model Abstraction Module Design](../modules/model-module.cn.md).
 
 ##### ModelMetadata
 

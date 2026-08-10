@@ -381,7 +381,7 @@ The logic that arranges `Observation` into an upstream model-library-native batc
 **Input transform** (training side):
 
 ```yaml
-# vla_factory/recipe/model/act.yaml
+# ACT's ModelMetadata.params["transforms"]
 transforms:
   inputs:
     - {type: image_to_float}

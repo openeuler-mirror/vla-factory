@@ -35,8 +35,7 @@ def test_protocols():
         action_dim=14,
         action_horizon=100,
         action_head_type="regression",
-        architecture="decomposed",
-        training_paradigm="from_scratch",
+            training_paradigm="from_scratch",
         requires_prompt=False,
         requires_augmentation=True,
     )

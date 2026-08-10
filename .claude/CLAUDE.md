@@ -53,20 +53,21 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
 ## Code structure
 
 - **`vla_factory/recipe/cli.py`** — argparse CLI: `train`, `preprocess`, `list`,
-  `resolve`, `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli` (installed)
-  or `python -m vla_factory` (from source). This is where user commands land.
+  `resolve`, `inspect`, `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli`
+  (installed) or `python -m vla_factory` (from source). This is where user
+  commands land. `resolve` dry-runs the composition; `inspect` prints one
+  dimension's declared facts + sources (`inspect data/model/robot`, or
+  `inspect --config` for all three) — both run with no GPU / no optional extras.
 - **`vla_factory/recipe/`** — user-expression layer: recipe parsing & model defaults.
   - `recipe.py` — `TrainRecipe` and sub-dataclasses, incl. `RobotConfig` and
     `AssemblyConfig` (composition selection + controlled override).
   - `parser.py` — `parse_recipe(path|dict) → TrainRecipe`.
-  - `defaults.py` — `load_model_defaults()` + `resolve_recipe()`: deep-merges
-    `vla_factory/recipe/model/<name>.yaml` (baseline profile) under the
-    recipe's per-run `model.config` (recipe wins). OmegaConf-based, no Hydra
-    runtime. Profiles are external/user-editable/diff-friendly; Hydra's
-    `defaults: [model/<name>]` can adopt them later with no file change.
-- **`vla_factory/recipe/model/`** — per-model baseline profiles (`act.yaml`,
-  `pi0.yaml`, …). Ships with the package (see `pyproject.toml`
-  `package-data`).
+  - `defaults.py` — `model_params()` + `resolve_recipe()`: the single merge
+    point. Deep-merges the model's declared `ModelMetadata.params` under the
+    recipe's per-run `model.config` (recipe wins), and enforces the tunable
+    allow-list — a `model.config` key the model never declared is an error with
+    `difflib` candidates (gate 1 of three; see `model-module.cn.md` §4.6).
+    OmegaConf-based, no Hydra runtime.
 - **`vla_factory/model/`**
   - `interfaces/` — `ModelMetadata` (frozen descriptor: backend, action head
     type, trainable components), `VLAModel` / `VLAModelPyTorch` /
@@ -80,12 +81,15 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
     `list_entries()`. Entries auto-discovered from
     `registry/entries/*.py` on first lookup (see "Extending").
 - **`vla_factory/model/registry/entries/`** — the actual adapters, one file
-  per model: `act.py`, `pi0.py`. **These are the canonical worked examples**
+  per model: `act.py`, `pi0.py`, `pi05.py`. **These are the canonical worked examples**
   for adding a new model — diff against them, don't start from scratch.
 - **`vla_factory/data/`** — read-only Canonical IR only (no sample building):
   `formats/` (format readers: `lerobot_v3.py`, registry + `get_reader()`),
-  `codec/` (video decode: `pyav.py`, `resolve_codec()`), and `manifest.py`
-  (`DataSchema`, `FeatureStats`, `NormStats`, `Episode`/`Frame` IR).
+  `codec/` (video decode: `pyav.py`, `resolve_codec()`), `manifest.py`
+  (`DataSchema` entry-table form: `cameras[]`/`state.dims[]`/`action.dims[]`
+  with per-fact source labels; legacy flat fields are read-only derived props
+  until phase 4), and `semantics.py` (deterministic inference rules for camera
+  `semantic` and action `mode` — unique-match-only, §8.5).
 - **`vla_factory/robot/`** — robot body descriptions (`RobotProfile`):
   `profile.py` + `registry.py` (`get_robot_profile()` / `list_robot_profiles()`)
   and bundled `profiles/*.yaml` (e.g. `lekiwi.yaml`). Static body facts only —
@@ -124,6 +128,11 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
     (`robotwin.py` + bootstrap `robotwin.yml`), runnable without the model deps.
 - **`vla_factory/utils/constants.py`** — on-disk artifact layout:
   `inference_metadata/{recipe.yaml,schema.json,norm_stats.json}`, `final/model.pt`.
+- **`vla_factory/utils/vocabulary.py`** — the single source for the three
+  cross-dimension controlled vocabularies (architecture §4.5): `CAMERA_SEMANTICS`,
+  `CONTROL_MODES` (`joint_pos`/`joint_delta`/`joint_vel`), `ACTION_HEADS`, plus
+  the data/model source-annotation types. Referenced by data, model and robot —
+  do not re-declare these in a dimension.
 - **`examples/`** — ready recipes. `reference.yaml` is the fully-annotated
   template (every field documented); `act_lekiwi.yaml`, `pi0.yaml`.
 - **`scripts/install.sh`** — uv-based env setup for openpi (see Installing).
@@ -154,10 +163,12 @@ length-prefixed-JSON TCP server (`transports/length_prefixed_json.py` +
 dependency-free `connectors/robotwin.py`. `infer`/`evaluate` reuse the same
 engine on a dataset sample / per-episode L1.
 
-The transform pipeline is the contract bridge: each model's baseline profile
-declares which `TransformRegistry` steps it needs (e.g. pi0 needs
-`image_to_float` with `range: [-1,1]` HWC); the training/inference layers run
-them (the steps themselves live in `assembly/transforms`). The
+The transform pipeline is the contract bridge: each model's declaration lists
+the `TransformRegistry` steps it needs in `ModelMetadata.params["transforms"]`,
+while the values those steps depend on (image range, normalize mode, vector
+normalization, pad target) are *facts* on the named metadata fields — a step
+config that repeats one is rejected, not honoured. The training/inference layers
+run the pipeline (the steps themselves live in `assembly/transforms`). The
 adapter never rescales images itself — the pipeline must produce the exact
 layout/range the upstream model expects.
 
@@ -189,11 +200,17 @@ source, transforms, training params, output dir — lives in one YAML. CLI
 overrides (`--steps`, `--batch-size`, `--output-dir`) tweak without editing
 the file. `examples/reference.yaml` documents every field.
 
-**Model defaults vs recipe config.** A model ships a baseline profile under
-`vla_factory/recipe/model/<name>.yaml`; the recipe's `model.config` is
-deep-merged on top and **recipe wins**. The profile is a starting point, not
-a frozen contract. Unknown keys surface as an error from the upstream config
-object (no silent typo failures).
+**Facts vs tunables — the container is the attribute.** A model ships one
+declaration, `ModelMetadata`. Named fields are facts the composition resolver
+reads and a recipe can never override; `params` holds that model's tunable
+defaults, deep-merged under the recipe's `model.config` where **recipe wins**.
+A model author classifies nothing: framework facts have names and types,
+everything else goes in `params`. Three guards keep the surface honest —
+an undeclared `model.config` key is rejected by `resolve_recipe()`, a declared
+key nothing reads is rejected by the factory (`utils/tracked_config.py`), and a
+fact set inside a step config is rejected by `assembly/transforms/base.py`. Each
+guard exists because that failure was previously silent. `inspect model` prints
+every tunable with its effective value and source.
 
 **Registry, not if/else.** Each model self-registers with `@register_vla`
 inside `entries/<name>.py`; `get_entry(name)` looks it up. Entries are
@@ -219,10 +236,8 @@ vla_factory only fine-tunes, so a thin wrapper is the correct boundary.)
 
 Follow `entries/pi0.py` (or `act.py`) as the worked example. Steps:
 
-1. **Baseline profile** — add `vla_factory/recipe/model/<name>.yaml`
-   declaring the transform steps + defaults the model needs. Register it in
-   `pyproject.toml` `package-data` if it should ship with installs.
-2. **Entry module** — create `vla_factory/model/registry/entries/<name>.py`:
+1. **Entry module** — create `vla_factory/model/registry/entries/<name>.py`.
+   This is the whole model declaration; there is no second file:
    - `@register_vla(ModelMetadata(name=..., backend="pytorch",
      action_head_type=..., components={...}))` on a factory
      `(recipe, schema) -> VLAModel`.
@@ -232,12 +247,17 @@ Follow `entries/pi0.py` (or `act.py`) as the worked example. Steps:
    - Wrap the upstream model by composition; translate
      `Observation` ↔ upstream batch format; delegate `forward` /
      `predict_actions`. Do not reimplement architecture.
-3. **pyproject extra** — add `[project.optional-dependencies].<name>` for the
+   - Declare facts on the named fields (vision slots, `dim_policy`,
+     `image_input_range`, `vector_normalization`, ...) and everything tunable —
+     upstream hyperparameters plus the default `transforms` step list — in
+     `params`. Every `params` key must be read by the factory or by a registered
+     framework consumer, or model construction fails.
+2. **pyproject extra** — add `[project.optional-dependencies].<name>` for the
    upstream ecosystem deps. If it needs uv (strict pins / patches), wire it
    into `scripts/install.sh` rather than expecting `pip install -e ".[name]"`.
-4. **Example recipe** — add `examples/<name>_*.yaml`; list it in the README
+3. **Example recipe** — add `examples/<name>_*.yaml`; list it in the README
    support table.
-5. **Tests** — mirror `test/test_<name>_model.py` (load + forward smoke).
+4. **Tests** — mirror `test/test_<name>_model.py` (load + forward smoke).
 
 When you hit a decision point during adaptation (which upstream to wrap,
 how to handle broken deps, consistency vs local convenience), consult the

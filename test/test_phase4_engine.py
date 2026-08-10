@@ -7,6 +7,7 @@ Run:
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
 import sys
 import tempfile
@@ -67,7 +68,7 @@ def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_co
         batch_size=2,
         output=OutputConfig(output_dir=tempfile.mkdtemp()),
     ))
-    schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
+    schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
 
     entry = get_entry("act")
     model = entry.factory(recipe=recipe, schema=schema)
@@ -225,7 +226,7 @@ class TestCPUTrainingLoop:
             batch_size=2,
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
-        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
+        schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
         model = entry.factory(recipe=recipe, schema=schema)
         apply_strategy(model, recipe, entry.metadata)
 
@@ -310,7 +311,7 @@ class TestCPUTrainingLoop:
             batch_size=2,
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
-        schema = DataSchema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
+        schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
         model = entry.factory(recipe=recipe, schema=schema)
         apply_strategy(model, recipe, entry.metadata)
 

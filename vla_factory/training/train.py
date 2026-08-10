@@ -22,7 +22,7 @@ import inspect
 import json
 import logging
 import shutil
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Union
 
@@ -31,6 +31,7 @@ import torch.nn as nn
 import yaml
 from transformers import TrainingArguments
 
+from vla_factory.assembly.action_facts import resolve_action_dim
 from vla_factory.recipe.parser import parse_recipe
 from vla_factory.recipe.defaults import resolve_recipe
 from vla_factory.recipe.recipe import TrainRecipe
@@ -111,18 +112,13 @@ def train(
     logger.info("Dataset schema: cameras=%s, action_dim=%d, state_dim=%d",
                 list(schema.cameras), schema.action_dim, schema.state_dim)
 
-    # 2.0 Resolve canonical state/action key order (data/model contract).
-    # Writes the resolved keys back onto ``schema`` so they land in
-    # inference_metadata/schema.json via ``_save_inference_metadata`` (asdict).
-    # This is what lets a checkpoint be served on the real robot without
-    # re-sorting motor keys. Every non-empty vector must have exactly one key
-    # per dimension; fail before writing incomplete inference metadata.
-    resolved_state_keys, resolved_action_keys = resolve_vector_keys(schema)
-    schema = replace(
-        schema,
-        state_keys=resolved_state_keys,
-        action_keys=resolved_action_keys,
-    )
+    # 2.0 Validate the canonical state/action key order (data/model contract).
+    # The per-dim names live on schema.state_dims / schema.action_dims and are
+    # serialized into inference_metadata/schema.json directly. Every non-empty
+    # vector must carry exactly one name per dimension so the checkpoint can be
+    # served on the real robot without re-sorting motor keys; fail before
+    # writing incomplete inference metadata.
+    resolve_vector_keys(schema)
     logger.info(
         "Resolved vector keys — state=%s action=%s",
         list(schema.state_keys), list(schema.action_keys),
@@ -161,8 +157,14 @@ def train(
     model = apply_strategy(model, recipe, metadata)
 
     # 5. Create DataLoaders
+    # action_dim is routed by WP3: data fact (schema) authoritative, recipe
+    # fallback, warn on mismatch. For pi0 the model's padded max (32) overrides.
+    routed_action_dim = resolve_action_dim(
+        schema=schema, metadata=metadata, recipe_action_dim=recipe.action_spec.action_dim,
+    )
     model_metadata_dict = {
-        "action_dim": metadata.action_dim or recipe.action_spec.action_dim,
+        "action_dim": metadata.action_dim or routed_action_dim,
+        "metadata": metadata,
     }
     train_loader, val_loader = create_dataloaders(recipe, model_metadata=model_metadata_dict)
 
@@ -438,7 +440,7 @@ def _save_inference_metadata(
 
     # 2. Schema
     with open(meta_dir / SCHEMA_FILE, "w") as f:
-        json.dump(asdict(schema), f, indent=2)
+        json.dump(schema.to_dict(), f, indent=2)
 
     # 3. Norm stats
     with open(meta_dir / NORM_STATS_FILE, "w") as f:

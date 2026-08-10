@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from vla_factory.utils.vocabulary import CONTROL_MODES, is_control_mode
+
 
 @dataclass(frozen=True)
 class JointGroup:
@@ -109,9 +111,10 @@ class GripperConvention:
         )
 
 
-# Control-mode controlled vocabulary (architecture §4.1.3). The resolver treats
-# these as the allowed values for ``native_action_type`` / ``control_modes``.
-_CONTROL_MODES = ("joint_pos", "delta_joint", "delta_eef", "se3", "tokenized")
+# Control-mode vocabulary is shared across data/model/robot dimensions and
+# defined once in ``vla_factory.utils.vocabulary`` (architecture §4.5). The
+# first version is joint-space only: joint_pos / joint_delta / joint_vel.
+# EEF modes (eef_pos / eef_delta / se3) enter together with EEF model support.
 
 
 @dataclass(frozen=True)
@@ -159,17 +162,17 @@ class RobotProfile:
                 raise ValueError(
                     f"robot({self.name}).safety_bounds_low/high length mismatch"
                 )
-        if self.native_action_type not in _CONTROL_MODES:
+        if not is_control_mode(self.native_action_type):
             raise ValueError(
                 f"robot({self.name}).native_action_type "
                 f"{self.native_action_type!r} is not in the controlled "
-                f"vocabulary {list(_CONTROL_MODES)}"
+                f"vocabulary {list(CONTROL_MODES)}"
             )
         for m in self.control_modes:
-            if m not in _CONTROL_MODES:
+            if not is_control_mode(m):
                 raise ValueError(
                     f"robot({self.name}).control_modes entry {m!r} is not in "
-                    f"the controlled vocabulary {list(_CONTROL_MODES)}"
+                    f"the controlled vocabulary {list(CONTROL_MODES)}"
                 )
         if self.recommended_control_hz <= 0:
             raise ValueError(

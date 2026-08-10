@@ -36,10 +36,12 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
+from vla_factory.assembly.action_facts import resolve_action_horizon
 from vla_factory.recipe.recipe import TrainRecipe
-from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.model.interfaces.model import ModelMetadata, VisionSlot
 from vla_factory.model.interfaces.observation import Observation
 from vla_factory.model.registry.registry import register_vla
+from vla_factory.utils.tracked_config import TrackedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -154,27 +156,91 @@ class PI0ModelWrapper(nn.Module):
 # ── Registration ─────────────────────────────────────────────────────
 
 
+# Tunable defaults shared by the PI0 family (pi05 starts from these and
+# overrides the few values openpi changes for the pi05 flag). Recipes override
+# any of these through ``model.config``; the named ModelMetadata fields below
+# are facts and are not overridable.
+_PI0_PARAMS: dict = {
+    "dtype": "bfloat16",
+    "paligemma_variant": "gemma_2b",
+    "action_expert_variant": "gemma_300m",
+    # Flow-matching denoising steps at inference (matches PI0Config default).
+    "num_inference_steps": 10,
+    # torch.compile mode for openpi's sample_actions (inference path only; the
+    # training forward is never compiled). The default matches openpi, so
+    # serving behaviour is identical to upstream. Autotune benchmarking on the
+    # first call needs >=24 GB VRAM; on smaller cards, or for one-shot smoke
+    # tests and debugging, override in the recipe:
+    #   null                         eager (no compile, lowest VRAM, fastest first call)
+    #   "default"                    basic compile, modest speedup
+    #   "reduce-overhead"            CUDA-graphs, low-latency, higher VRAM
+    #   "max-autotune"               full autotune, max throughput, most VRAM (>=24 GB)
+    #   "max-autotune-no-cudagraphs" max-autotune minus CUDA graphs (12-16 GB cards)
+    # openpi Pi0Config.__post_init__ asserts the value is one of these (or null).
+    "pytorch_compile_mode": "max-autotune",
+    # ── Data transforms ──
+    # openpi PI0Pytorch consumes images as [-1,1] HWC (openpi Observation
+    # contract; SigLIP [-1,1] is the model's expected input range). state and
+    # actions are z-score normalized then zero-padded to the model's action dim,
+    # and task_tokenize turns the language task into tokenized_prompt. The
+    # model-side facts (image range, vector normalization, pad target) come from
+    # the named fields below and must not be repeated in the step configs.
+    "transforms": {
+        "inputs": [
+            {"type": "image_to_float"},
+            {"type": "image_layout", "to": "CHW"},
+            # keep-ratio + letterbox to 224 (HWC, no layout flip)
+            {"type": "resize_images", "height": 224, "width": 224, "mode": "pad"},
+            {"type": "normalize_vector", "fields": ["state", "actions"]},
+            {"type": "pad_dimensions", "fields": ["state", "actions"]},
+            # The repo below carries the PaliGemma tokenizer; pin a different
+            # one here if your base checkpoint uses another tokenizer.
+            {"type": "task_tokenize", "max_length": 48,
+             "tokenizer_repo": "google/paligemma-3b-pt-224"},
+        ],
+    },
+}
+
+
 _PI0_METADATA = ModelMetadata(
     name="pi0",
     backend="pytorch",
     action_dim=32,                  # openpi max_action_dim (pad target)
     action_horizon=50,              # chunk_size
     action_head_type="flow_matching",
-    architecture="decomposed",
     training_paradigm="pretrained_finetune",
     requires_prompt=True,
     requires_augmentation=False,
     support_lora=True,
     support_full=True,
     support_freeze=True,
-    inference_num_steps=10,
     install_hint="bash scripts/install.sh .venv pi0",
+    # ── Interface contract (model-module §4.3) ──
+    # 3 fixed visual slots at 224×224, images in [-1,1] HWC (SigLIP); state/
+    # action padded to the openpi max (32), z-score (mean_std) normalized.
+    dim_policy="padded_to_max",
+    dim_policy_max=32,
+    image_input_range=(-1.0, 1.0),
+    vector_normalization="mean_std",
+    language_template="{task}",
+    control_mode_pref=("joint_pos",),
+    expected_hz=50,
+    vision_slots=(
+        VisionSlot(name="base_0_rgb",
+                   semantic_accepts=("third_person", "third_person_front", "third_person_top"),
+                   resolution=(224, 224)),
+        VisionSlot(name="left_wrist_0_rgb",
+                   semantic_accepts=("wrist_left", "wrist"), resolution=(224, 224)),
+        VisionSlot(name="right_wrist_0_rgb",
+                   semantic_accepts=("wrist_right", "wrist"), resolution=(224, 224)),
+    ),
     components={
         # openpi PI0Pytorch top-level blocks (no extra "model." wrapper prefix,
         # unlike lerobot's ported PI0Policy which nests under self.model).
         "llm": ["paligemma_with_expert.paligemma."],
         "action_expert": ["paligemma_with_expert.gemma_expert."],
     },
+    params=_PI0_PARAMS,
 )
 
 
@@ -194,44 +260,64 @@ def load_pi0(recipe, schema) -> PI0ModelWrapper:
     return _load_pi0(recipe, schema, PI0Pytorch, Pi0Config)
 
 
-def _resolve_pi0_config(recipe: TrainRecipe, model_name: str = "pi0") -> dict:
-    """Merge the framework default profile with the recipe's model.config."""
-    from vla_factory.recipe.defaults import load_model_defaults
+def _resolve_pi0_config(recipe: TrainRecipe, model_name: str = "pi0") -> TrackedConfig:
+    """Return the recipe's resolved model config as a tracked mapping.
 
-    merged = OmegaConf.merge(
-        load_model_defaults(model_name),
-        OmegaConf.create(recipe.model_config or {}),
+    ``resolve_recipe()`` already folded the model's declared
+    ``ModelMetadata.params`` under the recipe's ``model.config`` at the
+    entrypoint, so there is nothing left to merge here. The wrapper lets the
+    factory assert every declared key was actually read (see
+    ``utils/tracked_config.py``).
+    """
+    return TrackedConfig(
+        OmegaConf.to_container(
+            OmegaConf.create(recipe.model_config or {}), resolve=True
+        )
     )
-    return OmegaConf.to_container(merged, resolve=True)
 
 
 def _load_pi0(
     recipe, schema, PI0Pytorch, Pi0Config,
     model_name: str = "pi0", pi05: bool = False,
+    metadata: ModelMetadata = _PI0_METADATA,
 ) -> PI0ModelWrapper:
     """Shared loader for the openpi PI0Pytorch family.
 
     ``pi05=True`` selects the pi05 variant of the SAME upstream class
     (openpi Pi0Config.pi05: state enters the discrete language tokens instead
     of the continuous suffix; the action expert uses adaRMSNorm for the flow
-    timestep; max_token_len defaults to 200 instead of 48).
+    timestep; max_token_len defaults to 200 instead of 48). ``metadata`` is the
+    caller's declaration — the pad target is read from it as a fact rather than
+    from the per-run config.
     """
     cfg = _resolve_pi0_config(recipe, model_name)
-    camera_mapping = cfg.get("camera_mapping") or {}
+    # camera_mapping lives in the recipe's assembly block (§3.1); legacy
+    # model.config.camera_mapping is still accepted via get_camera_mapping.
+    from vla_factory.recipe.recipe import get_camera_mapping
+    camera_mapping = get_camera_mapping(recipe) or {}
     dtype = cfg.get("dtype", "bfloat16")
 
     # pytorch_compile_mode: torch.compile mode for openpi's sample_actions
     # (inference path only; training forward is never compiled). Pass-through to
-    # Pi0Config — profile default "max-autotune" matches openpi, but a 12 GB
-    # card OOMs on the first call's autotune benchmarking, so recipes that just
-    # smoke-test set this to null for eager. Pi0Config.__post_init__ asserts the
-    # value; cfg.get returns None when the key is absent or explicitly null.
+    # Pi0Config — the declared default "max-autotune" matches openpi, but a
+    # 12 GB card OOMs on the first call's autotune benchmarking, so recipes that
+    # just smoke-test set this to null for eager. Pi0Config.__post_init__ asserts
+    # the value; cfg.get returns None when the key is absent or explicitly null.
     # Older openpi commits have no such field — pass it only when the installed
     # Pi0Config declares it (there sample_actions never compiles, so dropping
     # the knob preserves behaviour).
+    #
+    # action_dim is the openpi pad target: a fact from the declaration
+    # (dim_policy_max), never a per-run knob.
+    # action_horizon is a checkpoint fact for a finetune-only family: pi0's
+    # action expert was pretrained at a fixed chunk length, so the declaration
+    # (later the BaseContract) wins over the recipe, which only acts as fallback.
     config_kwargs = dict(
-        action_dim=cfg.get("action_dim", 32),
-        action_horizon=recipe.action_spec.action_horizon,
+        action_dim=metadata.dim_policy_max,
+        action_horizon=resolve_action_horizon(
+            metadata=metadata, base_contract=None,
+            recipe_action_horizon=recipe.action_spec.action_horizon,
+        ),
         dtype=dtype,
         paligemma_variant=cfg.get("paligemma_variant", "gemma_2b"),
         action_expert_variant=cfg.get("action_expert_variant", "gemma_300m"),
@@ -251,6 +337,11 @@ def _load_pi0(
             "(older commit, sample_actions is never compiled) — ignoring %r.",
             model_name, compile_mode,
         )
+
+    # Every declared key must have been read by now; a leftover means the
+    # declaration carries a knob nothing consumes (which a recipe could then
+    # "override" with no effect).
+    cfg.assert_all_consumed(model_name)
 
     config = Pi0Config(**config_kwargs)
     model = PI0Pytorch(config)

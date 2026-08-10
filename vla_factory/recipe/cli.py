@@ -55,6 +55,29 @@ def main():
     )
     resolve_parser.add_argument("--config", required=True, help="Path to YAML recipe file.")
 
+    # ── inspect ──
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Inspect one dimension's declared facts and their sources: "
+             "`inspect data --path`, `inspect model --name [--path]`, "
+             "`inspect robot --name`, or `inspect --config` for all three. "
+             "No GPU / no optional extras / no robot connection required.",
+    )
+    inspect_parser.add_argument("dimension", nargs="?", choices=("data", "model", "robot"),
+                                help="Which dimension to inspect.")
+    inspect_parser.add_argument("--path", default=None,
+                                help="Dataset path (data) or checkpoint path (model).")
+    inspect_parser.add_argument("--name", default=None,
+                                help="Registered model name (model) or robot profile (robot).")
+    inspect_parser.add_argument("--format", default=None,
+                                help="Dataset format hint for `inspect data` (default: auto).")
+    inspect_parser.add_argument("--config", default=None,
+                                help="Recipe YAML — inspects all three dimensions at once.")
+    inspect_parser.add_argument("--json", action="store_true",
+                                help="Emit machine-readable JSON (default: YAML).")
+    inspect_parser.add_argument("--stats", action="store_true",
+                                help="Include full NormStats (data only; default: summary).")
+
     # ── evaluate ──
     eval_parser = subparsers.add_parser(
         "evaluate",
@@ -238,6 +261,9 @@ def main():
 
     elif args.command == "resolve":
         _run_resolve(args.config)
+
+    elif args.command == "inspect":
+        _run_inspect(args)
 
     elif args.command == "evaluate":
         import numpy as np
@@ -603,6 +629,156 @@ def _print_resolution_error(err: ResolutionError) -> None:
     print(f"  code: {err.code}")
     print(f"  path: {err.path}")
     print(f"  params: {err.params}")
+
+
+# ── inspect (architecture §3.5) ───────────────────────────────────
+
+
+def _emit(dimension: str, source: str, facts: object, as_json: bool) -> None:
+    """Print one dimension's facts in the ``{dimension, source, facts}`` envelope.
+
+    YAML by default (deterministic insertion order → diffable); ``--json``
+    otherwise. Source is per-dimension: data facts carry their own per-fact
+    ``*_source`` labels inside ``facts``; this envelope-level ``source`` records
+    where the whole dimension came from.
+    """
+    import json as _json
+
+    envelope = {"dimension": dimension, "source": source, "facts": facts}
+    if as_json:
+        print(_json.dumps(envelope, indent=2, ensure_ascii=False))
+    else:
+        import yaml as _yaml
+        print(_yaml.safe_dump(envelope, sort_keys=False, allow_unicode=True), end="")
+
+
+def _inspect_data(path: str, fmt: str | None, with_stats: bool, as_json: bool) -> None:
+    from pathlib import Path as _Path
+
+    from vla_factory.data.formats import get_reader
+
+    p = _Path(path)
+    reader = get_reader(fmt or "auto", path=p)
+    schema = reader.get_schema(p)
+    facts: dict = {"schema": schema.to_dict()}
+    ns = reader.get_norm_stats(p)
+    if with_stats:
+        from dataclasses import asdict as _asdict
+        facts["norm_stats"] = _asdict(ns)
+    else:
+        # Stats summary only: which vectors/images carry statistics.
+        facts["norm_stats_summary"] = {
+            "state": ns.state is not None,
+            "action": ns.action is not None,
+            "images": sorted((ns.images or {}).keys()),
+        }
+    _emit("data", "measured/inferred/undeclared (per fact)", facts, as_json)
+
+
+def _tunables_view(params: dict, overrides: dict | None) -> dict:
+    """Render the declared tunables as ``key -> {value, source}``.
+
+    The point of the view is answering "what may I change, and did my change
+    take effect" without reading code: every declared key is listed with the
+    value actually in force and where it came from. ``transforms`` is summarised
+    by step type — the full step list would drown the rest.
+    """
+    overrides = overrides or {}
+    view: dict = {}
+    for key in sorted(params):
+        overridden = key in overrides
+        value = overrides[key] if overridden else params[key]
+        if key == "transforms":
+            steps = (value or {}).get("inputs") or []
+            value = [s.get("type") for s in steps if isinstance(s, dict)]
+        view[key] = {
+            "value": value,
+            "source": "recipe" if overridden else "model default",
+        }
+    return view
+
+
+def _inspect_model(
+    name: str, path: str | None, as_json: bool, overrides: dict | None = None
+) -> None:
+    from dataclasses import asdict as _asdict
+
+    from vla_factory.model.registry import list_entries
+
+    entries = list_entries()
+    meta = entries.get(name)
+    if meta is None:
+        print(f"Unknown model {name!r}. Known: {sorted(entries)}")
+        sys.exit(1)
+    meta_dict = _asdict(meta)
+    # Facts and tunables are the two halves of a model declaration: named fields
+    # the resolver reads and a recipe can never override, versus params a recipe
+    # may override through model.config.
+    params = meta_dict.pop("params", {}) or {}
+    facts = {"metadata": meta_dict}
+    source = "metadata"
+    if path:
+        try:
+            from vla_factory.model.base_contract import load_base_contract
+            contract = load_base_contract(path)
+            if contract is not None:
+                facts["base_contract"] = _asdict(contract)
+                source = "metadata + base_contract"
+        except Exception as e:
+            facts["base_contract_error"] = str(e)
+    facts["tunables"] = _tunables_view(params, overrides)
+    _emit("model", source, facts, as_json)
+
+
+def _inspect_robot(name: str, as_json: bool) -> None:
+    from vla_factory.robot import get_robot_profile
+
+    profile = get_robot_profile(name)  # raises FileNotFoundError if unknown
+    _emit("robot", "declared", profile.to_dict(), as_json)
+
+
+def _run_inspect(args) -> None:
+    as_json = bool(args.json)
+    if args.config:
+        # Inspect all three dimensions from a recipe.
+        from vla_factory.recipe.parser import parse_recipe
+        from vla_factory.recipe.defaults import resolve_recipe
+
+        parsed = parse_recipe(args.config)
+        # What the user actually wrote, before the model's declared params are
+        # merged underneath — that difference is exactly the "source" column.
+        raw_overrides = dict(parsed.model_config or {})
+        recipe = resolve_recipe(parsed)
+        if recipe.data.source.path:
+            # One unreadable dimension must not hide the other two: a recipe is
+            # routinely inspected on a machine that has the model but not the
+            # dataset. Report and carry on.
+            try:
+                _inspect_data(recipe.data.source.path, recipe.data.source.format,
+                              bool(args.stats), as_json)
+            except Exception as e:
+                print(f"(skipped data dimension: {e})")
+        if recipe.model_name:
+            _inspect_model(recipe.model_name, recipe.model_path, as_json,
+                           overrides=raw_overrides)
+        if recipe.robot.name:
+            _inspect_robot(recipe.robot.name, as_json)
+        return
+
+    if not args.dimension:
+        sys.exit("inspect: provide a dimension (data/model/robot) or --config. See `inspect --help`.")
+    if args.dimension == "data":
+        if not args.path:
+            sys.exit("inspect data: --path <dataset> is required.")
+        _inspect_data(args.path, args.format, bool(args.stats), as_json)
+    elif args.dimension == "model":
+        if not args.name:
+            sys.exit("inspect model: --name <model> is required.")
+        _inspect_model(args.name, args.path, as_json)
+    elif args.dimension == "robot":
+        if not args.name:
+            sys.exit("inspect robot: --name <robot> is required.")
+        _inspect_robot(args.name, as_json)
 
 
 if __name__ == "__main__":

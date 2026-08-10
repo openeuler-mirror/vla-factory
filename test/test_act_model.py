@@ -7,6 +7,7 @@ Run:
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
 import sys
 import tempfile
@@ -42,7 +43,7 @@ def _make_recipe_and_schema(action_dim=6, action_horizon=10, cameras=("front",),
         model_name="act",
         action_spec=ActionSpecConfig(action_dim=action_dim, action_horizon=action_horizon),
     ))
-    schema = DataSchema(
+    schema = make_schema(
         state_dim=state_dim,
         action_dim=action_dim,
         cameras=tuple(cameras),
@@ -119,8 +120,9 @@ class TestAdapter:
         recipe, schema = _make_recipe_and_schema()
         wrapper = entry.factory(recipe=recipe, schema=schema)
 
-        # Factory always uses lerobot now; lerobot config registers camera as 'top'.
-        camera = "top"
+        # The wrapper's image slots follow schema.cameras ("front"), so the
+        # observation must carry that same camera — name-mapped, not positional.
+        camera = "front"
         obs = _make_obs(B=2, cameras=(camera,), state_dim=6)
         actions = torch.randn(2, 10, 6)
         loss, _ = wrapper.compute_loss(obs, actions)
@@ -241,17 +243,17 @@ class TestLerobotIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Default profile loading (vla_factory/recipe/model/act.yaml) — no lerobot needed
+#  Declared defaults (ModelMetadata.params) — no lerobot needed
 # ══════════════════════════════════════════════════════════════════════
 
 
 class TestDefaultProfile:
     """Model default profile + per-run override merge (config-layer only)."""
 
-    def test_profile_exists_and_has_hyperparams(self):
-        from vla_factory.recipe.defaults import load_model_defaults
+    def test_declaration_has_hyperparams(self):
+        from vla_factory.recipe.defaults import model_params
 
-        d = load_model_defaults("act")
+        d = model_params("act")
         assert "dim_model" in d
         assert not any(x["type"] == "resize_images" for x in d["transforms"]["inputs"])
 
@@ -287,13 +289,13 @@ class TestDefaultProfile:
         from vla_factory.data.manifest import DataSchema
         from vla_factory.model.registry.entries.act import _schema_image_size
 
-        schema = DataSchema(cameras=("front",), image_sizes={"front": (480, 640)})
+        schema = make_schema(cameras=("front",), image_sizes={"front": (480, 640)})
         assert _schema_image_size(schema, "front") == (480, 640)
 
     def test_unknown_model_returns_empty(self):
-        from vla_factory.recipe.defaults import load_model_defaults
+        from vla_factory.recipe.defaults import model_params
 
-        assert load_model_defaults("nonexistent_model") == {}
+        assert model_params("nonexistent_model") == {}
 
     @skip_no_lerobot
     def test_factory_applies_recipe_override(self):
@@ -310,6 +312,61 @@ class TestDefaultProfile:
 
 
 # ── CLI runner (for `python test_act_model.py` without pytest) ───────
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  WP3: the factory reads action facts from the dimensions that own them
+# ══════════════════════════════════════════════════════════════════════
+
+
+@skip_no_lerobot
+class TestActionFactRouting:
+    """The built ACTConfig follows the dataset/model facts, not the recipe alone.
+
+    Before WP3 the head width came straight from `recipe.action_spec.action_dim`
+    while the dataloader padded to the routed dim, so a recipe that disagreed
+    with its dataset silently built a head of the wrong width.
+    """
+
+    def _recipe(self, action_dim, action_horizon):
+        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig
+        from vla_factory.recipe.defaults import resolve_recipe
+
+        return resolve_recipe(TrainRecipe(
+            model_name="act",
+            action_spec=ActionSpecConfig(
+                action_dim=action_dim, action_horizon=action_horizon
+            ),
+        ))
+
+    def _config_of(self, recipe, schema):
+        from vla_factory.model.registry.entries.act import _load_lerobot
+
+        wrapper = _load_lerobot(recipe, schema)
+        return wrapper.model.config
+
+    def test_head_width_follows_the_dataset(self, caplog):
+        import logging
+
+        schema = make_schema(
+            state_dim=6, action_dim=8, cameras=("top",),
+            image_sizes={"top": (224, 224)},
+        )
+        with caplog.at_level(logging.WARNING, logger="vla_factory.assembly.action_facts"):
+            config = self._config_of(self._recipe(action_dim=6, action_horizon=10), schema)
+
+        assert config.output_features["action"].shape == (8,)
+        assert any("action_dim mismatch" in r.message for r in caplog.records)
+
+    def test_chunk_size_follows_the_recipe_for_from_scratch(self):
+        """ACT is trained from scratch, so the user owns the chunk size."""
+        schema = make_schema(
+            state_dim=6, action_dim=8, cameras=("top",),
+            image_sizes={"top": (224, 224)},
+        )
+        config = self._config_of(self._recipe(action_dim=8, action_horizon=17), schema)
+        assert config.chunk_size == 17
+        assert config.n_action_steps == 17
 
 
 def main():

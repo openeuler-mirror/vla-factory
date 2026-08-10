@@ -18,8 +18,15 @@ model:
                                #   - pi0/pi05 仅支持微调，训练时必填 (如 "lerobot/pi0_base")
                                #   - 示例: "outputs/openpi/pi0.5", "openvla/openvla-7b"
 
-  # config:                    # [可选] 逐 run 的模型配置，深度合并到
-  #                            #   vla_factory/recipe/model/<name>.yaml 之上 (recipe 优先)
+  # config:                    # [可选] 逐 run 的模型超参覆盖，深度合并到模型声明的
+  #                            #   ModelMetadata.params 之上 (recipe 优先)。
+  #                            #   可调键以 `vlafactory-cli inspect model --name <model>`
+  #                            #   为准，它同时显示每个键的生效值与来源；写了模型未
+  #                            #   声明的键会直接报错并提示最接近的候选。
+  #                            #   组合解析消费的事实 (图像值域、归一化方法、维度策略…)
+  #                            #   属于模型声明的具名字段，不可在此覆盖。
+  #   num_inference_steps: 10  # [可选] 去噪/flow-matching 步数 (pi0 默认 10, ACT 为 1)
+  #   pytorch_compile_mode: null  # [可选] pi0/pi05: 小显存或冒烟测试时设 null 走 eager
   #   camera_mapping:          # [pi0/pi05 必填] {模型相机角色: 数据集相机名}
   #     base_0_rgb: front      #   角色以 base checkpoint 的 config.json 为准，
   #     left_wrist_0_rgb: wrist#   用 `vlafactory-cli list --config <recipe>` 查询/校验；
@@ -180,10 +187,9 @@ training:
   gradient_checkpointing: false # 梯度检查点: 省 ~40% 显存, 慢 ~30%
                                 #   大模型 (PI0, OpenVLA) 建议开启
 
-  inference_steps: 1           # 推理时的去噪/flow-matching 步数
-                               #   确定性 head (ACT, OpenVLA) = 1
-                               #   flow matching (PI0) = 10
-                               #   diffusion (Octo) = 10-20
+  # inference_steps: 1         # [已废弃] 请改用 model.config.num_inference_steps。
+                               #   去噪步数是模型旋钮而非训练参数；写在这里会被转发
+                               #   到 model.config 并打一条 deprecation warning。
 
   num_workers: 4               # DataLoader 子进程数
                                #   0 = 单进程 (调试用)

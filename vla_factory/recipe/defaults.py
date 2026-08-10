@@ -1,64 +1,90 @@
-"""Model default-profile loader.
+"""Recipe resolution — fold a model's declared defaults under the recipe.
 
-Each model may ship a baseline profile under ``vla_factory/recipe/model/<name>.yaml``.
-The factory loads it and deep-merges the recipe's per-run ``model.config``
-on top (recipe wins). This keeps model defaults external, user-editable, and
-diff-friendly without coupling the framework to Hydra's runtime.
+A model ships one declaration: ``ModelMetadata``. Its named fields are *facts*
+the composition resolver reads and a recipe can never override; its ``params``
+dict holds that model's own tunable defaults (upstream hyperparameters plus the
+default ``transforms`` step list). The container is the attribute, so a model
+author never classifies anything — framework facts have names and types,
+everything else goes in ``params``.
 
-The ``vla_factory/recipe/model/`` directory follows Hydra's group convention
-(``conf/<group>/<name>.yaml``), so these profiles can be adopted by Hydra's
-``defaults: [model/<name>]`` mechanism later with no file changes.
+``resolve_recipe()`` is the single merge point: the declared ``params`` sit
+underneath the recipe's per-run ``model.config`` and the recipe wins. It is also
+where the tunable allow-list is enforced — a ``model.config`` key the model
+never declared is a typo or a stale knob, and silently accepting it is how
+"I changed it and nothing happened" bugs get made.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import difflib
 from dataclasses import replace
 
-import yaml
 from omegaconf import OmegaConf
 
-from vla_factory.utils.constants import MODEL_CONFIG_DIR
+from vla_factory.model.registry import list_entries
 from vla_factory.recipe.recipe import TrainRecipe
 
-# vla_factory/recipe/model/ — this file lives in vla_factory/config/.
-_MODEL_CONFIG_DIR = Path(__file__).resolve().parent / MODEL_CONFIG_DIR
+# Keys accepted in ``model.config`` even though they are not model params:
+# both are ``assembly:`` block fields (architecture §3.1) still honoured in
+# their legacy ``model.config`` location during the migration, with a
+# deprecation warning raised by their own readers.
+_ASSEMBLY_LEGACY_KEYS = frozenset({"camera_mapping", "default_task"})
 
 
-def model_defaults_path(model_name: str) -> Path:
-    """Return the path to a model's default profile (may not exist)."""
-    return _MODEL_CONFIG_DIR / f"{model_name}.yaml"
+def model_params(model_name: str) -> dict:
+    """Return a model's declared tunable defaults (``{}`` if unregistered).
 
-
-def load_model_defaults(model_name: str) -> dict:
-    """Load a model's default profile as a plain dict.
-
-    Returns ``{}`` if no profile exists for *model_name* — models are not
-    required to ship one. The dict is deep-merged with the recipe's
-    ``model.config`` by the factory.
+    Reads the registry only — no model factory, no heavy optional deps, so this
+    stays callable from ``list`` / ``resolve`` / ``inspect`` on a bare install.
     """
-    path = model_defaults_path(model_name)
-    if not path.exists():
-        return {}
-    with path.open() as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"Model default profile {path} must be a YAML mapping, "
-            f"got {type(data).__name__}"
-        )
-    return data
+    metadata = list_entries().get(model_name)
+    return dict(metadata.params) if metadata is not None else {}
+
+
+def _check_override_keys(model_name: str, params: dict, overrides: dict) -> None:
+    """Reject ``model.config`` keys the model never declared.
+
+    Skipped when the model declares no params at all — a newly added entry
+    should not be unable to accept any config before its declaration is filled
+    in.
+    """
+    if not params:
+        return
+    unknown = [
+        key for key in overrides
+        if key not in params and key not in _ASSEMBLY_LEGACY_KEYS
+    ]
+    if not unknown:
+        return
+
+    known = sorted(set(params) | _ASSEMBLY_LEGACY_KEYS)
+    lines = []
+    for key in sorted(unknown):
+        close = difflib.get_close_matches(key, known, n=3, cutoff=0.6)
+        hint = f" — did you mean {', '.join(close)}?" if close else ""
+        lines.append(f"  {key}{hint}")
+    raise ValueError(
+        f"model.config for {model_name!r} sets key(s) the model does not "
+        f"declare:\n" + "\n".join(lines) + "\n"
+        f"Tunable keys for {model_name!r}: {known}\n"
+        "Values the composition resolver consumes (image range, normalization, "
+        "dimension policy, ...) are facts on ModelMetadata and are deliberately "
+        "not overridable from a recipe."
+    )
 
 
 def resolve_recipe(recipe: TrainRecipe) -> TrainRecipe:
     """Return a fully resolved recipe.
 
-    This is an entrypoint operation for authoring recipes: model default
-    profile values are deep-merged into ``model_config`` and user recipe values
-    win. Transforms are part of that same model config tree under
+    An entrypoint operation for authoring recipes: the model's declared
+    ``params`` are deep-merged under ``model_config`` and user recipe values
+    win. Transforms are part of that same tree under
     ``model_config["transforms"]``.
     """
-    merged = OmegaConf.merge(load_model_defaults(recipe.model_name), recipe.model_config or {})
+    params = model_params(recipe.model_name)
+    overrides = recipe.model_config or {}
+    _check_override_keys(recipe.model_name, params, overrides)
+    merged = OmegaConf.merge(params, overrides)
     return replace(
         recipe,
         model_config=OmegaConf.to_container(merged, resolve=True),

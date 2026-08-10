@@ -15,7 +15,8 @@ from vla_factory.robot.profile import (
 
 def test_list_and_load_bundled_profile():
     names = list_robot_profiles()
-    assert names == ["lekiwi"]
+    assert "lekiwi" in names
+    assert len(names) >= 1
 
     profile = get_robot_profile("lekiwi")
     assert profile.name == "lekiwi"
@@ -36,6 +37,16 @@ def test_profile_round_trip():
 def test_unknown_profile_raises():
     with pytest.raises(FileNotFoundError):
         get_robot_profile("does_not_exist")
+
+
+def test_robotwin_bimanual_profile():
+    p = get_robot_profile("robotwin")
+    # 14-DoF bimanual: left_arm(6) + left_gripper + right_arm(6) + right_gripper.
+    assert len(p.joints.names) == 14
+    assert p.joints.names[6] == "left_gripper"
+    assert p.joints.names[13] == "right_gripper"
+    assert p.native_action_type == "joint_pos"
+    assert p.to_dict() == RobotProfile.from_dict(p.to_dict()).to_dict()
 
 
 def test_empty_joint_names_invalid():

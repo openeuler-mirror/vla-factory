@@ -24,6 +24,22 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
+class VisionSlot:
+    """One expected visual input slot (model-module §4.3 vision).
+
+    ``semantic_accepts`` is the controlled ``CAMERA_SEMANTICS`` vocabulary (one
+    definition, referenced from both model and data sides); the generalization
+    ``third_person`` accepts any third-person view.
+    """
+
+    name: str
+    semantic_accepts: tuple[str, ...] = ()
+    required: bool = True
+    resolution: tuple[int, int] | None = None
+    channels: int = 3
+
+
+@dataclass(frozen=True)
 class ModelMetadata:
     """Full description of a model's capabilities and requirements.
 
@@ -45,8 +61,6 @@ class ModelMetadata:
         "regression",       # SmolVLA (MLP), ACT (Linear + CVAE)
     ] = "regression"
 
-    # ── Architecture ──
-    architecture: Literal["integrated", "decomposed"] = "decomposed"
 
     # ── Training paradigm ──
     training_paradigm: Literal[
@@ -66,15 +80,46 @@ class ModelMetadata:
     support_full: bool = True
     support_freeze: bool = True
 
-    # ── Inference ──
-    inference_num_steps: int = 1
-    requires_kv_cache: bool = False
 
-    # ── Patcher ──
-    patcher: str | None = None
 
     # ── Dependencies / install ──
     install_hint: str = ""   # e.g. 'pip install -e ".[act]"'; "" = no extra needed
+
+    # ── Interface contract (model-module §4.3) ──
+    # Vision contract (CameraMapping model side).
+    vision_slots: tuple[VisionSlot, ...] = ()
+    missing_slot_policy: str = "zero_pad"       # zero_pad | drop | error
+    # Image contract — the source of truth for image_to_float / image_normalize
+    # transform params (decision D3); profiles no longer duplicate these.
+    image_input_range: tuple[float, float] | None = None    # e.g. (-1.0, 1.0)
+    image_normalize_mode: str | None = None                 # "imagenet" | None
+    # Language contract.
+    language_template: str | None = None                    # e.g. "{task}"
+    # Proprio / action dimension + normalization contract.
+    dim_policy: str = "flexible"            # fixed | padded_to_max | flexible
+    dim_policy_max: int | None = None       # N for fixed / padded_to_max
+    vector_normalization: str | None = None  # mean_std | quantile | min_max
+    # Action contract.
+    control_mode_pref: tuple[str, ...] = ()  # CONTROL_MODES, priority order
+    # Temporal contract.
+    expected_hz: int | None = None
+    history_frames: int = 1
+
+    # ── Tunable defaults (model-module §4.6) ──
+    # Everything above is a *fact*: the resolver reads it and a recipe can never
+    # override it. ``params`` is the opposite half — this model's own upstream
+    # hyperparameters plus its default ``transforms`` step list, each carrying a
+    # default value that the recipe's ``model.config`` block may override.
+    #
+    # The container is the attribute: named field ⇒ fact, ``params`` key ⇒
+    # tunable. So a model author never classifies anything — framework facts
+    # have names and types, everything else goes in ``params``.
+    #
+    # The key set doubles as the tunable allow-list: ``resolve_recipe()``
+    # rejects a ``model.config`` key that is not declared here, and the factory
+    # rejects a declared key that nothing reads (see ``recipe/defaults.py``).
+    # ``frozen=True`` freezes the binding, not the dict — treat it as read-only.
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Universal model protocol (framework-agnostic) ──────────────────

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import TransformStep
+from .base import TransformStep, model_fact
 from .normalize import IMAGENET_MEAN, IMAGENET_STD
 from .registry import TransformRegistry
 
@@ -38,7 +38,9 @@ class ImageToFloat(TransformStep):
 
     @classmethod
     def from_config(cls, cfg: dict, ctx=None) -> "ImageToFloat":
-        return cls(range=tuple(cfg.get("range", (0.0, 1.0))))
+        rng = model_fact(cfg, "range", ctx, "image_input_range",
+                         "image_to_float.range")
+        return cls(range=tuple(rng))
 
 
 @TransformRegistry.register("image_layout")
@@ -88,3 +90,9 @@ class ImageNormalize(TransformStep):
             elif img.shape[-1] in (1, 3, 4):  # HWC
                 sample[key] = (img - IMAGENET_MEAN[None, None, :]) / IMAGENET_STD[None, None, :]
         return sample
+
+    @classmethod
+    def from_config(cls, cfg: dict, ctx=None) -> "ImageNormalize":
+        mode = model_fact(cfg, "mode", ctx, "image_normalize_mode",
+                          "image_normalize.mode")
+        return cls(mode=mode)

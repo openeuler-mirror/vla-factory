@@ -243,7 +243,8 @@ def describe_model_config(recipe: "TrainRecipe", schema: "DataSchema | None" = N
         lines.append("  " + (", ".join(dataset_cameras) if dataset_cameras else "(none)"))
 
     # ── camera_mapping check ──
-    mapping = (recipe.model_config or {}).get("camera_mapping")
+    from vla_factory.recipe.recipe import get_camera_mapping
+    mapping = get_camera_mapping(recipe)
     report = check_camera_mapping(mapping, contract, dataset_cameras)
 
     lines.append("")

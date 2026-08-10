@@ -32,11 +32,13 @@
 model:
   name: pi0
   path: lerobot/pi0_base          # pytorch safetensors (openpi weights, ported by lerobot)
-  config:
-    camera_mapping:
-      base_0_rgb: front
-      left_wrist_0_rgb: wrist
-    default_task: "pick up the rectangle"
+
+# 三者之间的关系归组合调整区（架构 §3.1），不是模型超参。
+assembly:
+  camera_mapping:
+    base_0_rgb: front
+    left_wrist_0_rgb: wrist
+  default_task: "pick up the rectangle"
 
 action_spec:
   action_dim: 9

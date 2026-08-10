@@ -7,6 +7,7 @@ full user-facing message).
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
 import pytest
 
@@ -28,7 +29,7 @@ from vla_factory.robot import get_robot_profile
 
 @pytest.fixture
 def schema() -> DataSchema:
-    return DataSchema(
+    return make_schema(
         state_dim=6,
         action_dim=8,
         cameras=("front", "wrist"),
@@ -128,6 +129,46 @@ def test_no_conflict_when_metadata_action_dim_zero(schema, norm_stats):
     # Must not raise — no capability boundary to breach.
     assembly = resolve_assembly(schema, norm_stats, meta, base_contract=contract)
     assert assembly.canonical_interface.action_dim == 8
+
+
+def test_action_dim_source_recorded_as_base_contract(schema, norm_stats, metadata):
+    contract = BaseContract(action_dim=5)  # <= metadata.action_dim (7) → allowed
+    assembly = resolve_assembly(schema, norm_stats, metadata, base_contract=contract)
+    # The refined action dim and its source travel with the resolved assembly.
+    assert assembly.canonical_interface.action_dim == 5
+
+
+def test_vision_slot_capability_boundary_conflict(schema, norm_stats):
+    # Model declares fixed slots; a checkpoint exposing an undeclared slot is a
+    # capability-boundary breach.
+    from vla_factory.model.interfaces.model import VisionSlot
+
+    meta = ModelMetadata(
+        name="pi0", action_dim=32,
+        vision_slots=(VisionSlot(name="base_0_rgb"), VisionSlot(name="left_wrist_0_rgb")),
+    )
+    contract = BaseContract(camera_roles={
+        "base_0_rgb": (3, 224, 224),
+        "phantom_slot": (3, 224, 224),  # not declared by the model family
+    })
+    with pytest.raises(ResolutionError) as exc_info:
+        resolve_assembly(schema, norm_stats, meta, base_contract=contract)
+    err = exc_info.value
+    assert err.code == METADATA_CONTRACT_CONFLICT
+    assert err.path == "model.vision_slots"
+    assert err.params["field"] == "vision_slots"
+
+
+def test_declared_vision_slots_accept_matching_contract(schema, norm_stats):
+    from vla_factory.model.interfaces.model import VisionSlot
+
+    meta = ModelMetadata(
+        name="pi0", action_dim=32,
+        vision_slots=(VisionSlot(name="base_0_rgb"), VisionSlot(name="left_wrist_0_rgb")),
+    )
+    contract = BaseContract(camera_roles={"base_0_rgb": (3, 224, 224)})  # subset → OK
+    assembly = resolve_assembly(schema, norm_stats, meta, base_contract=contract)
+    assert assembly.contract_ref is not None
 
 
 # ── Missing input ─────────────────────────────────────────────────

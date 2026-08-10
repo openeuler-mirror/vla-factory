@@ -97,6 +97,30 @@ def test_schema(dataset):
     assert len(schema.state_keys) == STATE_DIM
 
 
+def test_schema_entry_table_facts(dataset):
+    """WP1: RoboTwin reader surfaces the joint concatenation as explicit facts."""
+    root, _ = dataset
+    schema = RoboTwinReader().get_schema(root)
+
+    assert schema.source_format == "robotwin_hdf5"
+    assert schema.robot_ref == "robotwin"
+
+    # action mode is measured joint_pos: the /joint_action/* spec binds qpos.
+    assert len(schema.action_dims) == STATE_DIM
+    assert all(d.mode == "joint_pos" and d.mode_source == "measured"
+               for d in schema.action_dims)
+    # the implicit _JOINT_ORDER concatenation is now a per-dim source_field fact
+    assert all("/joint_action/" in d.source_field for d in schema.action_dims)
+    assert len(schema.state_dims) == STATE_DIM
+
+    # camera semantics: head_camera uniquely inferred; left/right unanchored → undeclared
+    cams = {c.key: c for c in schema.cameras_entries}
+    assert cams["head_camera"].semantic == "third_person_front"
+    assert cams["left_camera"].semantic is None     # needs assembly.camera_mapping
+    assert cams["right_camera"].semantic is None
+
+
+
 def test_episode_lengths_and_ranges(dataset):
     root, _ = dataset
     reader = RoboTwinReader()

@@ -37,3 +37,41 @@ class TransformStep(ABC):
     def inverse_for_output(self, ctx: Any | None = None) -> "TransformStep | None":
         """Return the corresponding output postprocessor step, if any."""
         return None
+
+
+def reject_fact_override(cfg: dict, key: str, attr: str, what: str) -> None:
+    """Refuse a per-run override of a model fact.
+
+    Image range, normalize mode, vector normalization and the pad target are
+    facts: the composition resolver reads them, and changing one per run makes
+    the resolved assembly disagree with the model that actually runs. pi0 wants
+    images in ``[-1, 1]`` because SigLIP was trained that way — a recipe setting
+    ``range: [0, 1]`` used to win silently, training happily on wrong-valued
+    pixels. So a fact key present in the step config is an error, not an
+    override (architecture §1.7, conservative failure).
+    """
+    if key in cfg:
+        raise ValueError(
+            f"{what} is a model fact and cannot be set per run: it belongs to "
+            f"ModelMetadata.{attr}, which the composition resolver reads. "
+            f"Remove {key!r} from the transform config; to change it for a "
+            "model family, change that model's declaration."
+        )
+
+
+def model_fact(cfg: dict, key: str, ctx: Any | None, attr: str, what: str) -> Any:
+    """Read a model-side transform fact from ``ctx.metadata``.
+
+    Rejects a per-run override (see :func:`reject_fact_override`). Absence is
+    also an error rather than a quiet default: if the declaration does not carry
+    the fact, the pipeline cannot be built.
+    """
+    reject_fact_override(cfg, key, attr, what)
+    md = getattr(ctx, "metadata", None) if ctx is not None else None
+    value = getattr(md, attr, None) if md is not None else None
+    if value is None:
+        raise ValueError(
+            f"{what} is not declared: set it on ModelMetadata.{attr}. "
+            "A silent default is intentionally not used (risk R3)."
+        )
+    return value

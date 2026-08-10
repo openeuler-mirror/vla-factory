@@ -48,13 +48,14 @@ def _build_transforms(
         schema=schema,
         model_config=md.get("profile") or {},
         split=split,
+        metadata=md.get("metadata"),
     )
     transform_items = md.get("transform_inputs")
     if transform_items is None:
         model_name = recipe.model_name if recipe is not None else "<unknown>"
         raise ValueError(
-            "No transform pipeline configured. Add `transforms.inputs` to "
-            f"vla_factory/recipe/model/{model_name}.yaml or "
+            "No transform pipeline configured. Declare `transforms` in "
+            f"{model_name}'s ModelMetadata.params, or set "
             "`model.config.transforms.inputs` in the recipe."
         )
     return build_preprocessor(transform_items, ctx)
@@ -71,8 +72,8 @@ def _resolve_transform_inputs(recipe: TrainRecipe) -> tuple[list[dict] | None, d
     transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
     if transform_inputs is None:
         raise ValueError(
-            "No transform pipeline configured. Add `transforms.inputs` to "
-            f"vla_factory/recipe/model/{recipe.model_name}.yaml or "
+            "No transform pipeline configured. Declare `transforms` in "
+            f"{recipe.model_name}'s ModelMetadata.params, or set "
             "`model.config.transforms.inputs` in the recipe."
         )
     return list(transform_inputs), recipe.model_config
