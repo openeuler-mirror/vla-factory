@@ -34,8 +34,8 @@ TODO：新增机器人的标准步骤（声明 profile + 引用 URDF + 补充 VL
 
 ### 4.1 归属：单层声明，无实例契约
 
-数据维度是「全实测」（§8.1），模型维度是「声明 × 实测」两层（族声明
-`ModelMetadata` + checkpoint 实测 `BaseContract`，§4.1）。机器人维度只有
+数据维度是「全实测」（§8.1），模型维度由族声明 `ModelMetadata` 唯一
+定义接口，checkpoint 只可选校验（§4.1）。机器人维度同样只有
 **一层**：`RobotProfile` 是随框架发布的声明文件，字段来自 URDF、厂商资料或
 现有 adapter 在**编写时**确定，没有运行时自述的「实例契约」——机器人不像
 checkpoint 那样能在连接时上报自己的事实。
@@ -119,7 +119,7 @@ URDF / 厂商资料 / 现有 adapter 确定性导出）且**有消费方**（兼
 | `joints.sign_convention` | 矩阵「关节顺序」检查只处理顺序重排，不含符号翻转；这与夹爪 `open_value`/`close_value` 的 flip 机制是两回事，不能合并复用；当前无消费方 |
 | `joints.zero_pose` / `calibration_note` | 信息性，无消费方（同模型模块 §4.4 的 `identity.family` 一类：写了但没人读的声明是死重） |
 | `identity.hardware_revision` | 同名机器人的批次差异；无实例级校验/合并机制消费它——引入前先确认有真实场景需要区分批次（§4.1） |
-| `identity.urdf.fingerprint`、顶层 `schema_version` | **明确不引入**，为保持三个维度一致对待：模型模块 §4.4 已否决 `identity.base_checkpoint`/`fingerprint`/`schema_version`（「实例身份归 BaseContract；校验与版本机制同数据集侧一并删除」），理由同样适用于机器人——且更弱：`RobotProfile` 随框架发布、跟框架版本一起升级，不是像 `DataSchema` 那样活在用户 checkpoint 里、需要独立的向后兼容升级路径。没有版本迁移的现实场景就不引入版本机制 |
+| `identity.urdf.fingerprint`、顶层 `schema_version` | **明确不引入**，为保持三个维度一致对待：模型模块 §4.4 已否决 `identity.base_checkpoint`/`fingerprint`/`schema_version`（checkpoint 路径归 recipe，当前无版本迁移消费方），理由同样适用于机器人——且更弱：`RobotProfile` 随框架发布、跟框架版本一起升级，不是像 `DataSchema` 那样活在用户 checkpoint 里、需要独立的向后兼容升级路径。没有版本迁移的现实场景就不引入版本机制 |
 | `sensors_mounts`（相机外参 `camera_mounts`、`ft_sensor_mounts`、`tactile_mounts`） | 相机外参的消费方是 T2 坐标转换；当前相机映射只按语义名匹配（架构 §4.2.3），不需要外参。`ft_sensor_mounts`/`tactile_mounts` 无 Reader 生产方，与数据模块 §8.3 `extra_modalities` 被推迟的理由对称 |
 | `frames`（命名坐标系定义） | 同上，T2 territory；当前 `coordinate_frame` 只是标签，足够现有消费方使用 |
 | `safety.workspace_aabb` / `self_collision_pairs` | 规划/防碰撞的消费方不在当前范围 |

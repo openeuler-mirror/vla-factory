@@ -571,23 +571,7 @@ Basic steps:
 5. If the step changes the model output space, implement `inverse_for_output(ctx)`.
 6. Reference it in the model profile or recipe under `model.config.transforms.inputs`.
 
-If the step lives in the user's project instead of a VLA Factory built-in module, declare the module to import under `transforms.imports` in the recipe. Training and deployment import these modules before building the transform pipeline. Module import executes `@TransformRegistry.register("your_step")`, making the custom step available in the registry.
-
-```yaml
-transforms:
-  imports:
-    - my_project.transforms.prompt_tokenizer
-
-model:
-  config:
-    transforms:
-      inputs:
-        - type: image_to_float
-        - type: custom_prompt_tokenizer
-          tokenizer_path: artifacts/tokenizer
-```
-
-A custom step must still follow the transform contract:
+A new step must still follow the transform contract:
 
 - Input and output are flat sample dicts.
 - Small parameters are written in transform config.

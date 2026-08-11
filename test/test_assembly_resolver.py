@@ -1,7 +1,6 @@
 """Tests for the phase-0 composition resolver (``resolve_assembly``).
 
-These cover the stable contract: determinism, serializable round-trip, the
-ModelMetadata × BaseContract capability-boundary conflict, and structured
+These cover the stable contract: determinism, serializable round-trip, and structured
 ``ResolutionError`` (asserting ``code`` / ``path`` / ``params`` — never the
 full user-facing message).
 """
@@ -13,13 +12,12 @@ import pytest
 
 from vla_factory.assembly.resolver import (
     INVALID_DESCRIPTION,
-    METADATA_CONTRACT_CONFLICT,
     MISSING_INPUT,
     ResolutionError,
+    UNSUPPORTED_OVERRIDE,
     resolve_assembly,
 )
 from vla_factory.data.manifest import DataSchema, NormStats
-from vla_factory.model.base_contract import BaseContract
 from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.robot import get_robot_profile
 
@@ -79,7 +77,7 @@ def test_to_dict_from_dict_round_trip(schema, norm_stats, metadata, robot):
 def test_overrides_are_recorded(schema, norm_stats, metadata):
     # Architecture §3.4: the assembly records the controlled overrides applied
     # (the source of each adjusted field), rather than silently dropping them.
-    overrides = {"default_task": "pick", "accept_fps_mismatch": True}
+    overrides = {"default_task": "pick"}
     assembly = resolve_assembly(schema, norm_stats, metadata, overrides=overrides)
     assert assembly.overrides_ref == overrides
     # No overrides → empty ref, and it still round-trips.
@@ -88,9 +86,9 @@ def test_overrides_are_recorded(schema, norm_stats, metadata):
     assert type(plain).from_dict(plain.to_dict()) == plain
 
 
-def test_canonical_interface_derived_from_facts(schema, norm_stats, metadata):
+def test_model_io_spec_derived_from_facts(schema, norm_stats, metadata):
     assembly = resolve_assembly(schema, norm_stats, metadata)
-    ci = assembly.canonical_interface
+    ci = assembly.model_io_spec
     assert ci.cameras == schema.cameras
     assert ci.action_dim == metadata.action_dim
     assert ci.action_horizon == metadata.action_horizon
@@ -98,77 +96,12 @@ def test_canonical_interface_derived_from_facts(schema, norm_stats, metadata):
     assert ci.requires_language is metadata.requires_prompt
 
 
-def test_base_contract_refines_action_dim(schema, norm_stats, metadata):
-    # Contract declares fewer dims than the model supports → allowed (padding).
-    contract = BaseContract(action_dim=6)
-    assembly = resolve_assembly(schema, norm_stats, metadata, base_contract=contract)
-    assert assembly.canonical_interface.action_dim == 6
-    assert assembly.contract_ref is not None
-
-
-# ── Conflict ──────────────────────────────────────────────────────
-
-
-def test_metadata_contract_action_dim_conflict(schema, norm_stats, metadata):
-    # Contract declares MORE action dims than the model family supports.
-    contract = BaseContract(action_dim=14)
-    with pytest.raises(ResolutionError) as exc_info:
-        resolve_assembly(schema, norm_stats, metadata, base_contract=contract)
-    err = exc_info.value
-    assert err.code == METADATA_CONTRACT_CONFLICT
-    assert err.path == "model.action_dim"
-    assert err.params["field"] == "action_dim"
-    assert err.params["metadata_value"] == 7
-    assert err.params["contract_value"] == 14
-
-
-def test_no_conflict_when_metadata_action_dim_zero(schema, norm_stats):
-    # ACT-like from-scratch model: metadata.action_dim == 0 means "from data".
-    meta = ModelMetadata(name="act", action_dim=0)
-    contract = BaseContract(action_dim=8)
-    # Must not raise — no capability boundary to breach.
-    assembly = resolve_assembly(schema, norm_stats, meta, base_contract=contract)
-    assert assembly.canonical_interface.action_dim == 8
-
-
-def test_action_dim_source_recorded_as_base_contract(schema, norm_stats, metadata):
-    contract = BaseContract(action_dim=5)  # <= metadata.action_dim (7) → allowed
-    assembly = resolve_assembly(schema, norm_stats, metadata, base_contract=contract)
-    # The refined action dim and its source travel with the resolved assembly.
-    assert assembly.canonical_interface.action_dim == 5
-
-
-def test_vision_slot_capability_boundary_conflict(schema, norm_stats):
-    # Model declares fixed slots; a checkpoint exposing an undeclared slot is a
-    # capability-boundary breach.
-    from vla_factory.model.interfaces.model import VisionSlot
-
-    meta = ModelMetadata(
-        name="pi0", action_dim=32,
-        vision_slots=(VisionSlot(name="base_0_rgb"), VisionSlot(name="left_wrist_0_rgb")),
-    )
-    contract = BaseContract(camera_roles={
-        "base_0_rgb": (3, 224, 224),
-        "phantom_slot": (3, 224, 224),  # not declared by the model family
-    })
-    with pytest.raises(ResolutionError) as exc_info:
-        resolve_assembly(schema, norm_stats, meta, base_contract=contract)
-    err = exc_info.value
-    assert err.code == METADATA_CONTRACT_CONFLICT
-    assert err.path == "model.vision_slots"
-    assert err.params["field"] == "vision_slots"
-
-
-def test_declared_vision_slots_accept_matching_contract(schema, norm_stats):
-    from vla_factory.model.interfaces.model import VisionSlot
-
-    meta = ModelMetadata(
-        name="pi0", action_dim=32,
-        vision_slots=(VisionSlot(name="base_0_rgb"), VisionSlot(name="left_wrist_0_rgb")),
-    )
-    contract = BaseContract(camera_roles={"base_0_rgb": (3, 224, 224)})  # subset → OK
-    assembly = resolve_assembly(schema, norm_stats, meta, base_contract=contract)
-    assert assembly.contract_ref is not None
+def test_serialized_assembly_has_metadata_as_only_model_interface_source(
+    schema, norm_stats, metadata,
+):
+    serialized = resolve_assembly(schema, norm_stats, metadata).to_dict()
+    assert serialized["metadata_ref"]["action_dim"] == metadata.action_dim
+    assert "contract_ref" not in serialized
 
 
 # ── Missing input ─────────────────────────────────────────────────
@@ -220,24 +153,59 @@ def test_invalid_robot_profile(schema, norm_stats, metadata):
     assert err.path.startswith("robot")
 
 
-# ── Phase-0 placeholders ──────────────────────────────────────────
+def test_override_without_a_consumer_is_rejected(schema, norm_stats, metadata):
+    """``gripper_flip`` is a documented recipe field that no stage reads yet.
+    Dropping it silently would let a user believe a gripper decision was made
+    on their behalf."""
+    with pytest.raises(ResolutionError) as exc_info:
+        resolve_assembly(schema, norm_stats, metadata,
+                         overrides={"gripper_flip": True})
+    err = exc_info.value.to_dict()
+    assert err["code"] == UNSUPPORTED_OVERRIDE
+    assert err["path"] == "assembly"
+    assert err["params"] == {
+        "keys": ["gripper_flip"],
+        "supported": ["camera_mapping", "default_task"],
+    }
 
 
-def test_mappings_and_pipelines_are_phase0_placeholders(schema, norm_stats, metadata):
+def test_every_assembly_override_is_accounted_for():
+    """Drift guard: a new AssemblyConfig field must either be consumed by the
+    resolver or be knowingly unsupported. Adding one without doing either is
+    how a field ends up documented, settable, and silently ignored."""
+    from dataclasses import fields
+
+    from vla_factory.assembly.resolver.resolver import CONSUMED_OVERRIDES
+    from vla_factory.recipe.recipe import AssemblyConfig
+
+    # Set here only after confirming the field genuinely has no consumer yet;
+    # move it into CONSUMED_OVERRIDES in the commit that starts reading it.
+    known_unsupported = {"accept_fps_mismatch", "gripper_flip"}
+    declared = {f.name for f in fields(AssemblyConfig)}
+    assert declared == CONSUMED_OVERRIDES | known_unsupported
+
+
+# ── What stays unresolved after phase 3 ───────────────────────────
+
+
+def test_robot_side_stays_unresolved_without_a_robot(schema, norm_stats, metadata):
+    """No robot declared (every example recipe today) → the two robot-side
+    products are absent, not wrong. JointMapping needs a body to map onto, and
+    ``robot_to_model`` needs the joint-reorder step that does not exist yet.
+    """
     assembly = resolve_assembly(schema, norm_stats, metadata)
-    for mapping in (
-        assembly.camera_mapping,
-        assembly.state_mapping,
-        assembly.action_mapping,
-        assembly.language_mapping,
-        assembly.joint_mapping,
-    ):
-        assert mapping.resolved is False
-        assert mapping.entries == ()
-    for pipeline in (
-        assembly.data_to_model,
-        assembly.robot_to_model,
-        assembly.model_to_robot,
-    ):
-        assert pipeline.resolved is False
-        assert pipeline.steps == ()
+    assert assembly.joint_mapping.resolved is False
+    assert assembly.joint_mapping.entries == ()
+    assert assembly.robot_to_model.resolved is False
+    assert assembly.robot_to_model.calls == ()
+
+
+def test_pipelines_unresolved_when_the_model_declares_no_transforms(
+    schema, norm_stats, metadata,
+):
+    """This ``metadata`` fixture carries no ``params["transforms"]``, so there
+    is no step list to compile — the plan stays unresolved rather than being
+    invented from the facts."""
+    assembly = resolve_assembly(schema, norm_stats, metadata)
+    assert assembly.data_to_model.resolved is False
+    assert assembly.model_to_robot.resolved is False

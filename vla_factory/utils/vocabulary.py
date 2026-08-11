@@ -72,14 +72,9 @@ def is_action_head(value: str) -> bool:
 # Data-side facts (DataSchema): measured (directly probed) / inferred (unique
 # deterministic match under a controlled vocabulary) / undeclared (null — not an
 # error, it is the resolver's trigger for a controlled override).
-# Model-side facts (Materialize merge): metadata (ModelMetadata family
-# declaration) / base_contract (checkpoint self-report).
-
 DataSource = Literal["measured", "inferred", "undeclared"]
-ModelSource = Literal["metadata", "base_contract"]
 
 DATA_SOURCES: Final[frozenset[str]] = frozenset({"measured", "inferred", "undeclared"})
-MODEL_SOURCES: Final[frozenset[str]] = frozenset({"metadata", "base_contract"})
 
 
 __all__ = [
@@ -92,7 +87,5 @@ __all__ = [
     "ActionHead",
     "is_action_head",
     "DataSource",
-    "ModelSource",
     "DATA_SOURCES",
-    "MODEL_SOURCES",
 ]

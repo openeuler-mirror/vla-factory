@@ -2,6 +2,9 @@
 
 > 状态：待执行。基于 `docs/architecture/vla-factory-architecture.cn.md`（d3b0e86）
 > 制定，日期 2026-08-06。执行时按「提交切分」一节逐 commit 推进，每步保持 pytest 全绿。
+> **后续决策（2026-08-11）：** 本计划里的 BaseContract / Materialize 骨架已在
+> 后续简化中删除。当前 resolver 直接消费 ModelMetadata，checkpoint 只参与可选
+> 一致性检查；下文相关段落是历史计划，不代表当前接口。
 
 ## Context
 

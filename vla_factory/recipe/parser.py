@@ -60,12 +60,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     model_path = model_block.get("path") if isinstance(model_block, dict) else None
     model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
 
-    # ── Transform extensions ──
-    transforms_block = raw.get("transforms", {})
-    transform_imports = []
-    if isinstance(transforms_block, dict):
-        transform_imports = list(transforms_block.get("imports", []) or [])
-
     # ── Action spec ──
     action_spec = _pop_dataclass(raw.get("action_spec", {}), ActionSpecConfig)
 
@@ -144,7 +138,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         model_name=model_name,
         model_path=model_path,
         model_config=model_config,
-        transform_imports=transform_imports,
         action_spec=action_spec,
         data=data_config,
         robot=robot_config,

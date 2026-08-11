@@ -144,7 +144,7 @@ functions (162 collected after parametrize expansion):
 
 | File | Cases | Coverage |
 |------|-------|----------|
-| `test_base_contract.py` | 7 | Checkpoint config.json parsing, valid/invalid camera_mapping, missing/extra cameras, warning when no contract |
+| `test_checkpoint_validation.py` | 12 | Optional checkpoint config parsing and ModelMetadata consistency checks; metadata-based camera mapping |
 | `test_act_model.py` | 15 | ACT lerobot adapter: protocol compliance, registry integration, observation_to, factory wrapper (compute_loss/predict/multi-camera/save-load), profile defaults & recipe overrides |
 | `test_pi0_model.py` | 4 | pi0 adapter (fake openpi): metadata, camera_mapping translation, loss/predict delegation, empty-camera placeholder |
 | `test_pi05_model.py` | 13 | pi05 deltas vs pi0: factory variant construction, discrete-state prompt, task fallback chain, quantile normalize/unnormalize roundtrip |

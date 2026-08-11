@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import TransformStep, model_fact
+from .base import PlanContext, TransformStep, model_fact
 from .normalize import IMAGENET_MEAN, IMAGENET_STD
 from .registry import TransformRegistry
 
@@ -37,10 +37,10 @@ class ImageToFloat(TransformStep):
         return sample
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "ImageToFloat":
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict:
         rng = model_fact(cfg, "range", ctx, "image_input_range",
                          "image_to_float.range")
-        return cls(range=tuple(rng))
+        return {"range": list(rng)}
 
 
 @TransformRegistry.register("image_layout")
@@ -51,6 +51,10 @@ class ImageLayout(TransformStep):
         self.to = to.upper()
         if self.to not in {"CHW", "HWC"}:
             raise ValueError(f"Unsupported image layout target: {to!r}")
+
+    @classmethod
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict:
+        return {"to": str(cfg.get("to", "CHW")).upper()}
 
     def __call__(self, sample: dict) -> dict:
         for key in list(sample.keys()):
@@ -92,7 +96,7 @@ class ImageNormalize(TransformStep):
         return sample
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "ImageNormalize":
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict:
         mode = model_fact(cfg, "mode", ctx, "image_normalize_mode",
                           "image_normalize.mode")
-        return cls(mode=mode)
+        return {"mode": mode}

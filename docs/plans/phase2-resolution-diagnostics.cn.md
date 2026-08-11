@@ -4,6 +4,9 @@
 > 收窄后同日实施完毕。**与阶段 1 同分支**（`feat_inspect`）——两阶段关联紧密，
 > 阶段 2 的检查逻辑直接消费阶段 1 刚落地的字段，拆分支只会制造合并冲突，不
 > 产生真实隔离价值。
+> **后续决策（2026-08-11）：** 本计划中从 BaseContract/Materialize 读取精化
+> 维度的方案已撤销。Check Pairs 现直接读取 ModelMetadata；checkpoint 只能
+> 可选校验，不能改变解析结果。下文相关内容仅保留为历史实施记录。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段2、
 > §4.2.2（兼容性检查矩阵）、§4.2.5（解析失败处理）。
 >

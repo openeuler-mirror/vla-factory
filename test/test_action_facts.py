@@ -36,20 +36,20 @@ def test_action_horizon_from_scratch_uses_recipe():
     # ACT-from-scratch: the user picks the chunk size.
     meta = ModelMetadata(name="act", training_paradigm="from_scratch")
     assert resolve_action_horizon(
-        metadata=meta, base_contract=None, recipe_action_horizon=100
+        metadata=meta, recipe_action_horizon=100
     ) == 100
 
 
 def test_action_horizon_finetune_prefers_metadata_then_recipe():
     meta = ModelMetadata(name="pi0", training_paradigm="pretrained_finetune", action_horizon=50)
-    # No contract horizon yet → metadata (50) wins over recipe (40).
+    # Metadata (50) wins over recipe (40).
     assert resolve_action_horizon(
-        metadata=meta, base_contract=None, recipe_action_horizon=40
+        metadata=meta, recipe_action_horizon=40
     ) == 50
 
 
 def test_action_horizon_finetune_falls_back_to_recipe():
     meta = ModelMetadata(name="x", training_paradigm="pretrained_finetune", action_horizon=0)
     assert resolve_action_horizon(
-        metadata=meta, base_contract=None, recipe_action_horizon=40
+        metadata=meta, recipe_action_horizon=40
     ) == 40

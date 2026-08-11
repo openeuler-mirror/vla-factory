@@ -10,7 +10,6 @@ from vla_factory.utils.vocabulary import (
     CAMERA_SEMANTICS,
     CONTROL_MODES,
     DATA_SOURCES,
-    MODEL_SOURCES,
     is_action_head,
     is_control_mode,
 )
@@ -36,7 +35,6 @@ def test_camera_semantics_and_action_heads_present():
 
 def test_source_annotation_vocabularies():
     assert DATA_SOURCES == frozenset({"measured", "inferred", "undeclared"})
-    assert MODEL_SOURCES == frozenset({"metadata", "base_contract"})
 
 
 def test_robot_profile_uses_shared_control_mode_vocabulary():

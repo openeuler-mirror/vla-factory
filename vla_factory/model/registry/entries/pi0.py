@@ -309,13 +309,13 @@ def _load_pi0(
     #
     # action_dim is the openpi pad target: a fact from the declaration
     # (dim_policy_max), never a per-run knob.
-    # action_horizon is a checkpoint fact for a finetune-only family: pi0's
+    # action_horizon is a model-family fact: pi0's
     # action expert was pretrained at a fixed chunk length, so the declaration
-    # (later the BaseContract) wins over the recipe, which only acts as fallback.
+    # ModelMetadata wins over the recipe, which only acts as fallback.
     config_kwargs = dict(
         action_dim=metadata.dim_policy_max,
         action_horizon=resolve_action_horizon(
-            metadata=metadata, base_contract=None,
+            metadata=metadata,
             recipe_action_horizon=recipe.action_spec.action_horizon,
         ),
         dtype=dtype,

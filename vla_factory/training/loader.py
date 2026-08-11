@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import logging
-import importlib
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +50,7 @@ def _build_transforms(
         metadata=md.get("metadata"),
     )
     transform_items = md.get("transform_inputs")
-    if transform_items is None:
+    if not transform_items:
         model_name = recipe.model_name if recipe is not None else "<unknown>"
         raise ValueError(
             "No transform pipeline configured. Declare `transforms` in "
@@ -61,16 +60,10 @@ def _build_transforms(
     return build_preprocessor(transform_items, ctx)
 
 
-def _load_transform_imports(recipe: TrainRecipe) -> None:
-    """Import user modules that register custom transform classes."""
-    for module_name in recipe.transform_imports:
-        importlib.import_module(module_name)
-
-
 def _resolve_transform_inputs(recipe: TrainRecipe) -> tuple[list[dict] | None, dict]:
     """Read transform config from an already prepared recipe."""
     transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
-    if transform_inputs is None:
+    if not transform_inputs:
         raise ValueError(
             "No transform pipeline configured. Declare `transforms` in "
             f"{recipe.model_name}'s ModelMetadata.params, or set "
@@ -101,7 +94,6 @@ def create_dataloaders(
     sampler_cfg = data_cfg.sampler
     split_cfg = data_cfg.split
     path = Path(data_cfg.source.path)
-    _load_transform_imports(recipe)
 
     # 1. Reader + codec
     reader = get_reader(data_cfg.source.format, path=path)

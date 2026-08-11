@@ -1,6 +1,9 @@
 # 开发计划：组合解析迁移阶段 1「抽取现有隐式事实」
 
 > 状态：**WP0–WP7 已执行完毕**（工作树，未提交）。日期 2026-08-06 制定，2026-08-10 完成。
+> **后续决策（2026-08-11）：** 本计划中 BaseContract / Materialize 的设计记录
+> 已被撤销。当前实现以 ModelMetadata 为唯一模型接口事实源，checkpoint 只做
+> 可选一致性检查；现状以架构文档和模型模块文档为准。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段1（ccb2ca8）；
 > 字段级规范以 `feat_inspect` 分支 2223989 的
 > [数据模块 §8](../modules/data-module.cn.md)、[模型模块 §4](../modules/model-module.cn.md)、

@@ -32,23 +32,23 @@ class ResizeImages(TransformStep):
         self.interpolation = interpolation
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "ResizeImages | None":
+    def compile_call(cls, cfg: dict, ctx) -> dict | None:
         height = cfg.get("height")
         width = cfg.get("width")
         if height is None and width is None:
-            return None
+            return None                 # no target declared → no resize
         if height is None or width is None:
             raise ValueError("resize_images requires both `height` and `width`.")
         height = int(height)
         width = int(width)
         if height <= 0 or width <= 0:
             raise ValueError("resize_images target height and width must be positive.")
-        return cls(
-            height=height,
-            width=width,
-            mode=cfg.get("mode", "stretch"),
-            interpolation=cfg.get("interpolation", "bilinear"),
-        )
+        return {
+            "height": height,
+            "width": width,
+            "mode": cfg.get("mode", "stretch"),
+            "interpolation": cfg.get("interpolation", "bilinear"),
+        }
 
     def __call__(self, sample: dict) -> dict:
         if self.height <= 0 or self.width <= 0:

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import yaml
 
+from helpers import make_schema
 from vla_factory.recipe import cli as cli_module
+from vla_factory.recipe.recipe import TrainRecipe
 
 DATA_PATH = "test/data/lerobot_train_data_3_episodes"
 
@@ -41,6 +45,42 @@ def test_inspect_model_envelope(capsys):
     # New interface-contract fields are surfaced (model-module §4.3).
     assert meta["dim_policy"] == "flexible"
     assert meta["vector_normalization"] == "mean_std"
+
+
+def test_inspect_model_keeps_checkpoint_observations_separate(tmp_path, capsys):
+    config = {
+        "input_features": {
+            f"observation.images.{role}": {"type": "VISUAL", "shape": [3, 224, 224]}
+            for role in ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+        },
+        "output_features": {"action": {"shape": [32]}},
+        "max_action_dim": 32,
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    cli_module._inspect_model("pi0", path=str(tmp_path), as_json=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["source"] == "metadata"
+    assert doc["facts"]["metadata"]["action_dim"] == 32
+    assert doc["facts"]["checkpoint_check"]["status"] == "compatible"
+    assert doc["facts"]["checkpoint_check"]["observed"]["action_dim"] == 32
+
+
+def test_model_report_uses_resolver_camera_validation_for_dynamic_slots(caplog):
+    recipe = TrainRecipe(
+        model_name="act",
+        model_config={"camera_mapping": {"dynamic_slot": "front"}},
+    )
+    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.recipe"):
+        report = cli_module._describe_model_config(
+            recipe, make_schema(cameras=("front", "wrist")),
+        )
+    assert "ERROR:" not in report
+    assert "dynamic_slot" in report
+    deprecations = [
+        record for record in caplog.records
+        if "camera_mapping is declared under model.config" in record.message
+    ]
+    assert len(deprecations) == 1
 
 
 def test_inspect_robot_envelope(capsys):

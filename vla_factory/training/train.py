@@ -38,13 +38,14 @@ from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.training.loader import create_dataloaders
 from vla_factory.data.formats import get_reader
 from vla_factory.data.manifest import resolve_vector_keys
+from vla_factory.model.checkpoint_validation import validate_checkpoint_if_available
+from vla_factory.model.registry import get_entry
 from vla_factory.training.pytorch_trainer import VLATrainer
 from vla_factory.training.strategies import apply_strategy
 from vla_factory.utils.constants import (
     INFERENCE_META_DIR, RECIPE_FILE, SCHEMA_FILE, NORM_STATS_FILE,
     FINAL_DIR, MODEL_WEIGHTS_FILE,
 )
-from vla_factory.model.registry import get_entry
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,18 @@ def train(
             f"a HF base checkpoint (e.g. lerobot/pi0_base). from_scratch training "
             f"is not supported for this model."
         )
+
+    # A checkpoint config is redundant diagnostic data, never an interface
+    # source. Check it when available so an accidentally mixed model family is
+    # caught before loading weights; external checkpoints without a readable
+    # config remain supported.
+    if recipe.model_path:
+        checkpoint_check = validate_checkpoint_if_available(recipe.model_path, metadata)
+        if checkpoint_check["status"] == "unavailable":
+            logger.warning(
+                "Checkpoint compatibility check unavailable: %s",
+                checkpoint_check["detail"],
+            )
 
     model = entry.factory(recipe=recipe, schema=schema)
 
@@ -452,9 +465,6 @@ def _save_inference_metadata(
 def _recipe_to_yaml_dict(recipe: TrainRecipe) -> dict:
     """Serialize a fully expanded TrainRecipe using the public YAML structure."""
     return {
-        "transforms": {
-            "imports": list(recipe.transform_imports),
-        },
         "model": {
             "name": recipe.model_name,
             "path": recipe.model_path,

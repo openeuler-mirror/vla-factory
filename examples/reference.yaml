@@ -124,6 +124,8 @@ assembly:                      # [可选, 默认留空]
   # camera_mapping:            # 模型视觉槽位 -> 数据/机器人相机 (歧义时显式指定)
   #   base_0_rgb: front
   #   left_wrist_0_rgb: wrist
+  # 下面两项解析器尚无消费者，写了会被 resolve 直接报错 (unsupported_override)——
+  # 等对应的检查/step 落地后再启用，不做静默忽略。
   # accept_fps_mismatch: true  # 显式接受 数据 fps 与 模型/机器人 频率差异
   # gripper_flip: true         # 显式接受夹爪 convention 翻转
   # default_task: "pick up the block"  # 语言兜底 (数据/部署无 task 时使用)

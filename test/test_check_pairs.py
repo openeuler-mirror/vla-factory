@@ -41,7 +41,7 @@ from vla_factory.assembly.resolver.errors import (
     NORM_STATS_INSUFFICIENT,
     STATE_DIM_INCOMPATIBLE,
 )
-from vla_factory.assembly.resolver.resolver import (
+from vla_factory.assembly.resolver.compatibility import (
     _check_action_dim,
     _check_camera_slots,
     _check_control_mode,
@@ -97,8 +97,8 @@ class TestGoldenRealData:
         examples/*.yaml) — this is the resolve shape every real recipe
         currently exercises."""
         assembly = resolve_assembly(schema, norm_stats, self._metadata("act"))
-        assert assembly.canonical_interface.action_dim == 8
-        assert assembly.canonical_interface.state_dim == 6
+        assert assembly.model_io_spec.action_dim == 8
+        assert assembly.model_io_spec.state_dim == 6
 
     def test_pi0_no_robot_succeeds_and_exercises_camera_slots(self, schema, norm_stats):
         """pi0 has real vision_slots (unlike ACT's empty tuple), so this is
@@ -106,7 +106,7 @@ class TestGoldenRealData:
         dataset's ``front``/``wrist`` cameras resolve to ``third_person_front``/
         ``wrist`` and each of pi0's three slots gets exactly one candidate."""
         assembly = resolve_assembly(schema, norm_stats, self._metadata("pi0"))
-        assert assembly.canonical_interface.cameras == ("front", "wrist")
+        assert assembly.model_io_spec.cameras == ("front", "wrist")
 
     def test_act_with_lekiwi_robot_fails_on_action_joint_order(self, schema, norm_stats, lekiwi):
         """The state side (real names, ``shoulder_pan.pos`` etc.) uniquely
@@ -146,13 +146,13 @@ class TestDimChecks:
 
     def test_state_dim_flexible_always_passes(self):
         schema = make_schema(state_dim=6)
-        _check_state_dim(schema, ModelMetadata(name="stub", dim_policy="flexible"), {})
+        _check_state_dim(schema, ModelMetadata(name="stub", dim_policy="flexible"))
 
     def test_state_dim_fixed_mismatch_raises(self):
         schema = make_schema(state_dim=6)
         meta = ModelMetadata(name="stub", dim_policy="fixed", dim_policy_max=8)
         with pytest.raises(ResolutionError) as exc:
-            _check_state_dim(schema, meta, {})
+            _check_state_dim(schema, meta)
         assert exc.value.code == STATE_DIM_INCOMPATIBLE
         assert exc.value.params == {
             "field": "state", "data_dim": 6, "limit": 8, "limit_source": "metadata.dim_policy_max",
@@ -161,30 +161,20 @@ class TestDimChecks:
     def test_state_dim_padded_to_max_allows_smaller(self):
         schema = make_schema(state_dim=6)
         meta = ModelMetadata(name="stub", dim_policy="padded_to_max", dim_policy_max=32)
-        _check_state_dim(schema, meta, {})  # must not raise — 6 <= 32
+        _check_state_dim(schema, meta)  # must not raise — 6 <= 32
 
     def test_state_dim_padded_to_max_rejects_larger(self):
         schema = make_schema(state_dim=40)
         meta = ModelMetadata(name="stub", dim_policy="padded_to_max", dim_policy_max=32)
         with pytest.raises(ResolutionError) as exc:
-            _check_state_dim(schema, meta, {})
+            _check_state_dim(schema, meta)
         assert exc.value.code == STATE_DIM_INCOMPATIBLE
-
-    def test_state_dim_base_contract_refinement_is_authoritative(self):
-        """A checkpoint's own reported state_dim overrides the family's
-        dim_policy_max (Materialize already prefers it; Check Pairs must too,
-        or the two stages could disagree)."""
-        schema = make_schema(state_dim=10)
-        meta = ModelMetadata(name="stub", dim_policy="padded_to_max", dim_policy_max=32)
-        with pytest.raises(ResolutionError) as exc:
-            _check_state_dim(schema, meta, {"state_dim_from_contract": 8})
-        assert exc.value.params["limit_source"] == "base_contract.state_dim"
 
     def test_action_dim_model_cap_exceeded(self):
         schema = make_schema(action_dim=40)
         meta = ModelMetadata(name="stub", dim_policy="padded_to_max", dim_policy_max=32)
         with pytest.raises(ResolutionError) as exc:
-            _check_action_dim(schema, meta, {"action_dim": 32}, None)
+            _check_action_dim(schema, meta, None)
         assert exc.value.code == ACTION_DIM_INCOMPATIBLE
         assert exc.value.params["limit_source"] == "metadata"
 
@@ -195,7 +185,7 @@ class TestDimChecks:
         meta = ModelMetadata(name="stub", dim_policy="flexible")
         robot = RobotProfile(name="tiny", joints=JointGroup(names=("j1", "j2", "j3")))
         with pytest.raises(ResolutionError) as exc:
-            _check_action_dim(schema, meta, {}, robot)
+            _check_action_dim(schema, meta, robot)
         assert exc.value.code == ACTION_DIM_INCOMPATIBLE
         assert exc.value.params["limit_source"] == "robot.joints"
 
@@ -206,7 +196,7 @@ class TestDimChecks:
         schema = make_schema(action_dim=6)
         meta = ModelMetadata(name="stub", dim_policy="flexible")
         robot = RobotProfile(name="lekiwi_like", joints=JointGroup(names=tuple(f"j{i}" for i in range(9))))
-        _check_action_dim(schema, meta, {}, robot)  # must not raise
+        _check_action_dim(schema, meta, robot)  # must not raise
 
 
 # ── Camera slots ───────────────────────────────────────────────────
@@ -319,7 +309,7 @@ class TestNormStats:
     def test_mean_std_satisfied_passes(self):
         schema = make_schema(action_dim=4)
         _check_norm_stats(schema, _stats(mean=[0.0] * 4, std=[1.0] * 4),
-                           ModelMetadata(name="stub", vector_normalization="mean_std"))
+                          ModelMetadata(name="stub", vector_normalization="mean_std"))
 
     def test_mean_std_missing_raises(self):
         schema = make_schema(action_dim=4)

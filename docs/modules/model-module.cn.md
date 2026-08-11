@@ -5,14 +5,14 @@
 
 ## 0. 职责
 
-模型抽象模块隔离上游模型实现差异，让训练和推理只依赖最小协议。它持有 `VLAModel` 接口、`Observation` 规范类型、`ModelMetadata` / `BaseContract`，以及模型注册表与上游模型的薄 adapter。模型维度的描述（接口能力、默认预处理、相机槽位、推理步数等）随模型自身的 `ModelMetadata` 声明发布：具名字段是事实、不可在 recipe 里修改，`params` 是默认超参、可被 recipe `model.config` 覆盖。
+模型抽象模块隔离上游模型实现差异，让训练和推理只依赖最小协议。它持有 `VLAModel` 接口、`Observation` 规范类型、`ModelMetadata`，以及模型注册表与上游模型的薄 adapter。模型接口（默认预处理、相机槽位、维度与推理步数等）只由 `ModelMetadata` 声明：具名字段是事实、不可在 recipe 里修改，`params` 是默认超参、可被 recipe `model.config` 覆盖。
 
 ## 1. 核心对象
 
 - `VLAModel` 协议（`model/interfaces/`）：`compute_loss(observation, actions, ...)` 与 `predict_actions(observation, ...)`；PyTorch 模型另实现 `parameters()` / `named_parameters()` / `train()` / `to()`。
 - `Observation`：跨维度共享的规范样本类型（归属本模块，被 composition / training / inference 共同消费）。
 - `ModelMetadata`：模型族静态能力描述（视觉槽位、维度策略、动作 horizon、normalization、可训练组件、微调方式、install_hint 等）。
-- `BaseContract`：具体 checkpoint / 模型实例自述的输入槽位、维度、时序事实。
+- checkpoint 可选一致性检查：读取外部 checkpoint 的 `config.json`，只验证其冗余形状信息是否与 `ModelMetadata` 相符，不参与事实解析。
 - 注册表：`@register_vla` 装饰器，`get_entry(name)` lazy import `model/registry/entries/*`。
 - Thin Adapter：把 `Observation` 与上游模型 batch 互转，不复制上游模型代码。
 
@@ -21,7 +21,7 @@
 TODO，后续补充：
 
 - `VLAModel` 协议的完整方法签名与 backend 扩展（PyTorch / Jax）。
-- `ModelMetadata` 字段全集与校验；`BaseContract` 合并规则（实例事实优先、不超 ModelMetadata 边界）。
+- `ModelMetadata` 字段全集与校验；checkpoint 格式适配与可选一致性检查。
 - registry 的 lazy import、导入失败显式报错、optional dependency 延迟导入边界。
 - checkpoint 加载策略（wrapper 与上游 key prefix 差异）。
 - 新增模型 entry 的脚手架与 contract test。
@@ -32,30 +32,29 @@ TODO：新增上游模型 adapter 的标准步骤；不得根据数据集名/机
 
 ## 4. 模型描述（目标设计）
 
-> **状态：已实现（阶段1）。** 本章对齐架构 §4.1.2（ModelMetadata 与
-> BaseContract）与 §3.5 的 `inspect` 能力，体例同
+> **状态：已实现。** 本章对齐架构 §4.1.2（ModelMetadata）与 §3.5 的
+> `inspect` 能力，体例同
 > [数据模块设计 §8](data-module.cn.md#8-数据集描述目标设计)。
 > 第一版字段表已落地（act / pi0 / pi05 三个 entry 已声明，profile 中重复
 > 的事实已收敛到 ModelMetadata）。
 
-### 4.1 归属：一份声明两个半区 + 实例实测，一个事实一个来源
+### 4.1 归属：一份声明两个半区，一个事实一个来源
 
-与数据维度"全实测"不同，模型维度天然是「声明 × 实测」两层——语义与
-策略只能随模型族声明，实例事实由 checkpoint 自述。字段先分归属再谈
-内容：
+与数据维度「全实测」不同，模型接口必须在加载 checkpoint 之前就可解析，
+因此由模型族声明完整给出。checkpoint 可以来自本地目录、权重文件旁的
+`config.json` 或外部仓库；路径和权重内容是实例选择，不是新的接口事实层。
 
 | 载体 | 性质 | 谁能改 | 拥有的事实 |
 |---|---|---|---|
-| `ModelMetadata` **具名字段**（registry entry 静态声明） | 每**模型族**一份，随代码发布 | 只能改模型声明本身；recipe 不可覆盖 | 上游 `config.json` 表达不了的语义与策略：槽位接受什么语义、维度策略、归一化方法、图像值域、缺槽位策略、控制模式偏好、微调挂载点 |
+| `ModelMetadata` **具名字段**（registry entry 静态声明） | 每**模型族**一份，随代码发布 | 只能改模型声明本身；recipe 不可覆盖 | 完整接口事实：视觉槽位与尺寸、维度策略、action horizon、归一化方法、图像值域、缺槽位策略、控制模式偏好、微调挂载点 |
 | `ModelMetadata.params`（同一份声明里的 dict） | 每模型族的运行**默认值** | recipe `model.config` 逐 run 覆盖 | 该模型自己的上游超参（层数、宽度、dropout、推理步数、compile 模式）与默认 transform 步骤清单 |
-| `BaseContract`（读 checkpoint `config.json`） | 每**实例**一份，运行时实测 | 不可写，来自 checkpoint | checkpoint 能自述的事实：实际存在的视觉槽位及分辨率、实际 state/action 维度、model_type、checkpoint 路径 |
 
 **一个模型 = 一个 entry 文件。** 事实与默认值同处一份声明，模型作者不需要先判断「这个键算事实还是算默认值」再决定写进哪个文件——**容器即属性**：框架级事实有具名字段和类型，其余一律丢进 `params`。（早期版本把默认值放在独立的 `recipe/model/*.yaml`，那让扩展一个模型要写两个文件，还造成 model 叶子层反向依赖用户表达层，已取消。）
 
-合并规则沿用架构 §4.1.2（resolver 的 Materialize 阶段已实现
-action_dim 一例）：**实例事实在声明能力边界内优先；越界即
-`METADATA_CONTRACT_CONFLICT`；每项事实记来源**（`metadata` /
-`base_contract`），inspect 与 `resolve --explain` 按来源展示。
+不存在 metadata 与 checkpoint 的合并优先级：resolver、ModelIOSpec、Mapping
+和 TransformPipelinePlan 都只读 `ModelMetadata`。`checkpoint_validation.py`
+可以在加载权重前对可读取的 `config.json` 做一致性检查；读取不到时跳过，读到
+矛盾时失败，但无论哪种情况都不会把 checkpoint 值写回模型接口。
 
 两条归属纪律：
 
@@ -63,9 +62,9 @@ action_dim 一例）：**实例事实在声明能力边界内优先；越界即
   transform 步骤配置不再重复它（image normalization、图像值域、
   归一化方法、pad 目标都已上提）——step 从 `ctx.metadata` 读取，
   且步骤配置里再出现该键即报错，不是覆盖。组合解析层的方向是从声明
-  推导 TransformPipelineSpec，届时步骤清单本身也不再需要声明。
-- **实例身份不进族声明。** checkpoint 引用由 recipe `model.path` 选定、
-  由 `BaseContract.repo_or_path` 记录；族声明里不写 `base_checkpoint`。
+  推导 TransformPipelinePlan，届时步骤清单本身也不再需要声明。
+- **实例身份不进族声明。** checkpoint 引用由 recipe `model.path` 选定；同一
+  模型族的不同外部 checkpoint 共用一个 entry，族声明里不写 `base_checkpoint`。
 
 ### 4.2 字段准入原则
 
@@ -92,8 +91,8 @@ transform 规划、训练/推理适配）才进第一版。声明侧字段"可�
 
 `semantic_accepts` 的取值域**就是**数据侧 `semantic` 受控词表（一处
 定义、两处引用），允许泛化值（`third_person` 接受任意第三人称视角）。
-BaseContract 实测面：槽位实际存在性 + 分辨率（`camera_roles` 现在
-就在读 config.json 的 role + shape），实测槽位必须落在声明 slots 内。
+若 checkpoint `config.json` 能报告 role + shape，可选校验会检查必需槽位、
+额外槽位、通道数和分辨率是否与本表一致；这些观测值不参与 CameraMapping。
 
 **language —— 指令契约**
 
@@ -142,7 +141,7 @@ tokenizer 随模型权重走（上游对象自带），不设 `tokenizer_ref`。
 | 字段/块 | 原因 |
 |---|---|
 | `identity.family` | 信息性，无消费方 |
-| `identity.base_checkpoint` / fingerprint / `schema_version` | 实例身份归 BaseContract；校验与版本机制同数据集侧一并删除 |
+| `identity.base_checkpoint` / fingerprint / `schema_version` | checkpoint 路径归 recipe `model.path`；同族 checkpoint 不应复制接口声明，当前也没有版本迁移消费方 |
 | `augmentation_trained_with`、`trained_languages` | 信息性；增广需求已有 `requires_augmentation` |
 | `temporal.latency_assumption_s` | 无消费方 |
 | `finetune.default_strategy`、`precision` | 弱消费（recipe 缺省提示 / 训练参数校验），按需准入 |
@@ -181,7 +180,7 @@ tokenizer 随模型权重走（上游对象自带），不设 `tokenizer_ref`。
    `dropout`、`paligemma_variant`、`pytorch_compile_mode`、`num_inference_steps`、
    `transforms`。
 
-第三类是 checkpoint 能自述的实例事实 → `BaseContract`，不写死在声明里。
+checkpoint 能自述的同名字段只是可选校验输入，不构成第三类事实来源。
 
 两个集合**不相交**：解析器不消费 `dim_model`，用户怎么调都不影响组合是否成立；
 反过来事实被逐 run 改会让 `ResolvedAssembly` 与实际运行的模型对不上。

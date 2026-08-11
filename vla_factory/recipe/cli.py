@@ -13,6 +13,90 @@ import logging
 from pathlib import Path
 import sys
 
+from vla_factory.assembly.resolver import ResolutionError
+from vla_factory.assembly.resolver.mappings import validate_camera_override
+from vla_factory.model.checkpoint_validation import (
+    CheckpointCompatibilityError,
+    validate_checkpoint_if_available,
+)
+from vla_factory.model.registry import list_entries
+from vla_factory.recipe.recipe import get_camera_mapping
+
+
+def _describe_model_config(recipe, schema=None) -> str:
+    """Describe model metadata, checkpoint status, and recipe camera mapping.
+
+    Camera override validation stays in the assembly layer so this report and
+    ``resolve_assembly`` cannot disagree about dynamic model slots.
+    """
+    entries = list_entries()
+    metadata = entries.get(recipe.model_name)
+    if metadata is None:
+        return f"Model:   {recipe.model_name} (not registered; known: {sorted(entries)})"
+
+    capabilities = [metadata.backend, metadata.action_head_type]
+    if metadata.training_paradigm == "pretrained_finetune":
+        capabilities.append("finetune-only")
+    lines = [
+        f"Model:   {recipe.model_name} (" + " · ".join(capabilities) + ")",
+        f"Checkpoint: {recipe.model_path or '(not set)'}",
+        f"Action:  dim={metadata.action_dim or 'from data'} "
+        f"horizon={metadata.action_horizon or 'from recipe'} "
+        f"policy={metadata.dim_policy}",
+        "ModelMetadata vision slots:",
+    ]
+    for slot in metadata.vision_slots:
+        resolution = "x".join(str(v) for v in slot.resolution) if slot.resolution else "?"
+        lines.append(f"  {slot.name:20s} ({slot.channels}x{resolution})")
+    if not metadata.vision_slots:
+        lines.append("  (dynamic; follows dataset)")
+
+    if recipe.model_path:
+        try:
+            check = validate_checkpoint_if_available(recipe.model_path, metadata)
+            if check["status"] == "compatible":
+                lines.append("Checkpoint check: compatible")
+            else:
+                lines.append(f"Checkpoint check: unavailable — {check['detail']}")
+        except CheckpointCompatibilityError as exc:
+            lines.append(f"Checkpoint check: incompatible — {'; '.join(exc.issues)}")
+
+    dataset_cameras = list(schema.cameras) if schema is not None else []
+    if schema is not None:
+        lines.append(f"Dataset cameras: {dataset_cameras or '(none)'}")
+
+    camera_mapping = get_camera_mapping(recipe)
+    if camera_mapping is not None:
+        lines.append("camera_mapping:")
+        lines.extend(
+            f"  {role:20s} <- {camera}"
+            for role, camera in camera_mapping.items()
+        )
+        if metadata.vision_slots:
+            lines.extend(
+                f"  {slot.name:20s} <- <EMPTY>"
+                for slot in metadata.vision_slots
+                if slot.name not in camera_mapping
+            )
+        if schema is None:
+            lines.append("WARNING: dataset unavailable; camera names were not validated.")
+        else:
+            try:
+                validate_camera_override(camera_mapping, schema, metadata)
+            except ResolutionError as exc:
+                lines.append(f"ERROR: {exc.path}: {exc.params}")
+            unused = [camera for camera in dataset_cameras if camera not in camera_mapping.values()]
+            if unused:
+                lines.append(f"WARNING: dataset cameras unused: {unused}")
+        if camera_mapping:
+            pairs = ", ".join(
+                f"{camera}->{role}" for role, camera in camera_mapping.items()
+            )
+            lines.append(
+                f"WARNING: VLA models are sensitive to view semantics — verify {pairs}."
+            )
+    return "\n".join(lines)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -227,18 +311,17 @@ def main():
 
     elif args.command == "list":
         if args.config:
-            # Describe one recipe: model contract (base cameras, action_dim) +
-            # camera_mapping validation against the base + dataset cameras.
+            # Describe one recipe: authoritative model metadata, optional
+            # checkpoint consistency, and camera mapping.
             from pathlib import Path as _Path
             from vla_factory.recipe.parser import parse_recipe
             from vla_factory.recipe.defaults import resolve_recipe
-            from vla_factory.model.base_contract import describe_model_config
 
             recipe = resolve_recipe(parse_recipe(args.config))
 
             # Best-effort: read the dataset schema (lightweight, meta/info.json
             # only) for the camera diff. Skip silently if the dataset isn't set
-            # or unreadable — the base-contract half still prints.
+            # or unreadable — the model-metadata half still prints.
             schema = None
             data_path = recipe.data.source.path
             if data_path:
@@ -249,9 +332,8 @@ def main():
                 except Exception as e:
                     print(f"(skipped dataset schema read: {e})")
 
-            print(describe_model_config(recipe, schema))
+            print(_describe_model_config(recipe, schema))
         else:
-            from vla_factory.model.registry import list_entries
             entries = list_entries()
             if not entries:
                 print("No models registered.")
@@ -510,7 +592,8 @@ def _run_resolve(config_path: str) -> None:
     """``vlafactory-cli resolve --config <recipe>`` dry-run handler.
 
     Parses the recipe, gathers the three descriptions (data schema/norm_stats,
-    model metadata, optional base contract + robot profile), runs
+    model metadata, optional robot profile), optionally checks checkpoint
+    consistency, runs
     ``resolve_assembly`` and prints either a summary or a structured
     ``ResolutionError``. Runs without GPU and without optional model extras —
     it never triggers the model factory.
@@ -519,11 +602,9 @@ def _run_resolve(config_path: str) -> None:
 
     from vla_factory.recipe.parser import parse_recipe
     from vla_factory.recipe.defaults import resolve_recipe
-    from vla_factory.model.registry import list_entries
     from vla_factory.assembly.resolver import (
         make_error,
         resolve_assembly,
-        ResolutionError,
         UNKNOWN_MODEL,
         UNKNOWN_ROBOT,
     )
@@ -541,14 +622,15 @@ def _run_resolve(config_path: str) -> None:
         _print_resolution_error(err)
         sys.exit(1)
 
-    # ── Optional base contract (from the checkpoint's config.json) ──
-    base_contract = None
+    # ── Optional checkpoint consistency check ──
     if recipe.model_path:
         try:
-            from vla_factory.model.base_contract import load_base_contract
-            base_contract = load_base_contract(recipe.model_path)
-        except Exception as e:  # unreadable / offline — keep going without it
-            print(f"(skipped base contract read: {e})")
+            checkpoint_check = validate_checkpoint_if_available(recipe.model_path, metadata)
+        except CheckpointCompatibilityError as e:
+            print(f"Checkpoint compatibility failed: {e}")
+            sys.exit(1)
+        if checkpoint_check["status"] == "unavailable":
+            print(f"(skipped checkpoint compatibility check: {checkpoint_check['detail']})")
 
     # ── Optional robot profile ──
     robot_profile = None
@@ -592,36 +674,90 @@ def _run_resolve(config_path: str) -> None:
             schema=schema,
             norm_stats=norm_stats,
             metadata=metadata,
-            base_contract=base_contract,
             robot_profile=robot_profile,
             overrides=overrides or None,
+            # Tunables after resolve_recipe() merged the model's declared
+            # defaults under this run's model.config — the transform step list
+            # the resolver compiles comes from here, not from the declaration
+            # alone, so a per-run override of it is honoured.
+            model_config=recipe.model_config,
         )
     except ResolutionError as e:
         _print_resolution_error(e)
         sys.exit(1)
 
-    _print_assembly_summary(assembly)
+    _print_assembly_summary(assembly, checkpoint_path=recipe.model_path)
 
 
-def _print_assembly_summary(assembly) -> None:
-    ci = assembly.canonical_interface
+def _camera_mapping_summary(mapping) -> str:
+    if not mapping.resolved:
+        return "unresolved"
+    total = len(mapping.entries)
+    padded = [e["model_slot"] for e in mapping.entries if e.get("data_source") is None]
+    overridden = sum(1 for e in mapping.entries if e.get("source") == "override")
+    parts = [f"{total - len(padded)}/{total} slots mapped"]
+    if overridden:
+        parts.append(f"{overridden} via override")
+    if padded:
+        parts.append(f"padding: {', '.join(padded)}")
+    return "; ".join(parts)
+
+
+def _vector_mapping_summary(mapping) -> str:
+    if not mapping.resolved:
+        return "unresolved"
+    padded = sum(1 for e in mapping.entries if e.get("padded"))
+    total = len(mapping.entries)
+    return f"{total - padded}/{total} dims from data" + (f", {padded} padded" if padded else "")
+
+
+def _language_mapping_summary(mapping) -> str:
+    if not mapping.resolved:
+        return "unresolved"
+    if not mapping.entries:
+        return "not required"
+    entry = mapping.entries[0]
+    source = entry.get("source")
+    if source == "inferred":
+        return f"data field {entry.get('data_field')!r}"
+    if source == "override":
+        return f"default_task {entry.get('fallback')!r} (override)"
+    return "no task text and no default_task — empty prompt"
+
+
+def _plan_summary(plan) -> str:
+    if not plan.resolved:
+        return "unresolved"
+    if not plan.calls:
+        return "no steps"
+    count = len(plan.calls)
+    return (f"{count} step{'s' if count > 1 else ''}: "
+            + " → ".join(c.type for c in plan.calls))
+
+
+def _print_assembly_summary(assembly, checkpoint_path: str | None = None) -> None:
+    ci = assembly.model_io_spec
     print("Resolved assembly:")
     print(f"  model:      {assembly.metadata_ref.get('name')}")
-    contract = assembly.contract_ref
-    print(f"  base:       {contract.get('repo_or_path') if contract else '(none)'}")
+    print(f"  checkpoint: {checkpoint_path or '(none)'}")
     print(f"  robot:      {assembly.robot_ref.get('name') if assembly.robot_ref else '(none)'}")
     print(f"  cameras:    {list(ci.cameras) or '(none)'}")
     print(f"  action:     dim={ci.action_dim} horizon={ci.action_horizon}")
     print(f"  state:      dim={ci.state_dim}")
     print(f"  language:   {'required' if ci.requires_language else 'not required'}")
-    mapped = sum(
-        1 for m in (
-            assembly.camera_mapping, assembly.state_mapping,
-            assembly.action_mapping, assembly.language_mapping,
-            assembly.joint_mapping,
-        ) if m.resolved
-    )
-    print(f"  mappings:   {mapped}/5 resolved (phase-0 skeleton)")
+    print("  mappings:")
+    print(f"    camera:   {_camera_mapping_summary(assembly.camera_mapping)}")
+    print(f"    state:    {_vector_mapping_summary(assembly.state_mapping)}")
+    print(f"    action:   {_vector_mapping_summary(assembly.action_mapping)}")
+    print(f"    language: {_language_mapping_summary(assembly.language_mapping)}")
+    joint = assembly.joint_mapping
+    print(f"    joint:    {f'{len(joint.entries)} joints' if joint.resolved else 'unresolved (no robot declared)'}")
+    print("  pipelines:")
+    print(f"    data_to_model:  {_plan_summary(assembly.data_to_model)}")
+    print(f"    model_to_robot: {_plan_summary(assembly.model_to_robot)}")
+    robot_to_model = assembly.robot_to_model
+    print(f"    robot_to_model: {_plan_summary(robot_to_model)}"
+          + ("" if robot_to_model.resolved else " (needs the joint-reorder step)"))
 
 
 def _print_resolution_error(err: ResolutionError) -> None:
@@ -703,8 +839,6 @@ def _inspect_model(
 ) -> None:
     from dataclasses import asdict as _asdict
 
-    from vla_factory.model.registry import list_entries
-
     entries = list_entries()
     meta = entries.get(name)
     if meta is None:
@@ -716,18 +850,16 @@ def _inspect_model(
     # may override through model.config.
     params = meta_dict.pop("params", {}) or {}
     facts = {"metadata": meta_dict}
-    source = "metadata"
     if path:
         try:
-            from vla_factory.model.base_contract import load_base_contract
-            contract = load_base_contract(path)
-            if contract is not None:
-                facts["base_contract"] = _asdict(contract)
-                source = "metadata + base_contract"
-        except Exception as e:
-            facts["base_contract_error"] = str(e)
+            facts["checkpoint_check"] = validate_checkpoint_if_available(path, meta)
+        except CheckpointCompatibilityError as e:
+            facts["checkpoint_check"] = {
+                "status": "incompatible",
+                "issues": list(e.issues),
+            }
     facts["tunables"] = _tunables_view(params, overrides)
-    _emit("model", source, facts, as_json)
+    _emit("model", "metadata", facts, as_json)
 
 
 def _inspect_robot(name: str, as_json: bool) -> None:

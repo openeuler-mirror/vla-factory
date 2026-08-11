@@ -34,7 +34,7 @@ import logging
 
 import numpy as np
 
-from .base import TransformStep
+from .base import PlanContext, TransformStep
 from .registry import TransformRegistry
 
 logger = logging.getLogger(__name__)
@@ -139,20 +139,21 @@ class TaskTokenize(TransformStep):
         return sample
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "TaskTokenize":
-        repo = cfg.get("tokenizer_repo")
-        if repo is None and ctx is not None:
-            recipe = getattr(ctx, "recipe", None)
-            repo = getattr(recipe, "model_path", None) if recipe else None
-        default_task = cfg.get("default_task")
-        if default_task is None and ctx is not None:
-            from vla_factory.recipe.recipe import get_default_task
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict:
+        """Both fallbacks (tokenizer repo, default task) are resolved by the
+        caller into the context, so this stays a pure function of facts.
 
-            recipe = getattr(ctx, "recipe", None)
-            default_task = get_default_task(recipe) if recipe is not None else None
-        return cls(
-            tokenizer_repo=repo,
-            max_length=cfg.get("max_length", 48),
-            default_task=default_task,
-            discrete_state=cfg.get("discrete_state", False),
-        )
+        A key whose value is unknown is left out rather than written as
+        ``None``: a plan states what it knows.
+        """
+        args: dict = {
+            "max_length": int(cfg.get("max_length", 48)),
+            "discrete_state": bool(cfg.get("discrete_state", False)),
+        }
+        repo = cfg.get("tokenizer_repo") or ctx.tokenizer_repo
+        if repo is not None:
+            args["tokenizer_repo"] = repo
+        default_task = cfg.get("default_task") or ctx.default_task
+        if default_task is not None:
+            args["default_task"] = default_task
+        return args

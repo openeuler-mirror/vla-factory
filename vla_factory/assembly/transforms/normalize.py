@@ -12,16 +12,20 @@ own statistics.  **Images** are normalised with ImageNet channel statistics
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from vla_factory.data.manifest import NormStats
-from .base import TransformStep, model_fact
+from .base import PlanContext, TransformStep, model_fact
 from .registry import TransformRegistry
 
 _EPS = 1e-8  # matches lerobot's NormalizationProcessor default
 
 # ModelMetadata.vector_normalization vocabulary → NormalizeVector method name.
-_NORMALIZATION_TO_METHOD = {
+# Public: the composition resolver plans the same mapping when it emits a
+# normalize_vector call, and the table must have one home.
+NORMALIZATION_TO_METHOD = {
     "mean_std": "zscore",
     "quantile": "quantile",
 }
@@ -30,6 +34,17 @@ _NORMALIZATION_TO_METHOD = {
 # DatasetConfig.use_imagenet_stats=True (the default).
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+def _stats_from(ctx) -> NormStats | None:
+    """Statistics behind a runtime context.
+
+    Accepts a ``TransformContext`` (the build path) or a bare ``NormStats``
+    (an inverse built straight off the forward step, which holds its own).
+    """
+    if isinstance(ctx, NormStats):
+        return ctx
+    return getattr(ctx, "norm_stats", None)
 
 
 @TransformRegistry.register("normalize")
@@ -126,6 +141,18 @@ class UnnormalizeActionStep(TransformStep):
     def __init__(self, stats: NormStats) -> None:
         self._stats = stats
 
+    @classmethod
+    def from_call(cls, args: dict, ctx=None) -> "UnnormalizeActionStep":
+        """``stats_ref`` names the statistics; the object itself comes from the
+        runtime context, never from the serialized call."""
+        stats = _stats_from(ctx)
+        if stats is None:
+            raise ValueError(
+                "UnnormalizeActionStep needs dataset statistics; none were provided by the "
+                "transform context."
+            )
+        return cls(stats)
+
     def __call__(self, sample: dict) -> dict:
         actions = sample.get("actions")
         if actions is None or self._stats.action is None:
@@ -160,19 +187,41 @@ class NormalizeVector(TransformStep):
         self.method = method
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "NormalizeVector | None":
-        stats = getattr(ctx, "norm_stats", None)
-        if stats is None:
-            return None
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict | None:
+        if not ctx.has_norm_stats:
+            return None                 # nothing to normalize against
         # Vector normalization is a model fact, not a per-run knob.
         norm = model_fact(cfg, "method", ctx, "vector_normalization",
                           "normalize_vector.method")
-        method = _NORMALIZATION_TO_METHOD[norm]
-        return cls(
-            stats=stats,
-            fields=tuple(cfg.get("fields", ("state", "actions"))),
-            method=method,
-        )
+        if norm not in NORMALIZATION_TO_METHOD:
+            raise ValueError(
+                f"normalize_vector cannot be built for vector_normalization="
+                f"{norm!r}: no NormalizeVector method implements it "
+                f"(available: {sorted(NORMALIZATION_TO_METHOD)})."
+            )
+        return {
+            "fields": list(cfg.get("fields", ("state", "actions"))),
+            "method": NORMALIZATION_TO_METHOD[norm],
+            # Statistics are referenced, never inlined: a call has to stay
+            # serializable, and ``from_call`` takes the real object from the
+            # runtime context.
+            "stats_ref": "norm_stats",
+        }
+
+    @classmethod
+    def from_call(cls, args: dict, ctx=None) -> "NormalizeVector":
+        stats = _stats_from(ctx)
+        if stats is None:
+            raise ValueError(
+                "normalize_vector needs dataset statistics; none were provided "
+                "by the transform context."
+            )
+        return cls(stats=stats, fields=tuple(args.get("fields", ())),
+                   method=args["method"])
+
+    def call_args(self) -> dict:
+        return {"fields": list(self.fields), "method": self.method,
+                "stats_ref": "norm_stats"}
 
     def _normalize(self, x, stats, field_name: str):
         if self.method == "quantile":
@@ -191,12 +240,32 @@ class NormalizeVector(TransformStep):
             sample["actions"] = self._normalize(sample["actions"], self._stats.action, "actions")
         return sample
 
-    def inverse_for_output(self, ctx=None) -> TransformStep | None:
-        if "actions" not in self.fields or self._stats.action is None:
+    @classmethod
+    def inverse_call(cls, args: dict, ctx: PlanContext) -> tuple[str, dict] | None:
+        """Normalization's inverse is the matching denormalization — chosen by
+        method, never by name similarity."""
+        if "actions" not in (args.get("fields") or ()):
             return None
-        if self.method == "quantile":
-            return UnnormalizeActionQuantileStep(self._stats)
-        return UnnormalizeActionStep(self._stats)
+        if not ctx.has_action_stats:
+            return None
+        name = ("unnormalize_action_quantile" if args.get("method") == "quantile"
+                else "unnormalize_action")
+        return name, {"stats_ref": "norm_stats"}
+
+    def inverse_for_output(self, ctx=None) -> TransformStep | None:
+        # The instance knows whether it holds action statistics even when no
+        # context is supplied, so it answers that half itself and defers the
+        # pairing to inverse_call.
+        if self._stats.action is None:
+            return None
+        plan = PlanContext.of(ctx)
+        if not plan.has_action_stats:
+            plan = replace(plan, has_action_stats=True)
+        inverse = type(self).inverse_call(self.call_args(), plan)
+        if inverse is None:
+            return None
+        name, args = inverse
+        return TransformRegistry.get(name).from_call(args, self._stats)
 
 
 # openpi's quantile-normalisation epsilon (transforms.py _normalize_quantile).
@@ -229,6 +298,18 @@ class UnnormalizeActionQuantileStep(TransformStep):
 
     def __init__(self, stats: NormStats) -> None:
         self._stats = stats
+
+    @classmethod
+    def from_call(cls, args: dict, ctx=None) -> "UnnormalizeActionQuantileStep":
+        """``stats_ref`` names the statistics; the object itself comes from the
+        runtime context, never from the serialized call."""
+        stats = _stats_from(ctx)
+        if stats is None:
+            raise ValueError(
+                "UnnormalizeActionQuantileStep needs dataset statistics; none were provided by the "
+                "transform context."
+            )
+        return cls(stats)
 
     def __call__(self, sample: dict) -> dict:
         actions = sample.get("actions")

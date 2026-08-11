@@ -132,7 +132,7 @@ master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
-| `test_base_contract.py` | 7 | checkpoint config.json 解析、合法/非法 camera_mapping、缺失/多余相机、无 contract 时告警 |
+| `test_checkpoint_validation.py` | 12 | checkpoint config.json 可选解析、与 ModelMetadata 一致性检查、基于 metadata 的相机映射 |
 | `test_act_model.py` | 15 | ACT lerobot adapter：协议合规、注册集成、observation_to、factory wrapper（compute_loss/predict/多相机/save-load）、profile 默认值 & recipe 覆盖 |
 | `test_pi0_model.py` | 4 | pi0 adapter（fake openpi）：metadata、camera_mapping 翻译、loss/predict 委托、空相机占位 |
 | `test_pi05_model.py` | 13 | pi05 与 pi0 的差异：factory variant 构建、discrete-state prompt、task 回退链、quantile normalize/unnormalize roundtrip |

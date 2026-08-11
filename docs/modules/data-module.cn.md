@@ -631,26 +631,7 @@ pipeline 之间的图像标准。
 5. 如影响模型输出空间，实现 `inverse_for_output(ctx)`。
 6. 在 model profile 或 recipe 的 `model.config.transforms.inputs` 中引用。
 
-如果 step 放在用户项目中，而不是 VLA Factory 内置模块中，需要在 recipe
-的 `transforms.imports` 中声明待导入模块。训练和部署构建 transform pipeline
-前都会先导入这些模块；模块导入时执行
-`@TransformRegistry.register("your_step")`，使自定义 step 进入 registry。
-
-```yaml
-transforms:
-  imports:
-    - my_project.transforms.prompt_tokenizer
-
-model:
-  config:
-    transforms:
-      inputs:
-        - type: image_to_float
-        - type: custom_prompt_tokenizer
-          tokenizer_path: artifacts/tokenizer
-```
-
-自定义 step 仍需遵守 transform 标准：
+新增的 step 仍需遵守 transform 标准：
 
 - 输入和输出都是 flat sample dict。
 - 小参数写在 transform config 中。

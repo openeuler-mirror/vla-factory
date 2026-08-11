@@ -25,18 +25,16 @@ from typing import Any, Callable
 MISSING_INPUT = "missing_input"
 # A description is internally invalid (unknown field, bad enum value, ...).
 INVALID_DESCRIPTION = "invalid_description"
-# ModelMetadata × BaseContract could not be merged (capability boundary breach).
-METADATA_CONTRACT_CONFLICT = "metadata_contract_conflict"
 # The named model is not in the registry.
 UNKNOWN_MODEL = "unknown_model"
 # The named robot profile is not registered.
 UNKNOWN_ROBOT = "unknown_robot"
 
-# ── Check Pairs codes (architecture §7.4 phase 2 / §4.2.2) ────────
-# Six matrix rows only — the phase-2 scope architecture §7.4 names by name
-# (dimension, camera, stats, control mode, field order). The other five matrix
-# rows (language, gripper, rotation, frequency, safety) are deliberately out of
-# scope; see docs/plans/phase2-resolution-diagnostics.cn.md.
+# ── Check Pairs codes (architecture §4.2.2) ───────────────────────
+# Six of the eleven matrix rows: dimension, camera, stats, control mode, field
+# order. The other five (language, gripper, rotation, frequency, safety) are
+# deliberately out of scope; docs/plans/phase2-resolution-diagnostics.cn.md
+# records why.
 
 # Dataset state/action width cannot be reconciled with the model's declared
 # dim_policy, or (action only) exceeds what the robot's joint vector can hold.
@@ -57,6 +55,25 @@ NORM_STATS_INSUFFICIENT = "norm_stats_insufficient"
 JOINT_ORDER_AMBIGUOUS = "joint_order_ambiguous"
 # One or more dataset dim names (after suffix stripping) match no robot joint.
 JOINT_ORDER_MISMATCH = "joint_order_mismatch"
+
+# ── Resolve Mapping / Plan Pipeline codes (architecture §4.2.3) ────
+
+# The width a model declares for a vector is not the width its own declared
+# transform steps produce — a self-inconsistent model entry, caught before the
+# mismatch turns into a shape error deep inside training.
+PIPELINE_WIDTH_MISMATCH = "pipeline_width_mismatch"
+
+# A recipe set a controlled override the resolver has no consumer for. Silently
+# dropping it would let a user believe they had adjusted a relationship the
+# resolver never looked at — the same failure mode the model-config surface
+# guards against by rejecting a declared-but-unread key.
+UNSUPPORTED_OVERRIDE = "unsupported_override"
+
+# A controlled ``assembly.camera_mapping`` override names a model slot the model
+# does not declare, or a camera the dataset does not have. Without this the
+# override would silently degrade to slot padding — the exact silent failure
+# conservative resolution exists to prevent (§1.7).
+CAMERA_MAPPING_INVALID = "camera_mapping_invalid"
 
 
 @dataclass
@@ -111,20 +128,6 @@ def _invalid_description(
         code=INVALID_DESCRIPTION,
         path=path,
         params={"field": field_name, "value": value, "detail": detail},
-    )
-
-
-def _metadata_contract_conflict(
-    path: str, *, field_name: str, metadata_value: Any, contract_value: Any
-) -> ResolutionError:
-    return ResolutionError(
-        code=METADATA_CONTRACT_CONFLICT,
-        path=path,
-        params={
-            "field": field_name,
-            "metadata_value": metadata_value,
-            "contract_value": contract_value,
-        },
     )
 
 
@@ -242,12 +245,47 @@ def _joint_order_mismatch(
     )
 
 
+def _pipeline_width_mismatch(
+    path: str, *, field: str, model_dim: int, model_dim_source: str,
+    pipeline_dim: int,
+) -> ResolutionError:
+    return ResolutionError(
+        code=PIPELINE_WIDTH_MISMATCH,
+        path=path,
+        params={
+            "field": field, "model_dim": model_dim,
+            "model_dim_source": model_dim_source, "pipeline_dim": pipeline_dim,
+        },
+    )
+
+
+def _unsupported_override(
+    path: str, *, keys: list[str], supported: list[str]
+) -> ResolutionError:
+    return ResolutionError(
+        code=UNSUPPORTED_OVERRIDE,
+        path=path,
+        params={"keys": keys, "supported": supported},
+    )
+
+
+def _camera_mapping_invalid(
+    path: str, *, field: str, requested: str, known: list[str]
+) -> ResolutionError:
+    """``field`` is ``"slot"`` or ``"camera"`` — which half of the override
+    entry could not be found; ``known`` is the sorted candidate list for it."""
+    return ResolutionError(
+        code=CAMERA_MAPPING_INVALID,
+        path=path,
+        params={"field": field, "requested": requested, "known": known},
+    )
+
+
 # code → constructor. Callers should go through this mapping so the allowed
 # params shape stays coupled to the code.
 FACTORIES: dict[str, Callable[..., ResolutionError]] = {
     MISSING_INPUT: _missing_input,
     INVALID_DESCRIPTION: _invalid_description,
-    METADATA_CONTRACT_CONFLICT: _metadata_contract_conflict,
     UNKNOWN_MODEL: _unknown_model,
     UNKNOWN_ROBOT: _unknown_robot,
     STATE_DIM_INCOMPATIBLE: _state_dim_incompatible,
@@ -258,6 +296,9 @@ FACTORIES: dict[str, Callable[..., ResolutionError]] = {
     NORM_STATS_INSUFFICIENT: _norm_stats_insufficient,
     JOINT_ORDER_AMBIGUOUS: _joint_order_ambiguous,
     JOINT_ORDER_MISMATCH: _joint_order_mismatch,
+    CAMERA_MAPPING_INVALID: _camera_mapping_invalid,
+    PIPELINE_WIDTH_MISMATCH: _pipeline_width_mismatch,
+    UNSUPPORTED_OVERRIDE: _unsupported_override,
 }
 
 

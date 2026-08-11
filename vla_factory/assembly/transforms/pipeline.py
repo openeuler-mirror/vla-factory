@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .base import TransformStep
+from .base import PlanContext, TransformStep
 from .registry import TransformRegistry
 
 
@@ -65,6 +65,28 @@ class TransformContext:
     # The model's ModelMetadata — the single source for model-side transform
     # facts (image range/normalize, vector normalization) per decision D3.
     metadata: Any | None = None
+
+    def plan(self) -> PlanContext:
+        """The fact-only view a step's ``compile_call`` works from.
+
+        Resolving the recipe-shaped fallbacks here (tokenizer repo, default
+        task) is what lets the steps themselves stay free of recipe knowledge —
+        and lets the composition resolver, which has no recipe at all, build the
+        same context out of its own inputs.
+        """
+        from vla_factory.recipe.recipe import get_default_task
+
+        recipe = self.recipe
+        stats = self.norm_stats
+        return PlanContext(
+            metadata=self.metadata,
+            model_action_dim=self.model_action_dim,
+            dataset_action_dim=self.dataset_action_dim,
+            has_norm_stats=stats is not None,
+            has_action_stats=getattr(stats, "action", None) is not None,
+            default_task=get_default_task(recipe) if recipe is not None else None,
+            tokenizer_repo=getattr(recipe, "model_path", None) if recipe else None,
+        )
 
 def build_preprocessor(
     transform_types: Iterable[dict] | None,

@@ -2,17 +2,20 @@
 
 Public surface:
 - ``resolve_assembly`` — deterministic ``data × model × robot`` → ResolvedAssembly
-- ``ResolvedAssembly`` and the serializable spec / mapping types
+- ``ResolvedAssembly`` and the serializable plan / mapping types
 - ``ResolutionError`` + stable error codes
 
-Phase 0 (architecture §7.4): terms & data structures + Load / Materialize /
-Validate + resolve dry-run. Mapping and TransformPipeline derivation lands later.
+Stages: Load → Validate → Check Pairs → Plan Pipeline → Build
+Interface → Resolve Mapping → Emit. ``robot_to_model`` is the one product not
+derivable yet — it needs the joint-reorder step, which has no implementation.
 """
 
 from .errors import (
+    CAMERA_MAPPING_INVALID,
     INVALID_DESCRIPTION,
     MISSING_INPUT,
-    METADATA_CONTRACT_CONFLICT,
+    PIPELINE_WIDTH_MISMATCH,
+    UNSUPPORTED_OVERRIDE,
     ResolutionError,
     UNKNOWN_MODEL,
     UNKNOWN_ROBOT,
@@ -22,21 +25,21 @@ from .resolver import resolve_assembly
 from .types import (
     ActionMapping,
     CameraMapping,
-    CanonicalInterface,
+    ModelIOSpec,
     JointMapping,
     LanguageMapping,
     ResolvedAssembly,
     StateMapping,
-    TransformPipelineSpec,
-    TransformStepSpec,
+    TransformPipelinePlan,
+    TransformStepCall,
 )
 
 __all__ = [
     "resolve_assembly",
     "ResolvedAssembly",
-    "CanonicalInterface",
-    "TransformStepSpec",
-    "TransformPipelineSpec",
+    "ModelIOSpec",
+    "TransformStepCall",
+    "TransformPipelinePlan",
     "CameraMapping",
     "StateMapping",
     "ActionMapping",
@@ -46,7 +49,9 @@ __all__ = [
     "make_error",
     "MISSING_INPUT",
     "INVALID_DESCRIPTION",
-    "METADATA_CONTRACT_CONFLICT",
     "UNKNOWN_MODEL",
     "UNKNOWN_ROBOT",
+    "CAMERA_MAPPING_INVALID",
+    "PIPELINE_WIDTH_MISMATCH",
+    "UNSUPPORTED_OVERRIDE",
 ]

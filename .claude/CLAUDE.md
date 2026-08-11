@@ -46,7 +46,8 @@ YAML recipe → TrainRecipe → model registry (entries/<name>.py)
 The composition layer (`assembly/`) is being introduced: `resolve_assembly()`
 combines the data schema × model metadata × robot profile into a
 `ResolvedAssembly`. Today a `vlafactory-cli resolve` dry-run exercises it; the
-training/inference loops do not yet consume it (architecture §7.4 phase 0).
+training/inference loops do not yet consume the resolved product (migration
+through architecture §7.4 stage 3 is implemented).
 
 ---
 
@@ -73,10 +74,10 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
     type, trainable components), `VLAModel` / `VLAModelPyTorch` /
     `VLAModelJAX` protocols, `Observation`/`ActionSpec`. Framework-agnostic
     contracts that flow between data and model layers.
-  - `base_contract.py` — reads a pretrained checkpoint's `config.json` to
-    learn its real input contract (camera roles, dims, resolution). Source of
-    truth is the checkpoint, never a hard-coded lookup — so new checkpoints
-    work without framework changes. Powers `vlafactory-cli list --config`.
+  - `checkpoint_validation.py` — optionally compares a checkpoint's redundant
+    `config.json` shapes with `ModelMetadata`. It is diagnostic only: it never
+    supplies or overrides resolver/model facts, so checkpoints from different
+    locations remain interchangeable within one model family.
   - `registry/` — `@register_vla(metadata)` decorator + `get_entry()` /
     `list_entries()`. Entries auto-discovered from
     `registry/entries/*.py` on first lookup (see "Extending").
@@ -97,8 +98,7 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
 - **`vla_factory/assembly/`** — composition resolution layer
   (data × model × robot). `resolver/` holds `resolve_assembly()` →
   `ResolvedAssembly`, the serializable mapping/pipeline-spec types and the
-  structured `ResolutionError` (phase-0 skeleton: Load / Materialize / Validate
-  only). `transforms/` holds `TransformPipeline` + `TransformRegistry`
+  structured `ResolutionError`. `transforms/` holds `TransformPipeline` + `TransformRegistry`
   (`@register` steps: `resize_images`, `pad_dimensions`, `image_to_float`,
   `image_layout`, `normalize`, `task_tokenize`, …) — YAML-driven, shared by
   training and inference.
@@ -137,7 +137,7 @@ training/inference loops do not yet consume it (architecture §7.4 phase 0).
   template (every field documented); `act_lekiwi.yaml`, `pi0.yaml`.
 - **`scripts/install.sh`** — uv-based env setup for openpi (see Installing).
 - **`test/`** — pytest: `test_act_model.py`, `test_pi0_model.py`,
-  `test_data_pipeline.py`, `test_base_contract.py`,
+  `test_data_pipeline.py`, `test_checkpoint_validation.py`,
   `test_inference_engine.py`, `test_phase4_engine.py`,
   `test_protocols_registry_config.py`.
 
@@ -219,10 +219,13 @@ raises `RegistryLoadError` (never masked as "not registered") — so optional
 deps must be deferred to *factory-call time* (see `act.py`: lerobot imported
 inside the factory, so `list_entries()` works even without the `[act]` extra).
 
-**Checkpoint contract, not hard-coded roles.** `base_contract.py` reads the
-base checkpoint's `config.json` to learn which cameras/dims it actually
-expects; `camera_mapping` in the recipe is validated against that, not
-against a fixed role set. New checkpoints work without framework changes.
+**ModelMetadata is the only model-interface truth.** Camera roles, dimensions,
+resolution, normalization, and temporal behavior come from the registry entry.
+`checkpoint_validation.py` may compare a checkpoint `config.json` against that
+declaration before loading, but the observed values never flow into resolver
+output. A missing checkpoint config skips the optional check; a contradiction
+fails clearly. Add a registry entry only when the model-family interface differs,
+not merely for another checkpoint location.
 
 **Thin adapters, composition over inheritance.** Each entry holds an
 upstream model instance and translates `vla_factory.Observation` ↔ the

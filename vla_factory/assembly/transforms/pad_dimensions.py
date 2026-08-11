@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import TransformStep, reject_fact_override
+from .base import PlanContext, TransformStep, reject_fact_override
 from .registry import TransformRegistry
 
 
@@ -29,20 +29,40 @@ class PadDimensions(TransformStep):
         self.fields = tuple(fields)
 
     @classmethod
-    def from_config(cls, cfg: dict, ctx=None) -> "PadDimensions | None":
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict | None:
         # The pad target is the model's dimension policy, not a per-run knob:
         # it comes from ModelMetadata (dim_policy_max / action_dim) via the
         # context. Setting it in a recipe would silently contradict the model.
         reject_fact_override(cfg, "target_dim", "dim_policy_max",
                              "pad_dimensions.target_dim")
-        target_dim = int(getattr(ctx, "model_action_dim", 0) or 0) if ctx is not None else 0
+        target_dim = int(ctx.model_action_dim or 0)
         fields = tuple(cfg.get("fields", ("actions",)))
         if target_dim <= 0:
             return None
-        dataset_dim = getattr(ctx, "dataset_action_dim", 0) if ctx is not None else 0
+        dataset_dim = int(ctx.dataset_action_dim or 0)
         if fields == ("actions",) and dataset_dim and target_dim <= dataset_dim:
             return None
-        return cls(target_dim=target_dim, fields=fields)
+        return {"target_dim": target_dim, "fields": list(fields)}
+
+    @classmethod
+    def output_widths(cls, args: dict, input_widths: dict[str, int]) -> dict[str, int]:
+        """Padding widens to ``target_dim`` but never narrows — ``__call__``
+        leaves a field alone once it is already at least that wide."""
+        target = int(args.get("target_dim") or 0)
+        widths = dict(input_widths)
+        for name in args.get("fields") or ():
+            widths[name] = max(widths.get(name, 0), target)
+        return widths
+
+    @classmethod
+    def inverse_call(cls, args: dict, ctx: PlanContext) -> tuple[str, dict] | None:
+        """Padding's inverse is cropping back to the dataset's own width."""
+        if "actions" not in (args.get("fields") or ()):
+            return None
+        target_dim = int(ctx.dataset_action_dim or 0)
+        if target_dim <= 0:
+            return None
+        return "unpad_action", {"target_dim": target_dim}
 
     def __call__(self, sample: dict) -> dict:
         if self.target_dim <= 0:
@@ -59,14 +79,6 @@ class PadDimensions(TransformStep):
                 sample[field] = np.concatenate([value, padding], axis=-1)
 
         return sample
-
-    def inverse_for_output(self, ctx=None) -> TransformStep | None:
-        if "actions" not in self.fields:
-            return None
-        target_dim = getattr(ctx, "dataset_action_dim", 0) if ctx is not None else 0
-        if target_dim <= 0:
-            return None
-        return UnpadAction(target_dim=target_dim)
 
 
 @TransformRegistry.register("unpad_action")

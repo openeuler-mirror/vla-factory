@@ -438,7 +438,7 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
         recipe_action_dim=action_spec.action_dim,
     )
     action_horizon = resolve_action_horizon(
-        metadata=_ACT_METADATA, base_contract=None,
+        metadata=_ACT_METADATA,
         recipe_action_horizon=action_spec.action_horizon,
     )
     # Stateless datasets fall back to the action width (ACT always takes a state

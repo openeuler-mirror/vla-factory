@@ -1,13 +1,34 @@
 """Serializable data structures produced by the composition resolver.
 
-Phase 0 (architecture §7.4) fixes the *terms and data structures*: the
-``TransformStepSpec`` / ``TransformPipelineSpec`` shape, the five field
-``Mapping`` types, the ``CanonicalInterface`` and the ``ResolvedAssembly`` that
-bundles them. The resolver currently fills only the three-description refs, the
-canonical interface and a Materialize-stage merge — the five Mappings and the
-three ``TransformPipelineSpec`` are emitted as empty placeholders (``resolved``
-flag set to ``False``). Their shape is stable so later phases can populate them
-without changing downstream consumers.
+``TransformStepCall`` / ``TransformPipelinePlan`` describe a pipeline as data;
+the five ``Mapping`` types describe the field correspondences; and
+``ResolvedAssembly`` bundles those with the ``ModelIOSpec`` and
+normalized references to the three input descriptions.
+
+Why plain data instead of ready-to-run pipelines
+------------------------------------------------
+A ``TransformStepCall`` is exactly what its name says — one call to a
+registered transform: a step *name* plus the *arguments* to build it with. It
+deliberately does not hold the step class (that lives in ``TransformRegistry``,
+which maps name → ``type[TransformStep]``) and it does not hold a built
+``TransformStep``, because the plan has to cross a process boundary: inference
+rebuilds the pipeline in a *different process* from a checkpoint's
+``inference_metadata/`` (see ``inference/infer.py``), long after the training
+process that resolved it is gone. Live objects — numpy stats, a HF tokenizer,
+cv2 handles — cannot make that trip, and the resolver must also stay runnable
+without the optional model extras installed (architecture §4.2.2).
+
+So this is not an extra layer over "just build the pipeline": the serialized
+name+args form already exists today as ``model.config.transforms.inputs`` in the
+saved recipe. What the resolver adds is that the facts are already baked in —
+pad target, normalize method, and the skip decisions each step's ``from_config``
+would otherwise re-derive — so the consuming side executes instead of deriving
+the same thing a second time (architecture §4.2.6).
+
+The two names mirror the executable pair they are built into::
+
+    TransformStepCall      --instantiate-->  TransformStep
+    TransformPipelinePlan  --instantiate-->  TransformPipeline
 """
 
 from __future__ import annotations
@@ -16,69 +37,66 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# ── Transform pipeline (declarative spec) ─────────────────────────
+# ── Transform pipeline (planned calls, not yet instantiated) ──────
 
 
 @dataclass(frozen=True)
-class TransformStepSpec:
-    """A single declared transform step (serializable).
+class TransformStepCall:
+    """One call to a registered transform: its name plus the arguments to
+    build it with (serializable).
 
     Attributes
     ----------
     type : str
         Registered transform name (resolved by ``TransformRegistry`` downstream).
-    config : dict
-        Step configuration (JSON-serializable).
+    args : dict
+        Constructor arguments (JSON-serializable). Named ``args``, not
+        ``config``, because these are resolved values — ``model.config`` is the
+        recipe's per-run tunable block, and reusing that word here would suggest
+        the same overridability.
     """
 
     type: str
-    config: dict[str, Any] = field(default_factory=dict)
+    args: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "config": dict(self.config)}
+        return {"type": self.type, "args": dict(self.args)}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "TransformStepSpec":
-        return cls(type=d.get("type", ""), config=dict(d.get("config") or {}))
+    def from_dict(cls, d: dict[str, Any]) -> "TransformStepCall":
+        return cls(type=d.get("type", ""), args=dict(d.get("args") or {}))
 
 
 @dataclass(frozen=True)
-class TransformPipelineSpec:
-    """An ordered, declared transform pipeline (not yet instantiated).
+class TransformPipelinePlan:
+    """An ordered, planned transform pipeline (not yet instantiated).
 
     Attributes
     ----------
-    steps : tuple[TransformStepSpec, ...]
-        Steps to apply, in order.
-    risk : str
-        Reliability class of the pipeline: ``none`` | ``lossy`` | ``irreversible``.
-    reversible : bool
-        Whether every step has a precise inverse implemented (architecture
-        §4.2.4 — pipelines never rely on "reverse the list").
+    calls : tuple[TransformStepCall, ...]
+        Calls to make, in order.
     resolved : bool
-        ``False`` means the resolver has not yet planned concrete steps for this
-        path (phase-0 placeholder).
+        Whether the resolver produced a plan for this path. ``False`` means it
+        did not: no step list was declared, or the path is not derivable yet
+        (``robot_to_model``). A resolved plan lists every call that runs, with
+        every argument the resolver can determine — the one it cannot is
+        ``task_tokenize``'s tokenizer repo when a declaration omits it, whose
+        only source is the recipe's ``model.path``.
     """
 
-    steps: tuple[TransformStepSpec, ...] = ()
-    risk: str = "none"
-    reversible: bool = True
+    calls: tuple[TransformStepCall, ...] = ()
     resolved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "steps": [s.to_dict() for s in self.steps],
-            "risk": self.risk,
-            "reversible": self.reversible,
+            "calls": [c.to_dict() for c in self.calls],
             "resolved": self.resolved,
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "TransformPipelineSpec":
+    def from_dict(cls, d: dict[str, Any]) -> "TransformPipelinePlan":
         return cls(
-            steps=tuple(TransformStepSpec.from_dict(s) for s in (d.get("steps") or [])),
-            risk=d.get("risk", "none"),
-            reversible=bool(d.get("reversible", True)),
+            calls=tuple(TransformStepCall.from_dict(c) for c in (d.get("calls") or [])),
             resolved=bool(d.get("resolved", False)),
         )
 
@@ -180,16 +198,20 @@ class JointMapping:
         )
 
 
-# ── Canonical interface (the post-composition fact standard) ──────
+# ── Model IO spec (the post-composition fact standard) ────────────
 
 
 @dataclass(frozen=True)
-class CanonicalInterface:
-    """The final observation/action/language/temporal semantics the three
-    descriptions agree on. Downstream layers read/write against this interface.
+class ModelIOSpec:
+    """What the model takes in and gives out, once the three descriptions have
+    been reconciled — the post-composition fact standard.
 
-    Phase 0 derives it from the merged model description + data schema facts
-    that are unambiguous today; richer derivation lands in later phases.
+    Inputs are the camera keys, the state width and whether a prompt is
+    required; outputs are the action width and horizon. Downstream builds the
+    model against this and feeds it tensors shaped by it.
+
+    Widths are folded through the planned pipeline, so they are the shapes that
+    really arrive, not the ones any single description hoped for.
     """
 
     action_dim: int = 0
@@ -208,7 +230,7 @@ class CanonicalInterface:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CanonicalInterface":
+    def from_dict(cls, d: dict[str, Any]) -> "ModelIOSpec":
         return cls(
             action_dim=int(d.get("action_dim", 0)),
             action_horizon=int(d.get("action_horizon", 0)),
@@ -225,45 +247,42 @@ class CanonicalInterface:
 class ResolvedAssembly:
     """The single product of a successful composition resolution.
 
-    Holds normalized references to the three descriptions, the canonical
-    interface, the five field mappings and the three declared transform
-    pipelines. Fully serializable via :meth:`to_dict` / :meth:`from_dict`.
+    Holds normalized references to the three descriptions, the model IO spec,
+    the five field mappings and the three declared transform pipelines. Fully serializable via :meth:`to_dict` / :meth:`from_dict`.
     """
 
     # ── Three-description refs (serializable snapshots) ──
     schema_ref: dict[str, Any] = field(default_factory=dict)
     norm_stats_ref: dict[str, Any] = field(default_factory=dict)
     metadata_ref: dict[str, Any] = field(default_factory=dict)
-    contract_ref: dict[str, Any] | None = None
     robot_ref: dict[str, Any] | None = None
     # Controlled overrides actually applied (architecture §3.4 — record every
     # field's source). Empty when none were supplied.
     overrides_ref: dict[str, Any] = field(default_factory=dict)
 
-    # ── Canonical interface ──
-    canonical_interface: CanonicalInterface = field(default_factory=CanonicalInterface)
+    # ── Model IO spec ──
+    model_io_spec: ModelIOSpec = field(default_factory=ModelIOSpec)
 
-    # ── Field mappings (placeholders in phase 0) ──
+    # ── Field mappings ──
     camera_mapping: CameraMapping = field(default_factory=CameraMapping)
     state_mapping: StateMapping = field(default_factory=StateMapping)
     action_mapping: ActionMapping = field(default_factory=ActionMapping)
     language_mapping: LanguageMapping = field(default_factory=LanguageMapping)
     joint_mapping: JointMapping = field(default_factory=JointMapping)
 
-    # ── Three declared pipelines (placeholders in phase 0) ──
-    data_to_model: TransformPipelineSpec = field(default_factory=TransformPipelineSpec)
-    robot_to_model: TransformPipelineSpec = field(default_factory=TransformPipelineSpec)
-    model_to_robot: TransformPipelineSpec = field(default_factory=TransformPipelineSpec)
+    # ── Three declared pipelines (``robot_to_model`` not derivable yet) ──
+    data_to_model: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
+    robot_to_model: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
+    model_to_robot: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_ref": dict(self.schema_ref),
             "norm_stats_ref": dict(self.norm_stats_ref),
             "metadata_ref": dict(self.metadata_ref),
-            "contract_ref": dict(self.contract_ref) if self.contract_ref is not None else None,
             "robot_ref": dict(self.robot_ref) if self.robot_ref is not None else None,
             "overrides_ref": dict(self.overrides_ref),
-            "canonical_interface": self.canonical_interface.to_dict(),
+            "model_io_spec": self.model_io_spec.to_dict(),
             "camera_mapping": self.camera_mapping.to_dict(),
             "state_mapping": self.state_mapping.to_dict(),
             "action_mapping": self.action_mapping.to_dict(),
@@ -276,24 +295,22 @@ class ResolvedAssembly:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ResolvedAssembly":
-        contract_ref = d.get("contract_ref")
         robot_ref = d.get("robot_ref")
         return cls(
             schema_ref=dict(d.get("schema_ref") or {}),
             norm_stats_ref=dict(d.get("norm_stats_ref") or {}),
             metadata_ref=dict(d.get("metadata_ref") or {}),
-            contract_ref=dict(contract_ref) if contract_ref is not None else None,
             robot_ref=dict(robot_ref) if robot_ref is not None else None,
             overrides_ref=dict(d.get("overrides_ref") or {}),
-            canonical_interface=CanonicalInterface.from_dict(
-                d.get("canonical_interface") or {}
+            model_io_spec=ModelIOSpec.from_dict(
+                d.get("model_io_spec") or {}
             ),
             camera_mapping=CameraMapping.from_dict(d.get("camera_mapping") or {}),
             state_mapping=StateMapping.from_dict(d.get("state_mapping") or {}),
             action_mapping=ActionMapping.from_dict(d.get("action_mapping") or {}),
             language_mapping=LanguageMapping.from_dict(d.get("language_mapping") or {}),
             joint_mapping=JointMapping.from_dict(d.get("joint_mapping") or {}),
-            data_to_model=TransformPipelineSpec.from_dict(d.get("data_to_model") or {}),
-            robot_to_model=TransformPipelineSpec.from_dict(d.get("robot_to_model") or {}),
-            model_to_robot=TransformPipelineSpec.from_dict(d.get("model_to_robot") or {}),
+            data_to_model=TransformPipelinePlan.from_dict(d.get("data_to_model") or {}),
+            robot_to_model=TransformPipelinePlan.from_dict(d.get("robot_to_model") or {}),
+            model_to_robot=TransformPipelinePlan.from_dict(d.get("model_to_robot") or {}),
         )

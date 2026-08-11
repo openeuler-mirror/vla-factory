@@ -151,7 +151,7 @@ vla_factory/
 ├── model/           # 模型抽象与上游 adapter
 │   ├── interfaces/  # VLAModel 接口（compute_loss / predict_actions）与 Observation 规范类型
 │   ├── registry/    # 模型注册表（@register_vla）
-│   └── ...          # ModelMetadata / BaseContract 与各上游模型 adapter
+│   └── ...          # ModelMetadata、checkpoint 可选校验与各上游模型 adapter
 ├── robot/           # 机器人本体描述（RobotProfile）注册与校验
 ├── training/        # 训练编排：Observation 样本构建、dataloader、Trainer 与微调策略
 │   ├── strategies/
@@ -166,7 +166,7 @@ vla_factory/
 └── test/            # 单元测试、标准测试和集成 smoke test
 ```
 
-**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation`、`ModelMetadata` / `BaseContract`，三者都不反向依赖上层。`assembly/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/interfaces/`，被 `assembly/`、`training/`、`inference/` 共同依赖，而 `model/` 不反向依赖它们——整体无环。
+**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation` 和 `ModelMetadata`，三者都不反向依赖上层。`assembly/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/interfaces/`，被 `assembly/`、`training/`、`inference/` 共同依赖，而 `model/` 不反向依赖它们——整体无环。
 
 ---
 
@@ -240,7 +240,6 @@ output:
 | 训练参数 | `finetuning` | `strategy`、`lora`、`freeze_components`、`trainable_components` | 微调策略与组件选择 |
 | 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`inference_steps`、`num_workers`、`augmentation` | 优化器、调度、显存与数据加载 |
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
-| 扩展 | `transforms.imports` | 自定义 transform 模块路径 | 注册用户自定义 transform |
 
 `vla_factory/recipe/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。
 
@@ -266,7 +265,7 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
 |---|---|
 | 数据属性与语义 | FormatReader 检查实际数据并生成 DataSchema |
 | 模型静态能力 | ModelMetadata |
-| 模型实例事实 | BaseContract，在 ModelMetadata 能力范围内优先 |
+| checkpoint 实例 | recipe `model.path` 选择；可选与 ModelMetadata 做一致性检查，不提供接口事实 |
 | 机器人事实 | RobotProfile / URDF |
 | 三者关系 | 解析器生成；歧义时由 recipe 的 `assembly` 区显式指定 |
 
@@ -297,8 +296,8 @@ vlafactory-cli inspect --config <recipe.yaml>   # 按 recipe 一次输出三份
 三个维度的输出共用一个信封：`{dimension, source, facts}`，
 默认人读 YAML，`--json` 供工具消费；key 顺序确定、可 diff。`facts` 内每项
 事实标注来源（`measured` / `inferred` / `undeclared`），例如
-`inspect model --path` 输出 ModelMetadata 与 BaseContract 的合并视图时，
-`action_dim: 32  # base_contract` 一眼可见该事实来自 checkpoint 自述。
+`inspect model --path` 始终以 ModelMetadata 输出接口事实，并把 checkpoint
+检查结果单列为 `compatible` / `incompatible` / `unavailable`，不生成合并视图。
 
 inspect 遵守三条纪律：
 
@@ -306,7 +305,7 @@ inspect 遵守三条纪律：
   null（`semantic: null (undeclared)`），宁可暴露空缺，也不做相似度
   猜测；空缺正是解析器保守失败、要求受控 override 的依据。
 - **不触发重依赖**——`inspect model` 只读 registry 的 ModelMetadata 与
-  checkpoint 的 `config.json`（BaseContract），永不调用模型 factory；
+  checkpoint 的 `config.json` 做可选一致性检查，永不调用模型 factory；
   全部子命令无 GPU、无可选 extras、无机器人连接可运行。
 - **不解析跨维度引用**——数据侧探测到的 `robot_ref`（如 lerobot
   `robot_type`）原样输出字符串；它是否对应一个已注册的 RobotProfile
@@ -359,7 +358,7 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。字段准入与推断规则见[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)（目标设计）。
 
-#### 4.1.2 VLA 模型：ModelMetadata 与 BaseContract
+#### 4.1.2 VLA 模型：ModelMetadata
 
 模型维度的描述集中在**一份随模型发布的声明** `ModelMetadata` 里（一个模型一个 entry 文件），它分成两半，**容器即属性**：
 
@@ -385,15 +384,13 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 模型槽位数量不等于必须存在同等数量的真实相机。固定模型槽位只表示模型调用边界上需要保留对应的 key / tensor。当前设计不为相机缺失引入额外类型：没有真实相机映射的模型槽位统一 padding，由模型输入适配器生成该模型需要的占位图和无效 mask。例如机器人或数据只有 2 个真实相机、模型具有 3 个固定槽位时，解析器仍生成 3 个模型输入槽位，并规划对第三个槽位进行 padding，不能仅根据两侧数量不同就判定不兼容。
 
-##### BaseContract
+##### checkpoint 可选一致性检查
 
-`BaseContract` 描述具体模型实例或 checkpoint 能够自述的输入槽位、维度、时序、图像规格和归一化事实，由 checkpoint metadata 读取器读取。合并规则：
-
-- checkpoint 或模型实例能够可靠自述的事实优先；
-- BaseContract 不能声明超出 ModelMetadata 能力边界的内容；
-- ModelMetadata 提供实例 metadata 无法表达的语义；
-- 两者冲突时失败；
-- 合并后的每项事实记录来源。
+checkpoint 的 `config.json` 可能重复记录输入槽位、维度和图像规格。框架可在
+加载权重前将这些值与 ModelMetadata 比较：读取不到配置时允许跳过，发现矛盾
+则明确失败。该检查是诊断闸门，不是第二份 contract；它不能覆盖 ModelMetadata，
+也不能改变 resolver、ModelIOSpec、Mapping 或 PipelinePlan 的结果。因而同一
+模型族可直接使用本地目录、权重文件或不同外部仓库中的 checkpoint。
 
 ##### VLAModel Protocol
 
@@ -450,7 +447,7 @@ def load_act(recipe, schema):
 
 **新增数据格式**：实现 `FormatReader`；从实际数据生成统一 DataSchema、NormStats 和 episode/frame；通过 DataSchema 严格校验；增加 reader contract 和代表性组合测试。新增同一格式下的数据集通常只需提供路径，不需要注册数据实例。不得为了适配某个模型而在 reader 内部重命名成模型专用字段、做模型专用 padding、按模型要求重排动作或注入模型专用 normalization。
 
-**新增模型**：新增或扩展 ModelMetadata registry entry；声明模型 observation、action、language、normalization 和 temporal interface；使用薄 ModelAdapter 包装上游实现；按需支持 BaseContract 提取；增加 metadata contract 和代表性组合测试。ModelAdapter 不得根据数据集名选择相机、根据机器人名调整输出语义、使用排序猜测字段对应，也不得重新执行解析器的兼容判断。
+**新增模型**：新增或扩展 ModelMetadata registry entry；声明模型 observation、action、language、normalization 和 temporal interface；使用薄 ModelAdapter 包装上游实现；按需补充 checkpoint 配置的可选一致性校验；增加 metadata contract 和代表性组合测试。ModelAdapter 不得根据数据集名选择相机、根据机器人名调整输出语义、使用排序猜测字段对应，也不得重新执行解析器的兼容判断。
 
 **新增机器人**：添加 RobotProfile；按需引用 URDF 或其他标准本体描述；声明传感器、关节、控制模式、夹爪、坐标系和静态安全范围；增加 profile contract 和代表性组合测试。RobotProfile 应支持从 URDF、厂商描述或现有 adapter 导入可确定的字段，开发者只补充标准描述中没有的 VLA 语义。机器人运行平台、connector 和 transport 不在本节扩展范围内。
 
@@ -474,9 +471,9 @@ def load_act(recipe, schema):
 具身组合 ResolvedAssembly
 ├─ 三者描述的规范化引用
 │   ├─ 数据集描述（DataSchema + NormStats）
-│   ├─ VLA 模型描述（ModelMetadata + BaseContract）
+│   ├─ VLA 模型描述（ModelMetadata）
 │   └─ 机器人描述（RobotProfile）
-├─ 三者共同遵守的 canonical interface
+├─ 模型输入输出规格（ModelIOSpec）
 │   （本次组合最终使用的 observation / action / language / temporal 语义）
 ├─ 字段映射
 │   ├─ CameraMapping  ：相机 → 模型视觉槽位
@@ -484,14 +481,14 @@ def load_act(recipe, schema):
 │   ├─ ActionMapping  ：数据动作 / 模型输出 / 机器人命令之间的维度与语义关系
 │   ├─ LanguageMapping：任务文本字段 → 模型 prompt
 │   └─ JointMapping   ：规范关节顺序 → 机器人原生关节名
-└─ 三条 Transform Pipeline 的声明式描述（TransformPipelineSpec）
+└─ 三条 Transform Pipeline 的声明式描述（TransformPipelinePlan）
     ├─ data_to_model   ：数据样本 → 模型训练接口
     ├─ robot_to_model  ：机器人实时观测 → 模型输入
     └─ model_to_robot  ：模型动作输出 → 机器人规范命令
 ```
 
 - **三者描述的规范化引用**：让下游不必再去查询各自的 registry，所有事实都在一个对象里。从下游视角看，它们是具身组合的组成部分，而不是需要再次独立查询的外部输入。
-- **canonical interface**：三者共同遵守的最终接口，是组合之后的「事实标准」，下游任何模块都按它读写 observation / action。
+- **模型输入输出规格（`ModelIOSpec`）**：三者协商之后，模型实际接收和输出的形状与语义——输入侧是相机 key、状态宽度、是否需要 prompt，输出侧是动作宽度与 horizon。它是组合之后的「事实标准」，下游按它构造模型、按它读写 observation / action。
 - **字段映射**：只描述局部字段和语义的对应关系，本身不执行任何张量计算。
 - **Transform Pipeline 声明**：声明式描述，告诉下游「这条路径上要按顺序执行哪些转换」，但不包含已经实例化的可执行对象。
 
@@ -538,7 +535,6 @@ def load_act(recipe, schema):
 - 数据 reader 针对实际数据生成的 DataSchema；
 - NormStats；
 - 模型 registry 中已有的 ModelMetadata；
-- 可选的 BaseContract；
 - RobotProfile；
 - 受控 override（用户在歧义时给出的显式指定）；
 - 解析规则和现有 TransformRegistry。
@@ -550,14 +546,13 @@ def load_act(recipe, schema):
 一次组合解析按以下阶段执行：
 
 ```text
-1. Load            加载 DataSchema、NormStats、ModelMetadata、BaseContract、RobotProfile
-2. Materialize     合并 ModelMetadata 与 BaseContract，规范化三者的受控词表
-3. Validate        分别校验三者内部结构和来源
-4. Check Pairs     检查 数据集×模型、模型×机器人、数据集×机器人 两两关系
-5. Build Interface 确定组合后的 observation、action、language 和 temporal 语义
+1. Load            加载 DataSchema、NormStats、ModelMetadata、RobotProfile
+2. Validate        分别校验各描述的内部结构和来源
+3. Check Pairs     检查 数据集×模型、模型×机器人、数据集×机器人 两两关系
+4. Plan Pipeline   生成声明式 TransformPipelinePlan，标记顺序与可逆性
+5. Build IO Spec   从规划后的 calls 折叠出 observation、action、language 和 temporal 语义
 6. Resolve Mapping 生成 Camera、State、Action、Language、Joint Mapping
-7. Plan Pipeline   生成声明式 TransformPipelineSpec，标记顺序、风险与可逆性
-8. Emit            成功输出具身组合，失败抛出结构化 ResolutionError
+7. Emit            成功输出具身组合，失败抛出结构化 ResolutionError
 ```
 
 解析器在完成所有校验前不得创建模型、DataLoader、训练输出目录或部署连接。
@@ -582,7 +577,7 @@ def load_act(recipe, schema):
 
 相机兼容性按模型槽位逐项检查，不比较相机总数。存在唯一真实视角时建立 Mapping；没有真实视角时保留空映射并规划 padding；存在多个候选且无法唯一决定时才失败。
 
-最终成功条件不是三个两两检查简单相加，而是三者能在同一个 canonical interface 下形成一致结果。
+最终成功条件不是三个两两检查简单相加，而是三者能在同一份模型输入输出规格下形成一致结果。
 
 ##### 转换等级
 
@@ -643,13 +638,13 @@ Mapping 必须满足：
 
 | 对象 | 职责 |
 |---|---|
-| `TransformStepSpec` | 可序列化的单步类型和配置 |
-| `TransformPipelineSpec` | 解析器产生的有序 TransformStepSpec 列表 |
+| `TransformStepCall` | 可序列化的单次调用：注册名 + 构造参数（`type` / `args`） |
+| `TransformPipelinePlan` | 解析器产生的有序 TransformStepCall 列表（`calls`） |
 | `TransformRegistry` | 将 step type 解析为实现，并维护能力 metadata |
 | `TransformStep` | 已实例化、可执行的单步转换 |
 | `TransformPipeline` | 下游实际运行的有序 TransformStep |
 
-具身组合只保存 `TransformPipelineSpec`（声明式）。下游使用 `TransformRegistry` 实例化为可执行的 `TransformPipeline`。具身组合不能把包含 Python 对象和 runtime context 的 `TransformPipeline` 直接写进解析结果。
+具身组合只保存 `TransformPipelinePlan`（声明式）。下游使用 `TransformRegistry` 实例化为可执行的 `TransformPipeline`。具身组合不能把包含 Python 对象和 runtime context 的 `TransformPipeline` 直接写进解析结果。
 
 ##### 三条语义 Pipeline
 
@@ -671,11 +666,11 @@ Mapping 必须满足：
 - safety clamp 不可逆；
 - temporal resampling 可能有损。
 
-解析器规划三条明确的 TransformPipelineSpec。下游模块根据目标路径实例化相应 pipeline，不能把 `data_to_model` 简单倒序后同时当作 `robot_to_model` 或 `model_to_robot`。
+解析器规划三条明确的 TransformPipelinePlan。下游模块根据目标路径实例化相应 pipeline，不能把 `data_to_model` 简单倒序后同时当作 `robot_to_model` 或 `model_to_robot`。
 
 ##### 规则来源
 
-解析规则和 TransformPipelineSpec 只能依赖三个维度中的显式事实。禁止使用模型名硬编码、数据集名硬编码、机器人名硬编码、当前部署平台或某个 Trainer 的实现细节来触发分支。特定对象确实具有独有约束时，应把约束提升为该维度的声明字段，再由通用规则消费。
+解析规则和 TransformPipelinePlan 只能依赖三个维度中的显式事实。禁止使用模型名硬编码、数据集名硬编码、机器人名硬编码、当前部署平台或某个 Trainer 的实现细节来触发分支。特定对象确实具有独有约束时，应把约束提升为该维度的声明字段，再由通用规则消费。
 
 #### 4.2.5 解析失败处理
 
@@ -693,9 +688,9 @@ Mapping 必须满足：
 
 #### 4.2.6 与训练、推理模块的边界
 
-**训练模块**可以读取：具身组合中保留的 DataSchema 和 NormStats、ModelMetadata 及其 backend/训练组件/微调能力、canonical model interface、数据 × 模型 Mapping 和 `data_to_model` TransformPipelineSpec。训练模块自己负责训练模式、目标函数、微调策略、backend、Trainer、sampler、DataLoader、batch 构建、优化器、调度器、分布式执行以及 checkpoint 与训练产物。训练模块不得根据模型名重新推导相机映射、不得根据数组 shape 猜测动作语义、不得绕过具身组合独立查询 registry、不得覆盖解析器已确定的关节顺序、不得静默忽略组合错误。
+**训练模块**可以读取：具身组合中保留的 DataSchema 和 NormStats、ModelMetadata 及其 backend/训练组件/微调能力、模型输入输出规格、数据 × 模型 Mapping 和 `data_to_model` TransformPipelinePlan。训练模块自己负责训练模式、目标函数、微调策略、backend、Trainer、sampler、DataLoader、batch 构建、优化器、调度器、分布式执行以及 checkpoint 与训练产物。训练模块不得根据模型名重新推导相机映射、不得根据数组 shape 猜测动作语义、不得绕过具身组合独立查询 registry、不得覆盖解析器已确定的关节顺序、不得静默忽略组合错误。
 
-**推理模块**可以读取：具身组合中保留的 RobotProfile 和本体能力与静态安全约束、ModelMetadata 和模型运行能力、canonical model interface、机器人 × 模型 Mapping、`robot_to_model` 和 `model_to_robot` TransformPipelineSpec。推理模块自己负责平台 adapter 和 connector、transport、client/server 拓扑、session config、平台 wire format、action chunk 执行策略、连接重试超时和生命周期、运行时安全执行。推理模块不得绕过具身组合独立查询 registry，也不得使用平台信息重新推导三者语义关系；它可以在不改变组合事实的前提下解析平台运行参数。
+**推理模块**可以读取：具身组合中保留的 RobotProfile 和本体能力与静态安全约束、ModelMetadata 和模型运行能力、模型输入输出规格、机器人 × 模型 Mapping、`robot_to_model` 和 `model_to_robot` TransformPipelinePlan。推理模块自己负责平台 adapter 和 connector、transport、client/server 拓扑、session config、平台 wire format、action chunk 执行策略、连接重试超时和生命周期、运行时安全执行。推理模块不得绕过具身组合独立查询 registry，也不得使用平台信息重新推导三者语义关系；它可以在不改变组合事实的前提下解析平台运行参数。
 
 ### 4.3 微调层
 
@@ -863,8 +858,8 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra�
 
 组合解析测试是新增的重点，详见 4.2 节：
 
-- 三个维度各自的输入契约测试（必填字段、未知字段、枚举词表、维度与 key 数量、ModelMetadata 与 BaseContract 合并、RobotProfile 与 URDF 一致性）。
-- 解析规则测试覆盖兼容性矩阵每一行：直接兼容、自动生成 Mapping、自动生成 TransformPipelineSpec、warning、error、受控 override 后成功、相同输入结果稳定。
+- 三个维度各自的输入契约测试（必填字段、未知字段、枚举词表、维度与 key 数量、checkpoint 与 ModelMetadata 可选一致性检查、RobotProfile 与 URDF 一致性）。
+- 解析规则测试覆盖兼容性矩阵每一行：直接兼容、自动生成 Mapping、自动生成 TransformPipelinePlan、warning、error、受控 override 后成功、相同输入结果稳定。
 - 失败测试断言 `ResolutionError` 的 `code`、`path` 和 `params`，不匹配完整用户文案。
 - Golden Composition 测试选择少量代表性组合保存具身组合 golden file（例如 LeRobot ACT 数据 × ACT × LeKiwi；RoboTwin 数据 × ACT × 仿真机器人；LeRobot ALOHA 数据 × PI0/PI0.5 × ALOHA）。
 - Mapping 与 Transform Pipeline 测试覆盖唯一字段匹配、相机槽位歧义、未映射相机槽位的 padding、state/action key 重排、normalize/denormalize 配对、pad/unpad 配对、gripper flip、rotation conversion、风险和可逆性声明、禁止名称硬编码。
@@ -973,10 +968,10 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 
 4.2 节描述的「数据集 × 机器人 × VLA 模型组合解析」是目标架构，需要分阶段迁移，不能一次性切换：
 
-- **阶段 0：确定术语和数据结构**。扩展现有 DataSchema 和 ModelMetadata；引入 BaseContract；引入 RobotProfile；引入组合解析器、具身组合和 ResolutionError；保持现有训练和部署行为不变；新增 resolve dry-run，不接管下游执行。
+- **阶段 0：确定术语和数据结构**。扩展现有 DataSchema 和 ModelMetadata；引入 RobotProfile；引入组合解析器、具身组合和 ResolutionError；保持现有训练和部署行为不变；新增 resolve dry-run，不接管下游执行。
 - **阶段 1：抽取现有隐式事实**。把当前 `action_spec` 字段分别迁移到 DataSchema、ModelMetadata 和 RobotProfile；把 model config 中稳定的输入输出能力迁移到 ModelMetadata 接口部分；让 reader 补充可探测的数据语义；把 model adapter 中的关系假设提取为声明或解析规则；把 deploy adapter 中稳定的本体事实提取到 RobotProfile。
 - **阶段 2：解析诊断**。解析器先运行兼容性检查并生成 explain trace 或 ResolutionError；对维度、相机、统计量、控制模式和字段顺序提前报错；现有下游继续使用原有构建逻辑；用 golden tests 固化代表性 ResolutionError 和 explain trace。
-- **阶段 3：生成 Mapping 和 T1 TransformPipelineSpec**。生成 camera、state、action、language 和 joint mapping；规划包含 normalize、padding、关节重排和夹爪 flip 等 T1 step 的 pipeline；用 golden tests 固化代表性具身组合；先提供 dry-run 和 diff，不立即要求下游全面执行。
+- **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**。生成 camera、state、action、language 和 joint mapping；规划包含 normalize、padding、关节重排和夹爪 flip 等 T1 step 的 pipeline；用 golden tests 固化代表性具身组合；先提供 dry-run 和 diff，不立即要求下游全面执行。（**已落地 data × model 一半**：五类 Mapping、`data_to_model`、`model_to_robot`。关节重排与夹爪 flip 两个 T1 step 在 `TransformRegistry` 中尚无实现，`robot_to_model` 随之推迟，理由与恢复路径见 `docs/plans/phase3-mapping-and-t1-pipeline.cn.md`。）
 - **阶段 4：下游接入**。训练模块开始消费「数据 × 模型」组合结果；推理模块开始消费「模型 × 机器人」组合结果；删除 adapter 中重复的关系推导；保留显式兼容层并提供迁移告警。
 - **阶段 5：Recipe 瘦身**。标记重复的 action/state 事实为 deprecated；自动把旧 recipe 转换成临时描述和受控 override；新 recipe 的组合部分只保留三者选择和必要 override；提供迁移命令或可读提示；为兼容层设定明确移除周期。
 - **阶段 6：受控扩展 T2**。在真实用例和测试基础上增加 FK/IK、坐标系和频率转换；每项能力独立评审；默认保持保守失败；不把 T2 作为组合解析成立的前提。

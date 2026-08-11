@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import importlib
 import re
 from collections import deque
 from dataclasses import dataclass, replace
@@ -489,8 +488,6 @@ class InferenceEngine:
         self.recipe = recipe
         self.norm_stats = norm_stats
         self.schema = schema
-        for module_name in recipe.transform_imports:
-            importlib.import_module(module_name)
 
         # ── 1.1 Clear model_path for inference ─────────────────────
         # The factory would try to load recipe.model_path (e.g. a pretrained
@@ -535,7 +532,7 @@ class InferenceEngine:
         # It also keeps action_dim equal to len(schema.action_keys), which the
         # platform action adapters assert on.
         self.action_horizon = resolve_action_horizon(
-            metadata=entry.metadata, base_contract=None,
+            metadata=entry.metadata,
             recipe_action_horizon=recipe.action_spec.action_horizon,
         )
         self.action_dim = resolve_action_dim(
@@ -561,7 +558,7 @@ class InferenceEngine:
         # ── 3.5 Forward + reverse transform pipelines ────────────
         # Built solely from the resolved recipe saved in inference_metadata.
         transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
-        if transform_inputs is None:
+        if not transform_inputs:
             raise ValueError(
                 f"Resolved recipe at {checkpoint_path} does not contain "
                 "`model.config.transforms.inputs`; checkpoint metadata is incomplete."
