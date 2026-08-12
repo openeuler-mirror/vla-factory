@@ -6,9 +6,11 @@ DataSchema entry-table refactor, ``InferenceEngine.__init__`` still tried to
 ``replace(schema, state_keys=...)`` — fields that had become derived properties
 — so *every* checkpoint failed to load while the whole suite stayed green.
 
-It also pins the action-fact routing at both ends: the recipe deliberately
-disagrees with the dataset about ``action_dim``, and the dataset must win in the
-trained head, in the saved metadata and in the engine.
+It also pins where the shapes come from at both ends: the recipe deliberately
+disagrees with the dataset about ``action_dim`` (a deprecated field nothing
+reads any more), and the composition's direct answer for flexible ACT — the
+dataset width — must be what the head is built with, what the saved assembly
+states, and what the engine serves.
 """
 
 from __future__ import annotations
@@ -93,6 +95,7 @@ def test_train_then_infer_roundtrip(tmp_path):
     train(_recipe(output_dir))
 
     meta_dir = output_dir / "inference_metadata"
+    assert (meta_dir / "assembly.json").exists()
     assert (meta_dir / "recipe.yaml").exists()
     assert (meta_dir / "schema.json").exists()
     assert (meta_dir / "norm_stats.json").exists()
@@ -104,10 +107,59 @@ def test_train_then_infer_roundtrip(tmp_path):
         dataset_index=0, split="val", device="cpu",
     )
 
-    # The dataset owns action_dim, so the head is 8 wide despite the recipe's 6;
-    # ACT is from_scratch, so the recipe owns the horizon.
+    # The resolved execution width is 8 (the dataset's), despite the recipe's 6;
+    # ACT is from_scratch, so its declared/overridden tunable owns the horizon.
     assert result["action_shape"] == (ACTION_HORIZON, DATASET_ACTION_DIM)
     assert result["target_shape"] == (ACTION_HORIZON, DATASET_ACTION_DIM)
+
+
+def test_engine_serves_the_saved_assembly(tmp_path):
+    """The engine executes ``assembly.json`` and refuses a checkpoint without it.
+
+    A checkpoint from before the artifact existed cannot be served by
+    re-resolving here: that would resolve against the model declaration
+    installed *now*, and a drifted image range or normalization method loads its
+    weights perfectly and simply behaves wrongly.
+    """
+    from vla_factory.assembly.artifact import load_assembly_artifact
+    from vla_factory.inference.infer import InferenceEngine
+    from vla_factory.training.train import train
+
+    output_dir = tmp_path / "run"
+    train(_recipe(output_dir))
+    assembly_file = output_dir / "inference_metadata" / "assembly.json"
+
+    engine = InferenceEngine(checkpoint_path=output_dir, device="cpu")
+    saved = load_assembly_artifact(assembly_file)
+    assert (
+        engine.execution_action_dim
+        == saved.model_io_spec.action_dim
+        == DATASET_ACTION_DIM
+    )
+    assert engine.action_horizon == saved.model_io_spec.action_horizon == ACTION_HORIZON
+    assert engine.camera_keys == tuple(saved.model_io_spec.cameras)
+    # Preprocessor and postprocessor are the two planned pipelines, executed —
+    # the reverse one is not the forward list reversed.
+    assert len(engine.preprocessor) == len(saved.data_to_model.calls)
+    assert len(engine.postprocessor) == len(saved.model_to_robot.calls)
+
+    assembly_file.unlink()
+    with pytest.raises(FileNotFoundError, match="assembly.json"):
+        InferenceEngine(checkpoint_path=output_dir, device="cpu")
+
+
+def test_camera_keys_cannot_be_renamed_at_deploy_time(tmp_path):
+    """There is no camera-name override.
+
+    Renaming them here would leave the camera mapping pointing at names the
+    observation no longer has: ACT would raise on the missing key, and pi0 would
+    quietly feed every slot its placeholder image and keep predicting, blind.
+    """
+    import inspect
+
+    from vla_factory.inference.infer import InferenceEngine
+
+    assert "camera_names" not in inspect.signature(InferenceEngine.__init__).parameters
 
 
 def test_saved_recipe_is_resolved_and_self_contained(tmp_path):
@@ -130,7 +182,7 @@ def test_saved_recipe_is_resolved_and_self_contained(tmp_path):
     assert model_config["kl_weight"] == 10.0
     assert model_config["num_inference_steps"] == 1
     assert [s["type"] for s in model_config["transforms"]["inputs"]] == [
-        "image_to_float", "image_layout", "image_normalize",
+        "image_to_float", "image_layout", "resize_images", "image_normalize",
         "normalize_vector", "pad_dimensions",
     ]
     # Recipe overrides still win.

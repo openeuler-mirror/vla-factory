@@ -100,6 +100,24 @@ If the model needs a preprocessing or configuration concept not supported by the
 current framework, check the Model Abstraction Layer design document before
 adding an extension.
 
+**The factory contract.** A registered factory is `(recipe, assembly) -> VLAModel`.
+Take every shape and correspondence from the resolved composition — action width
+and horizon from `assembly.model_io_spec`, visual slots from
+`assembly.camera_mapping`, the dataset description from `assembly.schema` — and
+never re-derive one from a raw schema, a model name or an array shape. `recipe`
+carries only what is not a relation: `model.path` (which checkpoint) and
+`model.config` (this model's tunables). The action horizon in particular follows
+the training paradigm: a pretrained model declares the named
+`ModelMetadata.action_horizon`, a from-scratch model declares
+`params["action_horizon"]`; the resolver rejects an entry that declares both or
+neither.
+
+Declare fixed image resolutions on `VisionSlot.resolution`. If a from-scratch
+family genuinely lets each run choose its model input size, expose one explicit
+model tunable (ACT uses `input_image_size`). Do not put `height`/`width` facts in
+`resize_images`, and do not add transform-side shape-reporting hooks:
+`ModelIOSpec` is resolved before the transform plan, which consumes its targets.
+
 Output for this layer:
 
 ```text

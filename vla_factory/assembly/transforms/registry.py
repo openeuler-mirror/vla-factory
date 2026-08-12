@@ -27,8 +27,8 @@ class TransformRegistry:
                     f"got {step_cls!r}"
                 )
             # Stamp the registered name on the class so a step instance can be
-            # reverse-looked-up (used to derive a postprocessor from a built
-            # preprocessor — see build_transforms).
+            # reverse-looked-up (diagnostics: naming the steps a built pipeline
+            # is made of, e.g. when comparing it against the plan it came from).
             step_cls._registry_name = name
             cls._steps[name] = step_cls
             return step_cls
@@ -43,14 +43,6 @@ class TransformRegistry:
         except KeyError:
             available = ", ".join(sorted(cls._steps)) or "(none)"
             raise KeyError(f"Transform '{name}' not registered. Available: {available}")
-
-    @classmethod
-    def create_from_config(cls, item: dict, ctx=None) -> TransformStep:
-        """Build a step instance through the step's ``from_config`` hook."""
-        if "type" not in item:
-            raise KeyError(f"Transform config missing 'type': {item!r}")
-        step_cls = cls.get(item["type"])
-        return step_cls.from_config(item, ctx)
 
     @classmethod
     def name_of(cls, step: TransformStep) -> str | None:

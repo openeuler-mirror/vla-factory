@@ -1,11 +1,11 @@
-"""TransformPipeline and YAML-driven builders."""
+"""TransformPipeline: an ordered list of built steps, and how a plan becomes one."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .base import PlanContext, TransformStep
+from .base import TransformStep
 from .registry import TransformRegistry
 
 
@@ -47,69 +47,38 @@ class TransformPipeline:
 
 @dataclass
 class TransformContext:
-    """Runtime context used to instantiate a model's default transform list.
+    """Runtime context for instantiating a resolved plan.
 
-    Fields are sourced from model metadata + dataset schema.  Each transform
-    type draws only what it needs: Normalize -> ``norm_stats``,
-    ResizeImages -> its own ``height`` / ``width`` config, PadDimensions ->
-    ``model_action_dim`` / ``dataset_action_dim``.
+    A ``TransformStepCall``'s args carry every *value* a step needs; this
+    carries the one thing they cannot — the dataset statistics, which are live
+    numpy arrays. Everything else a step used to pull from here (the model
+    declaration, the schema, the recipe) was used to *derive* facts, and that
+    now happens once, in the composition resolver.
     """
 
     norm_stats: Any | None = None
-    model_action_dim: int = 0
-    dataset_action_dim: int = 0
-    recipe: Any | None = None
-    schema: Any | None = None
-    model_config: dict[str, Any] | None = None
-    split: str = "train"
-    # The model's ModelMetadata — the single source for model-side transform
-    # facts (image range/normalize, vector normalization) per decision D3.
-    metadata: Any | None = None
 
-    def plan(self) -> PlanContext:
-        """The fact-only view a step's ``compile_call`` works from.
 
-        Resolving the recipe-shaped fallbacks here (tokenizer repo, default
-        task) is what lets the steps themselves stay free of recipe knowledge —
-        and lets the composition resolver, which has no recipe at all, build the
-        same context out of its own inputs.
-        """
-        from vla_factory.recipe.recipe import get_default_task
+def build_pipeline(plan, ctx: TransformContext) -> TransformPipeline:
+    """Instantiate a resolved ``TransformPipelinePlan`` into a runnable pipeline.
 
-        recipe = self.recipe
-        stats = self.norm_stats
-        return PlanContext(
-            metadata=self.metadata,
-            model_action_dim=self.model_action_dim,
-            dataset_action_dim=self.dataset_action_dim,
-            has_norm_stats=stats is not None,
-            has_action_stats=getattr(stats, "action", None) is not None,
-            default_task=get_default_task(recipe) if recipe is not None else None,
-            tokenizer_repo=getattr(recipe, "model_path", None) if recipe else None,
+    Every argument was already resolved by the composition resolver, so this is
+    pure construction: no fact is derived, no step is skipped, nothing is
+    re-decided. The context supplies only what a serialized call cannot carry —
+    the dataset statistics (``NormalizeVector`` and its inverses take them from
+    there).
+
+    An unresolved plan is refused rather than built as an empty pipeline: a
+    pipeline that does nothing is indistinguishable from one that worked, and on
+    the reverse path it means sending normalized actions to a robot.
+    """
+    if not plan.resolved:
+        raise ValueError(
+            "Cannot build a pipeline from an unresolved TransformPipelinePlan: "
+            "the resolver did not plan this path. An empty pipeline would run "
+            "silently instead of failing."
         )
-
-def build_preprocessor(
-    transform_types: Iterable[dict] | None,
-    ctx: TransformContext,
-) -> TransformPipeline:
-    """Build a forward preprocessor pipeline from YAML transform configs."""
-    steps: list[TransformStep] = []
-    for item in transform_types:
-        step = TransformRegistry.create_from_config(item, ctx)
-        if step is not None:
-            steps.append(step)
-    return TransformPipeline(steps)
-
-
-def build_transforms(
-    transform_types: Iterable[dict] | None,
-    ctx: TransformContext,
-) -> tuple[TransformPipeline, TransformPipeline]:
-    """Build ``(preprocessor, postprocessor)`` from YAML transform configs."""
-    pre = build_preprocessor(transform_types, ctx)
-    post_steps: list[TransformStep] = []
-    for step in reversed(pre.steps):
-        inverse = step.inverse_for_output(ctx)
-        if inverse is not None:
-            post_steps.append(inverse)
-    return pre, TransformPipeline(post_steps)
+    return TransformPipeline([
+        TransformRegistry.get(call.type).from_call(dict(call.args), ctx)
+        for call in plan.calls
+    ])

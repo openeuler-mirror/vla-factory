@@ -17,12 +17,15 @@ never declared is a typo or a stale knob, and silently accepting it is how
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import replace
 
 from omegaconf import OmegaConf
 
 from vla_factory.model.registry import list_entries
 from vla_factory.recipe.recipe import TrainRecipe
+
+logger = logging.getLogger(__name__)
 
 # Keys accepted in ``model.config`` even though they are not model params:
 # both are ``assembly:`` block fields (architecture §3.1) still honoured in
@@ -73,6 +76,37 @@ def _check_override_keys(model_name: str, params: dict, overrides: dict) -> None
     )
 
 
+def _forward_legacy_action_horizon(
+    recipe: TrainRecipe, params: dict, overrides: dict,
+) -> dict:
+    """Move a legacy ``action_spec.action_horizon`` into ``model.config``.
+
+    The horizon's home is the model declaration (a family fact for pretrained
+    models, a tunable for from-scratch ones), so the recipe field is deprecated.
+    Forwarding happens here rather than in the parser because only this module
+    can see ``ModelMetadata.params`` — i.e. whether *this* model accepts the
+    tunable at all. Forwarding it to a model that does not (pi0) would trip the
+    allow-list below and stop an otherwise fine legacy recipe from running, so
+    that case warns and drops instead.
+    """
+    legacy = recipe.action_spec.action_horizon
+    if legacy is None or "action_horizon" in overrides:
+        return overrides
+    if "action_horizon" not in params:
+        logger.warning(
+            "action_spec.action_horizon is deprecated and ignored for %r: this "
+            "model declares its own action horizon (a pretrained chunk length "
+            "cannot be changed per run). Remove the field from the recipe.",
+            recipe.model_name,
+        )
+        return overrides
+    logger.warning(
+        "action_spec.action_horizon is deprecated — set model.config."
+        "action_horizon instead. Forwarding %s for this run.", legacy,
+    )
+    return {**overrides, "action_horizon": int(legacy)}
+
+
 def resolve_recipe(recipe: TrainRecipe) -> TrainRecipe:
     """Return a fully resolved recipe.
 
@@ -83,6 +117,7 @@ def resolve_recipe(recipe: TrainRecipe) -> TrainRecipe:
     """
     params = model_params(recipe.model_name)
     overrides = recipe.model_config or {}
+    overrides = _forward_legacy_action_horizon(recipe, params, overrides)
     _check_override_keys(recipe.model_name, params, overrides)
     merged = OmegaConf.merge(params, overrides)
     return replace(

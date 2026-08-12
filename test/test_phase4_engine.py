@@ -7,7 +7,7 @@ Run:
 """
 
 from __future__ import annotations
-from helpers import make_schema
+from helpers import make_assembly, make_schema
 
 import sys
 import tempfile
@@ -52,14 +52,14 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 
 def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_components=None):
     """Create an ACT model wrapper and matching TrainRecipe (requires lerobot)."""
-    from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+    from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
     from vla_factory.recipe.defaults import resolve_recipe
     from vla_factory.data.manifest import DataSchema
     from vla_factory.model.registry import get_entry
 
     recipe = resolve_recipe(TrainRecipe(
         model_name="act",
-        action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
+        model_config={"action_horizon": 10},
         finetuning_strategy=strategy,
         freeze_components=freeze_components,
         trainable_components=trainable_components,
@@ -71,7 +71,7 @@ def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_co
     schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
 
     entry = get_entry("act")
-    model = entry.factory(recipe=recipe, schema=schema)
+    model = entry.factory(recipe=recipe, assembly=make_assembly(schema, "act", recipe=recipe))
 
     return model, recipe, entry.metadata
 
@@ -171,12 +171,12 @@ class TestTrainingArgsMapping:
 
     def test_recipe_to_training_args(self):
         """TrainRecipe fields map to correct TrainingArguments."""
-        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
         from vla_factory.training.train import _build_training_args
 
         recipe = TrainRecipe(
             model_name="act",
-            action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
+            model_config={"action_horizon": 10},
             lr=5e-5,
             lr_backbone=1e-5,
             batch_size=4,
@@ -211,7 +211,7 @@ class TestCPUTrainingLoop:
         from vla_factory.training.pytorch_trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
         from vla_factory.recipe.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
 
@@ -219,7 +219,7 @@ class TestCPUTrainingLoop:
         entry = get_entry("act")
         recipe = resolve_recipe(TrainRecipe(
             model_name="act",
-            action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
+            model_config={"action_horizon": 10},
             finetuning_strategy="full",
             lr=1e-4,
             total_steps=3,
@@ -227,7 +227,7 @@ class TestCPUTrainingLoop:
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
         schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
-        model = entry.factory(recipe=recipe, schema=schema)
+        model = entry.factory(recipe=recipe, assembly=make_assembly(schema, "act", recipe=recipe))
         apply_strategy(model, recipe, entry.metadata)
 
         # 3. Dummy dataset
@@ -295,7 +295,7 @@ class TestCPUTrainingLoop:
         from vla_factory.training.pytorch_trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig, OutputConfig
+        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
         from vla_factory.recipe.defaults import resolve_recipe
         from vla_factory.data.manifest import DataSchema
         from transformers import TrainingArguments
@@ -303,7 +303,7 @@ class TestCPUTrainingLoop:
         entry = get_entry("act")
         recipe = resolve_recipe(TrainRecipe(
             model_name="act",
-            action_spec=ActionSpecConfig(action_dim=6, action_horizon=10),
+            model_config={"action_horizon": 10},
             finetuning_strategy="freeze",
             freeze_components=["backbone"],
             lr=1e-4,
@@ -312,7 +312,7 @@ class TestCPUTrainingLoop:
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
         schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
-        model = entry.factory(recipe=recipe, schema=schema)
+        model = entry.factory(recipe=recipe, assembly=make_assembly(schema, "act", recipe=recipe))
         apply_strategy(model, recipe, entry.metadata)
 
         class DummyDataset(Dataset):

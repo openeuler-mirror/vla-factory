@@ -58,11 +58,6 @@ JOINT_ORDER_MISMATCH = "joint_order_mismatch"
 
 # ── Resolve Mapping / Plan Pipeline codes (architecture §4.2.3) ────
 
-# The width a model declares for a vector is not the width its own declared
-# transform steps produce — a self-inconsistent model entry, caught before the
-# mismatch turns into a shape error deep inside training.
-PIPELINE_WIDTH_MISMATCH = "pipeline_width_mismatch"
-
 # A recipe set a controlled override the resolver has no consumer for. Silently
 # dropping it would let a user believe they had adjusted a relationship the
 # resolver never looked at — the same failure mode the model-config surface
@@ -245,20 +240,6 @@ def _joint_order_mismatch(
     )
 
 
-def _pipeline_width_mismatch(
-    path: str, *, field: str, model_dim: int, model_dim_source: str,
-    pipeline_dim: int,
-) -> ResolutionError:
-    return ResolutionError(
-        code=PIPELINE_WIDTH_MISMATCH,
-        path=path,
-        params={
-            "field": field, "model_dim": model_dim,
-            "model_dim_source": model_dim_source, "pipeline_dim": pipeline_dim,
-        },
-    )
-
-
 def _unsupported_override(
     path: str, *, keys: list[str], supported: list[str]
 ) -> ResolutionError:
@@ -297,7 +278,6 @@ FACTORIES: dict[str, Callable[..., ResolutionError]] = {
     JOINT_ORDER_AMBIGUOUS: _joint_order_ambiguous,
     JOINT_ORDER_MISMATCH: _joint_order_mismatch,
     CAMERA_MAPPING_INVALID: _camera_mapping_invalid,
-    PIPELINE_WIDTH_MISMATCH: _pipeline_width_mismatch,
     UNSUPPORTED_OVERRIDE: _unsupported_override,
 }
 

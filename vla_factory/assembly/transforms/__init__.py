@@ -7,14 +7,13 @@ Public surface:
 - ``TransformStep``      — forward-only ABC
 - ``TransformRegistry``  — name → step class + pairing metadata
 - ``TransformPipeline``  — ordered forward-only steps
-- ``build_preprocessor`` — model-declared transform list → forward pipeline
-- ``build_transforms``   — model-declared transform list → (preprocessor, postprocessor)
+- ``build_pipeline``     — resolved TransformPipelinePlan → runnable pipeline
 - ``Normalize`` / ``ResizeImages`` / ``PadDimensions`` — concrete steps
 """
 
 from .base import TransformStep
 from .registry import TransformRegistry
-from .pipeline import TransformPipeline, TransformContext, build_preprocessor, build_transforms
+from .pipeline import TransformPipeline, TransformContext, build_pipeline
 
 # Importing the step modules registers them with TransformRegistry.
 from .normalize import Normalize, NormalizeVector, UnnormalizeActionStep, IMAGENET_MEAN, IMAGENET_STD
@@ -28,8 +27,7 @@ __all__ = [
     "TransformRegistry",
     "TransformPipeline",
     "TransformContext",
-    "build_preprocessor",
-    "build_transforms",
+    "build_pipeline",
     "Normalize",
     "NormalizeVector",
     "UnnormalizeActionStep",

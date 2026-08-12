@@ -11,7 +11,7 @@
 
 ## 1. 核心对象
 
-- `Resolver`（公共入口 `resolve_assembly()`）与解析阶段：Load → Validate → Check Pairs → Plan Pipeline → Build IO Spec → Resolve Mapping → Emit。
+- `Resolver`（公共入口 `resolve_assembly()`）与解析阶段：Load → Validate → Check Pairs → Resolve Mappings → Build IO Spec → Plan Pipeline → Emit。Mapping 只记录真实对应关系，不展开 padding 槽位；`ModelIOSpec` 是 pipeline 规划的输入，不由 pipeline fold 反推。
 - `ResolvedAssembly`：唯一成功产物，包含三者描述引用、模型输入输出规格（`ModelIOSpec`）、五类 Mapping（Camera / State / Action / Language / Joint）、三条 TransformPipelinePlan（`data_to_model` / `robot_to_model` / `model_to_robot`）。
 - `ResolutionError`：结构化失败（稳定 `code` / `path` / `params`）。
 - 兼容性检查与转换等级 T1（确定性）/ T2（依赖条件）/ T3（直接失败）。

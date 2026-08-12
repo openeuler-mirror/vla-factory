@@ -21,7 +21,7 @@ def test_protocols():
 
     # ActionSpec
     spec = ActionSpec(action_dim=6, action_horizon=100, action_type="joint_pos")
-    assert spec.model_action_dim == 6
+    assert spec.action_dim == 6
     print(f"  ActionSpec: dim={spec.action_dim}, horizon={spec.action_horizon}, type={spec.action_type}")
 
     # Observation (generic over T)
@@ -108,13 +108,13 @@ def test_registry():
         action_horizon=50,
         action_head_type="regression",
     ))
-    def load_mock(recipe, schema):
+    def load_mock(recipe, assembly):
         return "mock_model"
 
     # Lookup
     entry = get_entry("__test_mock")
     assert entry.metadata.name == "__test_mock"
-    model = entry.factory(recipe=None, schema=None)
+    model = entry.factory(recipe=None, assembly=None)
     assert model == "mock_model"
 
     # List

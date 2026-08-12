@@ -16,8 +16,11 @@ import numpy as np
 import pytest
 import torch.nn as nn
 
+from helpers import make_assembly, make_schema
+
 import vla_factory.model.registry.entries.pi0 as pi0_mod
 from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.recipe.defaults import resolve_recipe
 from vla_factory.data.manifest import FeatureStats, NormStats
 from vla_factory.assembly.transforms.normalize import (
     NormalizeVector,
@@ -25,6 +28,15 @@ from vla_factory.assembly.transforms.normalize import (
 )
 from vla_factory.assembly.transforms.task_tokenize import TaskTokenize, build_prompt
 from vla_factory.model.registry import get_entry
+
+
+def _assembly_for(recipe, model_name: str):
+    """Resolve the composition these factory tests build their model from."""
+    schema = make_schema(
+        state_dim=9, action_dim=9, cameras=("front",),
+        image_sizes={"front": (224, 224)}, has_language=True,
+    )
+    return make_assembly(schema, model_name, recipe=resolve_recipe(recipe))
 
 
 # ── Fakes: record the Pi0Config kwargs the factory passes upstream ──
@@ -85,7 +97,9 @@ action_spec:
   action_horizon: 50
 """
     )
-    wrapper = get_entry("pi05").factory(recipe=recipe, schema=None)
+    wrapper = get_entry("pi05").factory(
+        recipe=recipe, assembly=_assembly_for(recipe, "pi05"),
+    )
     config = wrapper.model.config
     assert config.kw["pi05"] is True, "factory must select the pi05 variant"
     assert config.kw["action_dim"] == 32
@@ -105,7 +119,9 @@ action_spec:
   action_horizon: 50
 """
     )
-    wrapper = get_entry("pi0").factory(recipe=recipe, schema=None)
+    wrapper = get_entry("pi0").factory(
+        recipe=recipe, assembly=_assembly_for(recipe, "pi0"),
+    )
     assert wrapper.model.config.kw.get("pi05", False) is False
 
 
@@ -199,9 +215,19 @@ def test_normalize_vector_quantile():
 
 
 def test_quantile_unnormalize_roundtrip():
+    from vla_factory.assembly.transforms import TransformContext, TransformRegistry
+    from vla_factory.assembly.transforms.base import PlanContext
+
     stats = _quantile_stats()
-    step = NormalizeVector(stats, fields=("actions",), method="quantile")
-    inverse = step.inverse_for_output()
+    args = {"fields": ["actions"], "method": "quantile", "stats_ref": "norm_stats"}
+    step = NormalizeVector.from_call(args, TransformContext(norm_stats=stats))
+    # The pairing the resolver plans, built the way deployment builds it.
+    name, inverse_args = NormalizeVector.inverse_call(
+        args, PlanContext(has_action_stats=True),
+    )
+    inverse = TransformRegistry.get(name).from_call(
+        inverse_args, TransformContext(norm_stats=stats),
+    )
     assert isinstance(inverse, UnnormalizeActionQuantileStep)
     actions = np.array([[0.3, -1.7], [0.9, 1.4]], dtype=np.float32)
     normalized = step({"actions": actions.copy()})["actions"]

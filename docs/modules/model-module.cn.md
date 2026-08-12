@@ -114,6 +114,12 @@ tokenizer 随模型权重走（上游对象自带），不设 `tokenizer_ref`。
 `normalization` 必须含 `quantile`——openpi/pi0 实际使用 q01/q99
 （`UnnormalizeActionQuantileStep` 即为此存在）。
 
+resolver 先由这里的维度策略与 `DataSchema` 直接建立 `ModelIOSpec`，再让
+`pad_dimensions` 消费源/目标宽度生成 call；禁止从 transform call fold 回模型宽度。
+视觉尺寸同理：固定模型使用 `VisionSlot.resolution`，ACT 这类从头训练且输入尺寸可调的
+模型使用显式 `params["input_image_size"]`（未设置时采用数据原生尺寸），不得把
+`resize_images.height/width` 当作接口事实来源。
+
 **action —— 动作契约（另含以下字段）**
 
 | 字段 | 说明 | 消费方 |

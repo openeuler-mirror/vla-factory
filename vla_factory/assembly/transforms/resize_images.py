@@ -12,9 +12,8 @@ from .registry import TransformRegistry
 class ResizeImages(TransformStep):
     """Resize all ``images.*`` arrays in the flat sample dict.
 
-    ``height`` and ``width`` are the single source of truth for resize target.
-    If both are omitted, this transform is a no-op and images keep their
-    dataset-native size.
+    The target is compiled from ``ModelIOSpec.camera_shapes``. The declaration
+    controls resize policy only; it cannot introduce a second shape source.
 
     Expects images as numpy arrays in ``HWC`` or ``CHW`` format.
     """
@@ -33,16 +32,27 @@ class ResizeImages(TransformStep):
 
     @classmethod
     def compile_call(cls, cfg: dict, ctx) -> dict | None:
-        height = cfg.get("height")
-        width = cfg.get("width")
-        if height is None and width is None:
-            return None                 # no target declared → no resize
-        if height is None or width is None:
-            raise ValueError("resize_images requires both `height` and `width`.")
-        height = int(height)
-        width = int(width)
-        if height <= 0 or width <= 0:
-            raise ValueError("resize_images target height and width must be positive.")
+        if "height" in cfg or "width" in cfg:
+            raise ValueError(
+                "resize_images height/width are interface facts, not transform "
+                "arguments. Use ModelMetadata.vision_slots[].resolution for a "
+                "fixed model, or model.config.input_image_size for a tunable one."
+            )
+        targets = dict(ctx.target_camera_shapes or {})
+        sources = dict(ctx.source_camera_shapes or {})
+        needed = {
+            camera: size for camera, size in targets.items()
+            if sources.get(camera) != size
+        }
+        if not needed:
+            return None
+        target_sizes = set(needed.values())
+        if len(target_sizes) != 1:
+            raise ValueError(
+                "resize_images currently requires one common target size; "
+                f"the resolved model interface has {needed}."
+            )
+        height, width = next(iter(target_sizes))
         return {
             "height": height,
             "width": width,

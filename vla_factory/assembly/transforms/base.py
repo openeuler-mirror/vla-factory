@@ -9,14 +9,18 @@ exactly one place — on the step class itself:
 ``TransformStep``      (built, executable)
 
 * ``compile_call`` — declared config + facts → the call's args, or ``None``
-  when this step is a no-op for these facts. The composition resolver calls it
-  to plan a pipeline; ``from_config`` calls it too, so the planner and the
-  build path can never drift apart.
+  when this step is a no-op for these facts. Called by the composition resolver
+  when it plans a pipeline, and only there: deciding *what* to run is resolution,
+  and it happens once.
 * ``from_call``    — args (+ runtime context, for the live objects args cannot
-  carry, e.g. statistics) → an executable step.
+  carry, e.g. statistics) → an executable step. Called by the training and
+  inference sides, which execute a resolved plan and decide nothing.
 * ``inverse_call`` — args → the ``(name, args)`` of the reverse step, or
   ``None``. The single home of every forward/inverse pairing: a pipeline is
   never inverted by reversing its list (architecture §4.2.4).
+
+There is deliberately no "build a step straight from a declaration" entry point:
+that would be a second place where a fact gets derived, and the two would drift.
 """
 
 from __future__ import annotations
@@ -37,9 +41,14 @@ class PlanContext:
 
     # The model's declaration — source of every image/vector contract fact.
     metadata: Any = None
-    # Vector widths: the pad target and what the dataset actually provides.
-    model_action_dim: int = 0
-    dataset_action_dim: int = 0
+    # Source and target interface shapes. Steps consume these decisions; they
+    # do not report shapes back to the resolver.
+    target_state_dim: int = 0
+    target_action_dim: int = 0
+    source_state_dim: int = 0
+    source_action_dim: int = 0
+    source_camera_shapes: dict[str, tuple[int, int]] | None = None
+    target_camera_shapes: dict[str, tuple[int, int]] | None = None
     # Whether dataset statistics are available at all, and for actions
     # specifically (an inverse needs the action half).
     has_norm_stats: bool = False
@@ -47,16 +56,6 @@ class PlanContext:
     # Language fallbacks resolved by the caller (recipe / controlled override).
     default_task: str | None = None
     tokenizer_repo: str | None = None
-
-    @classmethod
-    def of(cls, ctx: Any | None) -> "PlanContext":
-        """Accept a ``PlanContext``, a ``TransformContext``, or ``None``."""
-        if isinstance(ctx, cls):
-            return ctx
-        if ctx is None:
-            return cls()
-        plan = getattr(ctx, "plan", None)
-        return plan() if callable(plan) else cls()
 
 
 class TransformStep(ABC):
@@ -105,75 +104,6 @@ class TransformStep(ABC):
         default. A lossy step must return ``None`` rather than a lookalike.
         """
         return None
-
-    @classmethod
-    def output_widths(
-        cls, args: dict, input_widths: dict[str, int],
-    ) -> dict[str, int]:
-        """Vector widths after this call, given the widths going in.
-
-        A fold rather than an absolute answer: padding produces
-        ``max(input, target)``, and a future crop or projection needs the input
-        width just as much. Returning absolute widths here would put the planner
-        back in the business of knowing whether a number is a floor, a cap or a
-        delta — the same leak that step-name knowledge was.
-
-        Only steps that change a vector's width override this.
-        """
-        return input_widths
-
-    # ── construction from user/declaration config ──────────────────
-
-    @classmethod
-    def from_config(cls, cfg: dict, ctx: Any | None = None) -> "TransformStep | None":
-        """Construct from a YAML/config dictionary.
-
-        Composition of the two halves above, so the build path applies exactly
-        the rules the planner applies. ``None`` when ``compile_call`` skips.
-        """
-        args = cls.compile_call(cfg, PlanContext.of(ctx))
-        if args is None:
-            return None
-        return stamp_call_args(cls.from_call(args, ctx), args)
-
-    def call_args(self) -> dict[str, Any]:
-        """This instance's args, as ``compile_call`` produced them.
-
-        Filled in by :func:`stamp_call_args` on every construction path, so a
-        step that declares an ``inverse_call`` cannot lose its pairing at
-        runtime by forgetting to implement this. Only a step that must also
-        support being hand-constructed *and* inverted overrides it.
-        """
-        return dict(getattr(self, "_compiled_call_args", {}))
-
-    def inverse_for_output(self, ctx: Any | None = None) -> "TransformStep | None":
-        """The built postprocessor step matching this one, if any.
-
-        Generic: asks :meth:`inverse_call` for the pairing — the same answer the
-        resolver plans — then builds it.
-        """
-        from .registry import TransformRegistry
-
-        inverse = type(self).inverse_call(self.call_args(), PlanContext.of(ctx))
-        if inverse is None:
-            return None
-        name, args = inverse
-        step_cls = TransformRegistry.get(name)
-        return stamp_call_args(step_cls.from_call(args, ctx), args)
-
-
-def stamp_call_args(step: "TransformStep | None", args: dict) -> "TransformStep | None":
-    """Record the args a step was built from, on the step.
-
-    Applied by the *outer* construction paths rather than inside ``from_call``:
-    subclasses override ``from_call`` (the denormalization steps take their
-    statistics from the context there), so stamping in the base implementation
-    would be silently skipped exactly where an inverse matters most.
-    """
-    if step is not None:
-        step._compiled_call_args = dict(args)
-    return step
-
 
 def reject_fact_override(cfg: dict, key: str, attr: str, what: str) -> None:
     """Refuse a per-run override of a model fact.

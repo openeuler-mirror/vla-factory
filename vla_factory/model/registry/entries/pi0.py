@@ -36,7 +36,6 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
-from vla_factory.assembly.action_facts import resolve_action_horizon
 from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.model.interfaces.model import ModelMetadata, VisionSlot
 from vla_factory.model.interfaces.observation import Observation
@@ -189,8 +188,8 @@ _PI0_PARAMS: dict = {
         "inputs": [
             {"type": "image_to_float"},
             {"type": "image_layout", "to": "CHW"},
-            # keep-ratio + letterbox to 224 (HWC, no layout flip)
-            {"type": "resize_images", "height": 224, "width": 224, "mode": "pad"},
+            # Target size comes from VisionSlot.resolution.
+            {"type": "resize_images", "mode": "pad"},
             {"type": "normalize_vector", "fields": ["state", "actions"]},
             {"type": "pad_dimensions", "fields": ["state", "actions"]},
             # The repo below carries the PaliGemma tokenizer; pin a different
@@ -245,7 +244,7 @@ _PI0_METADATA = ModelMetadata(
 
 
 @register_vla(_PI0_METADATA)
-def load_pi0(recipe, schema) -> PI0ModelWrapper:
+def load_pi0(recipe, assembly) -> PI0ModelWrapper:
     """Factory: construct openpi ``PI0Pytorch`` and wrap it.
 
     Raises ImportError if openpi is not installed (install via ``[pi0]`` extra).
@@ -257,7 +256,7 @@ def load_pi0(recipe, schema) -> PI0ModelWrapper:
             f"Install: {_PI0_METADATA.install_hint}"
         )
     PI0Pytorch, Pi0Config, _OpenpiObservation = openpi  # noqa: F841
-    return _load_pi0(recipe, schema, PI0Pytorch, Pi0Config)
+    return _load_pi0(recipe, assembly, PI0Pytorch, Pi0Config)
 
 
 def _resolve_pi0_config(recipe: TrainRecipe, model_name: str = "pi0") -> TrackedConfig:
@@ -277,7 +276,7 @@ def _resolve_pi0_config(recipe: TrainRecipe, model_name: str = "pi0") -> Tracked
 
 
 def _load_pi0(
-    recipe, schema, PI0Pytorch, Pi0Config,
+    recipe, assembly, PI0Pytorch, Pi0Config,
     model_name: str = "pi0", pi05: bool = False,
     metadata: ModelMetadata = _PI0_METADATA,
 ) -> PI0ModelWrapper:
@@ -291,10 +290,16 @@ def _load_pi0(
     from the per-run config.
     """
     cfg = _resolve_pi0_config(recipe, model_name)
-    # camera_mapping lives in the recipe's assembly block (§3.1); legacy
-    # model.config.camera_mapping is still accepted via get_camera_mapping.
-    from vla_factory.recipe.recipe import get_camera_mapping
-    camera_mapping = get_camera_mapping(recipe) or {}
+    # The slot → dataset-camera correspondence is a resolved composition fact
+    # (CameraMapping), whether it came from the recipe's controlled override or
+    # from semantic inference. A slot with no source is left out of the dict —
+    # the wrapper then feeds it the -1 placeholder + zero mask, which is exactly
+    # what "padding" means for a vision slot.
+    camera_mapping = {
+        entry["model_slot"]: entry["data_source"]
+        for entry in assembly.camera_mapping.entries
+        if entry.get("data_source")
+    }
     dtype = cfg.get("dtype", "bfloat16")
 
     # pytorch_compile_mode: torch.compile mode for openpi's sample_actions
@@ -307,17 +312,13 @@ def _load_pi0(
     # Pi0Config declares it (there sample_actions never compiles, so dropping
     # the knob preserves behaviour).
     #
-    # action_dim is the openpi pad target: a fact from the declaration
-    # (dim_policy_max), never a per-run knob.
-    # action_horizon is a model-family fact: pi0's
-    # action expert was pretrained at a fixed chunk length, so the declaration
-    # ModelMetadata wins over the recipe, which only acts as fallback.
+    # The two shapes come from the resolved IO spec: action_dim is the openpi
+    # model-output width declared by ModelMetadata, and action_horizon is pi0's
+    # family fact. The transform plan consumes that same interface and pads
+    # dataset vectors to it.
     config_kwargs = dict(
-        action_dim=metadata.dim_policy_max,
-        action_horizon=resolve_action_horizon(
-            metadata=metadata,
-            recipe_action_horizon=recipe.action_spec.action_horizon,
-        ),
+        action_dim=assembly.model_io_spec.action_dim,
+        action_horizon=assembly.model_io_spec.action_horizon,
         dtype=dtype,
         paligemma_variant=cfg.get("paligemma_variant", "gemma_2b"),
         action_expert_variant=cfg.get("action_expert_variant", "gemma_300m"),

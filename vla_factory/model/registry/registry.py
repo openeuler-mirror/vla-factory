@@ -6,13 +6,22 @@ Usage::
     from vla_factory.model.interfaces import ModelMetadata
 
     @register_vla(ModelMetadata(name="act", ...))
-    def load_act(model_path, action_spec, **kw):
+    def load_act(recipe, assembly):
         return ACTModelWrapper(...)
 
     # Later:
     from vla_factory.model.registry import get_entry
     entry = get_entry("act")
-    model = entry.factory(model_path=None, action_spec=action_spec)
+    model = entry.factory(recipe=recipe, assembly=assembly)
+
+A factory takes ``(recipe, assembly)``:
+
+* ``assembly`` — the ``ResolvedAssembly``: the model's IO spec (widths, horizon,
+  cameras), the field mappings and the dataset description. Every relation
+  between data, model and robot is already resolved here; a factory must read
+  them rather than re-derive them from a schema (architecture §4.2.6).
+* ``recipe``  — this run's choices that are *not* relations: ``model.path``
+  (which checkpoint) and ``model.config`` (this model's tunables).
 """
 
 from __future__ import annotations
@@ -41,7 +50,7 @@ class ModelEntry:
     """A registered model: its metadata + a factory callable."""
 
     metadata: ModelMetadata
-    factory: Callable  # (recipe, schema) -> VLAModel
+    factory: Callable  # (recipe, assembly) -> VLAModel
 
 
 # Global registry (module-level singleton)

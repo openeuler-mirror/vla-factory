@@ -169,9 +169,9 @@ The training entry point merges the authoring recipe, CLI overrides, and model p
 
 | Object | Role | Key Interfaces or Fields |
 |---|---|---|
-| `TransformStep` | One sample-level transform step. | `from_config`, `inverse_for_output` |
+| `TransformStep` | One sample-level transform step. | `compile_call` (planning), `from_call` (execution), `inverse_call` |
 | `TransformPipeline` | Ordered list of steps that converts raw samples into model-ready samples. | `steps`, `__call__(sample)` |
-| `TransformContext` | Runtime context used to construct transform steps. | `norm_stats`, `schema`, `model_config`, `model_action_dim`, `dataset_action_dim` |
+| `TransformContext` | Runtime context for instantiating a resolved plan; carries only what a serialized call cannot. | `norm_stats` |
 
 ## 3. External Data Parsing Layer Design
 
@@ -391,16 +391,18 @@ transforms:
     - {type: pad_dimensions}
 ```
 
-`build_preprocessor()` iterates over the `inputs` list, calls `TransformRegistry.create_from_config()` for each item, and constructs a `TransformPipeline`. `TransformContext` injects norm stats, action dimensions, schema, and related runtime context at construction time; it is stable during execution.
+This declaration does **not** build a pipeline directly: the composition resolver calls each step's `compile_call()`, baking the facts (pad target, normalization method, image range) and the skip decisions into the `data_to_model` plan; training and inference then instantiate it with `build_pipeline(plan, ctx)`. At that point `TransformContext` supplies only what a serialized call cannot carry — the dataset statistics.
 
 Users can also register custom transform steps to extend input processing. See [Adding a Transform Step](#53-adding-a-transform-step).
 
 **Output postprocessor** (deployment side):
 
-Each step in the TransformPipeline may declare `inverse_for_output()` to generate a reverse transform step:
+Each step declares its own reverse via `inverse_call()`, and the resolver uses that to plan `model_to_robot`:
 
 - `NormalizeVector` -> `UnnormalizeActionStep` (z-score unnormalization)
 - `PadDimensions` -> `UnpadAction` (crop back to original action_dim)
+
+A step with no inverse (the image ops) simply disappears — the reverse pipeline is never the forward list reversed.
 
 During deployment, `InferenceEngine` uses these reverse transforms to restore model outputs to the original action scale and dimension.
 
@@ -567,17 +569,18 @@ Basic steps:
 1. Add or extend a step under `vla_factory/assembly/transforms/`.
 2. Register the type name with `@TransformRegistry.register("your_step")`.
 3. Implement `__call__(sample)`.
-4. If runtime context is needed, implement `from_config(cfg, ctx)`.
-5. If the step changes the model output space, implement `inverse_for_output(ctx)`.
+4. If the step reads a model fact or has a skip rule, implement `compile_call(cfg, ctx)` (planning time); if it needs a live object such as statistics, implement `from_call(args, ctx)` (execution time).
+5. If the step changes the model output space, implement `inverse_call(args, ctx)`. Shape-changing calls consume source/target shapes already resolved in `PlanContext`; a step must not report a second interface through an `output_*` hook.
 6. Reference it in the model profile or recipe under `model.config.transforms.inputs`.
 
 A new step must still follow the transform contract:
 
 - Input and output are flat sample dicts.
 - Small parameters are written in transform config.
+- Interface shapes are not transform parameters. Declare fixed model shapes in `ModelMetadata` (for example `VisionSlot.resolution`) or an explicit model tunable such as ACT's `input_image_size`; the resolver writes them to `ModelIOSpec` before compiling calls.
 - Large parameters, vocabularies, or fitted results are saved as artifacts and explicitly referenced in the resolved recipe.
 - Deployment does not refit transforms; it only loads configuration and artifacts from checkpoint metadata.
-- If a step changes the model output space, it should implement `inverse_for_output()` to generate the corresponding postprocessor.
+- If a step changes the model output space, it should implement `inverse_call()` — the single home of every forward/inverse pairing; a lossy step must return `None` rather than a lookalike.
 
 ## 6. Design Constraints and Notes
 

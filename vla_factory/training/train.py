@@ -31,19 +31,17 @@ import torch.nn as nn
 import yaml
 from transformers import TrainingArguments
 
-from vla_factory.assembly.action_facts import resolve_action_dim
+from vla_factory.assembly.artifact import save_assembly_artifact
+from vla_factory.assembly.from_recipe import resolve_from_recipe
 from vla_factory.recipe.parser import parse_recipe
 from vla_factory.recipe.defaults import resolve_recipe
 from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.training.loader import create_dataloaders
-from vla_factory.data.formats import get_reader
-from vla_factory.data.manifest import resolve_vector_keys
-from vla_factory.model.checkpoint_validation import validate_checkpoint_if_available
 from vla_factory.model.registry import get_entry
 from vla_factory.training.pytorch_trainer import VLATrainer
 from vla_factory.training.strategies import apply_strategy
 from vla_factory.utils.constants import (
-    INFERENCE_META_DIR, RECIPE_FILE, SCHEMA_FILE, NORM_STATS_FILE,
+    ASSEMBLY_FILE, INFERENCE_META_DIR, RECIPE_FILE, SCHEMA_FILE, NORM_STATS_FILE,
     FINAL_DIR, MODEL_WEIGHTS_FILE,
 )
 
@@ -94,53 +92,36 @@ def train(
                 recipe.model_name, recipe.finetuning_strategy,
                 recipe.lr, recipe.total_steps)
 
-    # 1.5 Handle output_dir
-    output_path = Path(recipe.output.output_dir)
-    if recipe.output.overwrite_output_dir and output_path.exists():
-        shutil.rmtree(output_path, ignore_errors=True)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # 2. Read dataset schema + norm_stats
-    data_cfg = recipe.data
-    data_path = Path(data_cfg.source.path)
-    reader = get_reader(data_cfg.source.format, path=data_path)
-    schema = reader.get_schema(data_path)
-    norm_stats = reader.get_norm_stats(data_path)
+    # 1.5 Resolve the composition FIRST.
+    # Everything downstream — dataset descriptions, the transform pipeline, the
+    # model's IO spec — comes out of this one object, and it must be resolved
+    # before any side effect: the resolver creates no output directory
+    # (architecture §4.2.2), so a composition failure (or an incompatible
+    # checkpoint, checked inside) cannot leave the previous run's output
+    # directory already wiped.
+    assembly = resolve_from_recipe(recipe)
+    schema = assembly.schema
+    norm_stats = assembly.norm_stats
+    entry = get_entry(recipe.model_name)
+    metadata = entry.metadata
 
     # ImageNet image normalisation lives in the Normalize transform
     # (use_imagenet_stats=True default); norm_stats is no longer mutated here.
 
     logger.info("Dataset schema: cameras=%s, action_dim=%d, state_dim=%d",
                 list(schema.cameras), schema.action_dim, schema.state_dim)
-
-    # 2.0 Validate the canonical state/action key order (data/model contract).
-    # The per-dim names live on schema.state_dims / schema.action_dims and are
-    # serialized into inference_metadata/schema.json directly. Every non-empty
-    # vector must carry exactly one name per dimension so the checkpoint can be
-    # served on the real robot without re-sorting motor keys; fail before
-    # writing incomplete inference metadata.
-    resolve_vector_keys(schema)
     logger.info(
         "Resolved vector keys — state=%s action=%s",
         list(schema.state_keys), list(schema.action_keys),
     )
 
-    # 2.1 Video frame cache: PyAVCodec.decode_frame() reads from the .npy
-    # disk cache (``<video>.frame_cache/``) before falling back to live MP4
-    # decoding. Pre-populate it with ``python -m vla_factory preprocess
-    # --config ...``; otherwise frames are decoded on first access and cached
-    # for subsequent epochs. No action needed here at training time.
+    # 1.6 Everything that can refuse this run, before anything is destroyed.
+    # The output directory is wiped a few lines below; a check that lives after
+    # that point reports "this was never going to run" only once the previous
+    # run's artifacts are already gone.
 
-    # 2.5 Save inference metadata BEFORE training starts.
-    # Any intermediate checkpoint can then be used for inference.
-    _save_inference_metadata(output_path, recipe, schema, norm_stats)
-
-    # 3. Create model — adapter extracts what it needs from recipe + schema
-    entry = get_entry(recipe.model_name)
-    metadata = entry.metadata
-
-    # 3.1 Finetune-only models (pi0, pi05, ...) require a base checkpoint.
-    # ACT (from_scratch) allows model.path=None; pretrained_finetune does not.
+    # Finetune-only models (pi0, pi05, ...) require a base checkpoint. ACT
+    # (from_scratch) allows model.path=None; pretrained_finetune does not.
     # Inference bypasses this — InferenceEngine sets model_path=None and loads
     # weights via load_state_dict — so the check belongs in the train() entry.
     if metadata.training_paradigm == "pretrained_finetune" and not recipe.model_path:
@@ -150,36 +131,42 @@ def train(
             f"a HF base checkpoint (e.g. lerobot/pi0_base). from_scratch training "
             f"is not supported for this model."
         )
+    # A model whose transform declaration is empty has no pipeline to run; the
+    # dataloader would only discover that after the metadata was written.
+    if not assembly.data_to_model.resolved:
+        raise ValueError(
+            "The resolved assembly has no data_to_model pipeline. Declare "
+            f"`transforms` in {recipe.model_name}'s ModelMetadata.params, or "
+            "set `model.config.transforms.inputs` in the recipe."
+        )
 
-    # A checkpoint config is redundant diagnostic data, never an interface
-    # source. Check it when available so an accidentally mixed model family is
-    # caught before loading weights; external checkpoints without a readable
-    # config remain supported.
-    if recipe.model_path:
-        checkpoint_check = validate_checkpoint_if_available(recipe.model_path, metadata)
-        if checkpoint_check["status"] == "unavailable":
-            logger.warning(
-                "Checkpoint compatibility check unavailable: %s",
-                checkpoint_check["detail"],
-            )
+    # 1.7 Handle output_dir
+    output_path = Path(recipe.output.output_dir)
+    if recipe.output.overwrite_output_dir and output_path.exists():
+        shutil.rmtree(output_path, ignore_errors=True)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    model = entry.factory(recipe=recipe, schema=schema)
+    # 2.1 Video frame cache: PyAVCodec.decode_frame() reads from the .npy
+    # disk cache (``<video>.frame_cache/``) before falling back to live MP4
+    # decoding. Pre-populate it with ``python -m vla_factory preprocess
+    # --config ...``; otherwise frames are decoded on first access and cached
+    # for subsequent epochs. No action needed here at training time.
+
+    # 2.5 Save inference metadata BEFORE training starts.
+    # Any intermediate checkpoint can then be used for inference.
+    _save_inference_metadata(output_path, recipe, schema, norm_stats, assembly)
+
+    # 3. Create model — the adapter reads the resolved composition. Everything
+    # that could refuse this run (checkpoint compatibility, finetune-only,
+    # pipeline) was checked in 1.5/1.6, before the output directory existed.
+    model = entry.factory(recipe=recipe, assembly=assembly)
 
     # 4. Apply fine-tuning strategy (freeze/selective/full/lora). LoRA may
     # re-wrap subtrees in place, so use the returned model.
     model = apply_strategy(model, recipe, metadata)
 
     # 5. Create DataLoaders
-    # action_dim is routed by WP3: data fact (schema) authoritative, recipe
-    # fallback, warn on mismatch. For pi0 the model's padded max (32) overrides.
-    routed_action_dim = resolve_action_dim(
-        schema=schema, metadata=metadata, recipe_action_dim=recipe.action_spec.action_dim,
-    )
-    model_metadata_dict = {
-        "action_dim": metadata.action_dim or routed_action_dim,
-        "metadata": metadata,
-    }
-    train_loader, val_loader = create_dataloaders(recipe, model_metadata=model_metadata_dict)
+    train_loader, val_loader = create_dataloaders(recipe, assembly)
 
     # 6. Build TrainingArguments
     training_args = _build_training_args(recipe)
@@ -433,29 +420,40 @@ def _save_inference_metadata(
     recipe: TrainRecipe,
     schema: object,
     norm_stats: object,
+    assembly: object,
 ) -> None:
-    """Save recipe, schema, and norm_stats to output_dir for inference.
+    """Save the deployment artifacts to output_dir.
 
     These files are immutable during training — written once before training
     starts so that any intermediate checkpoint can be used for inference.
 
     Saves:
-      - ``recipe.yaml``: resolved recipe used by this run
-      - ``schema.json``: dataset feature schema (cameras, dims, etc.)
-      - ``norm_stats.json``: normalisation mean/std for state and action
+      - ``assembly.json``: the resolved composition — the *execution contract*
+        this checkpoint was trained under (IO spec, mappings, pipeline plans,
+        plus the dataset description and statistics). Inference executes it and
+        derives nothing of its own.
+      - ``recipe.yaml``: resolved recipe used by this run (model selection and
+        tunables; not a source of composition facts)
+      - ``schema.json`` / ``norm_stats.json``: the same descriptions as readable
+        standalone files, for ``inspect`` and external tooling. **Not** read by
+        the inference engine — mixing them with the snapshot is what would let a
+        checkpoint run under a description it was not trained with.
     """
     meta_dir = output_path / INFERENCE_META_DIR
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Resolved recipe: this is the single deployment config source.
+    # 1. Resolved assembly: the execution contract.
+    save_assembly_artifact(meta_dir / ASSEMBLY_FILE, assembly)
+
+    # 2. Resolved recipe: model selection + per-run tunables.
     with open(meta_dir / RECIPE_FILE, "w") as f:
         yaml.safe_dump(_recipe_to_yaml_dict(recipe), f, sort_keys=False)
 
-    # 2. Schema
+    # 3. Schema (human/tooling readable copy)
     with open(meta_dir / SCHEMA_FILE, "w") as f:
         json.dump(schema.to_dict(), f, indent=2)
 
-    # 3. Norm stats
+    # 4. Norm stats (human/tooling readable copy)
     with open(meta_dir / NORM_STATS_FILE, "w") as f:
         json.dump(asdict(norm_stats), f, indent=2)
 

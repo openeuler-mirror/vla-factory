@@ -8,7 +8,7 @@ Run:
 """
 
 from __future__ import annotations
-from helpers import make_schema
+from helpers import make_assembly, make_schema
 
 import os
 import sys
@@ -356,17 +356,22 @@ class TestTransforms(unittest.TestCase):
         self.assertEqual(result["images.front"].shape, (3, IMAGE_H, IMAGE_W))
 
     def test_resize_images_without_size_is_noop(self):
-        from vla_factory.assembly.transforms import TransformContext
+        from vla_factory.assembly.transforms.base import PlanContext
         from vla_factory.assembly.transforms.resize_images import ResizeImages
 
-        self.assertIsNone(ResizeImages.from_config({"type": "resize_images"}, TransformContext(model_config={})))
+        # No model-side target → the step is planned away entirely.
+        self.assertIsNone(
+            ResizeImages.compile_call({"type": "resize_images"}, PlanContext())
+        )
 
-    def test_resize_images_requires_height_and_width_together(self):
-        from vla_factory.assembly.transforms import TransformContext
+    def test_resize_images_rejects_shape_arguments(self):
+        from vla_factory.assembly.transforms.base import PlanContext
         from vla_factory.assembly.transforms.resize_images import ResizeImages
 
-        with self.assertRaisesRegex(ValueError, "height.*width"):
-            ResizeImages.from_config({"type": "resize_images", "height": 224}, TransformContext(model_config={}))
+        with self.assertRaisesRegex(ValueError, "interface facts"):
+            ResizeImages.compile_call(
+                {"type": "resize_images", "height": 224}, PlanContext()
+            )
 
     def test_pad_dimensions(self):
         from vla_factory.assembly.transforms.pad_dimensions import PadDimensions
@@ -567,92 +572,63 @@ class TestDataLoaderBatching(unittest.TestCase):
         self.assertEqual(is_pad.dtype, torch.bool)
 
 
-class TestBuildTransforms(unittest.TestCase):
-    """Test _build_transforms logic in loader.py."""
+class TestPlanInstantiation(unittest.TestCase):
+    """A resolved plan becomes exactly the pipeline it describes.
 
-    def test_empty(self):
-        from vla_factory.training.loader import _build_transforms
-        with self.assertRaises(ValueError):
-            _build_transforms()
+    ``build_pipeline`` is the only way a step gets built now, so what used to be
+    "do the two derivations agree" is simply "does the one derivation run".
+    """
 
-    def test_normalize_only(self):
-        from vla_factory.training.loader import _build_transforms
-        from vla_factory.data.manifest import NormStats, FeatureStats
-        from vla_factory.model.interfaces.model import ModelMetadata
-        norm_stats = NormStats(
-            action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
-        )
-        with self.assertRaises(ValueError):
-            _build_transforms(norm_stats=norm_stats)
-
-        transforms = _build_transforms(
-            norm_stats=norm_stats,
-            model_metadata={
-                # The normalization method is a model fact, so it comes from the
-                # declaration rather than the step config (which now rejects it).
-                "metadata": ModelMetadata(name="stub", vector_normalization="mean_std"),
-                "transform_inputs": [
-                    {"type": "normalize_vector", "fields": ["actions"]},
-                ],
-            },
-        )
-        self.assertEqual(len(transforms), 1)
-        from vla_factory.assembly.transforms.normalize import NormalizeVector
-        self.assertIsInstance(transforms[0], NormalizeVector)
-
-    def test_normalize_and_pad(self):
-        from vla_factory.training.loader import _build_transforms
-        from vla_factory.data.manifest import NormStats, FeatureStats
-        from vla_factory.model.interfaces.model import ModelMetadata
-        norm_stats = NormStats(
-            action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
-        )
-        transforms = _build_transforms(
-            norm_stats=norm_stats,
-            model_metadata={
-                "action_dim": 32,
-                "metadata": ModelMetadata(name="stub", vector_normalization="mean_std"),
-                "transform_inputs": [
-                    {"type": "normalize_vector", "fields": ["actions"]},
-                    {"type": "pad_dimensions", "fields": ["actions"]},
-                ],
-            },
-            action_dim=ACTION_DIM,
-        )
-        self.assertEqual(len(transforms), 2)
-
-    def test_act_profile_image_pipeline(self):
-        from vla_factory.recipe.parser import parse_recipe_from_string
-        from vla_factory.training.loader import _build_transforms
-        from vla_factory.data.manifest import DataSchema, NormStats, FeatureStats
+    def _act_setup(self):
         from vla_factory.recipe.defaults import resolve_recipe
+        from vla_factory.recipe.parser import parse_recipe_from_string
 
-        recipe = parse_recipe_from_string("model:\n  name: act\n")
-        recipe = resolve_recipe(recipe)
-        from vla_factory.model.registry import get_entry
-        transforms = _build_transforms(
-            norm_stats=NormStats(
-                state=FeatureStats(mean=[0.0] * STATE_DIM, std=[1.0] * STATE_DIM),
-                action=FeatureStats(mean=[0.0] * ACTION_DIM, std=[1.0] * ACTION_DIM),
-            ),
-            model_metadata={
-                "action_dim": ACTION_DIM,
-                "metadata": get_entry("act").metadata,
-                "profile": recipe.model_config,
-                "transform_inputs": recipe.model_config["transforms"]["inputs"],
-            },
-            action_dim=ACTION_DIM,
-            recipe=recipe,
-            schema=make_schema(state_dim=STATE_DIM, action_dim=ACTION_DIM, cameras=("front",)),
+        recipe = resolve_recipe(parse_recipe_from_string("model:\n  name: act\n"))
+        schema = make_schema(
+            state_dim=STATE_DIM, action_dim=ACTION_DIM, cameras=("front",),
+            image_sizes={"front": (IMAGE_H, IMAGE_W)},
+        )
+        return recipe, make_assembly(schema, "act", recipe=recipe)
+
+    def test_every_planned_call_becomes_a_step(self):
+        from vla_factory.assembly.transforms import (
+            TransformContext, TransformRegistry, build_pipeline,
+        )
+
+        _, assembly = self._act_setup()
+        pipeline = build_pipeline(
+            assembly.data_to_model, TransformContext(norm_stats=assembly.norm_stats),
+        )
+        self.assertEqual(
+            [TransformRegistry.name_of(step) for step in pipeline.steps],
+            [call.type for call in assembly.data_to_model.calls],
+        )
+
+    def test_act_plan_runs_on_a_real_sample(self):
+        from vla_factory.assembly.transforms import TransformContext, build_pipeline
+
+        _, assembly = self._act_setup()
+        pipeline = build_pipeline(
+            assembly.data_to_model, TransformContext(norm_stats=assembly.norm_stats),
         )
         sample = {
             "images.front": np.zeros((IMAGE_H, IMAGE_W, 3), dtype=np.uint8),
             "state": np.zeros(STATE_DIM, dtype=np.float32),
             "actions": np.zeros((ACTION_HORIZON, ACTION_DIM), dtype=np.float32),
         }
-        out = transforms(sample)
+        out = pipeline(sample)
+        # CHW float32 — the layout/dtype contract the IO spec promises.
         self.assertEqual(out["images.front"].shape, (3, IMAGE_H, IMAGE_W))
         self.assertEqual(out["images.front"].dtype, np.float32)
+        self.assertEqual(out["actions"].shape, (ACTION_HORIZON, ACTION_DIM))
+
+    def test_statistics_come_from_the_context_not_the_call(self):
+        """``stats_ref`` is a reference; the numbers live in the context."""
+        from vla_factory.assembly.transforms import TransformContext, build_pipeline
+
+        _, assembly = self._act_setup()
+        with self.assertRaises(ValueError):
+            build_pipeline(assembly.data_to_model, TransformContext(norm_stats=None))
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -662,11 +638,12 @@ class TestEndToEnd(unittest.TestCase):
     def setUpClass(cls):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
+        from vla_factory.assembly.from_recipe import resolve_from_recipe
         from vla_factory.recipe.parser import parse_recipe
         from vla_factory.recipe.defaults import resolve_recipe
         from vla_factory.training.loader import create_dataloaders
 
-        yaml_path = Path(_project_root) / "vla_factory" / "examples" / "act_aloha.yaml"
+        yaml_path = Path(_project_root) / "examples" / "act_lekiwi.yaml"
         if not yaml_path.exists():
             raise unittest.SkipTest("YAML config not found")
         cls.recipe = parse_recipe(yaml_path)
@@ -674,7 +651,9 @@ class TestEndToEnd(unittest.TestCase):
         cls.recipe.data.source.path = str(DATASET_PATH)
         cls.recipe.batch_size = 2
         cls.recipe = resolve_recipe(cls.recipe)
-        cls.train_loader, cls.val_loader = create_dataloaders(cls.recipe)
+        # The same two calls train() makes: resolve once, then execute.
+        cls.assembly = resolve_from_recipe(cls.recipe)
+        cls.train_loader, cls.val_loader = create_dataloaders(cls.recipe, cls.assembly)
 
     def test_train_loader_nonempty(self):
         self.assertGreater(len(self.train_loader), 0)

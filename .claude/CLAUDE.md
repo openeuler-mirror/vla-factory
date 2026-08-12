@@ -43,11 +43,12 @@ YAML recipe → TrainRecipe → model registry (entries/<name>.py)
   → InferenceEngine + platform adapters (simulator / lerobot host / robotwin)
 ```
 
-The composition layer (`assembly/`) is being introduced: `resolve_assembly()`
-combines the data schema × model metadata × robot profile into a
-`ResolvedAssembly`. Today a `vlafactory-cli resolve` dry-run exercises it; the
-training/inference loops do not yet consume the resolved product (migration
-through architecture §7.4 stage 3 is implemented).
+The composition layer (`assembly/`) resolves the data schema × model metadata ×
+robot profile into a `ResolvedAssembly`, and **the training and inference loops
+consume it** (architecture §7.4 stage 4, data × model half): `train()` resolves
+once, builds the model and the pipeline from that product, and saves it as
+`inference_metadata/assembly.json`; `InferenceEngine` executes that saved
+contract. `robot_to_model` and the JointMapping consumers are still deferred.
 
 ---
 
@@ -97,11 +98,16 @@ through architecture §7.4 stage 3 is implemented).
   no transport / platform session info.
 - **`vla_factory/assembly/`** — composition resolution layer
   (data × model × robot). `resolver/` holds `resolve_assembly()` →
-  `ResolvedAssembly`, the serializable mapping/pipeline-spec types and the
-  structured `ResolutionError`. `transforms/` holds `TransformPipeline` + `TransformRegistry`
-  (`@register` steps: `resize_images`, `pad_dimensions`, `image_to_float`,
-  `image_layout`, `normalize`, `task_tokenize`, …) — YAML-driven, shared by
-  training and inference.
+  `ResolvedAssembly`, the serializable mapping/pipeline-plan types and the
+  structured `ResolutionError`. `from_recipe.py` is the one orchestration entry
+  (`resolve_from_recipe(recipe)`: registry → optional checkpoint check → robot
+  profile → dataset descriptions → pure resolver) used by train, inference and
+  the CLI. `artifact.py` reads/writes `assembly.json` (versioned envelope) and
+  holds the declaration-drift check. `transforms/` holds `TransformPipeline` +
+  `TransformRegistry` (`@register` steps: `resize_images`, `pad_dimensions`,
+  `image_to_float`, `image_layout`, `normalize`, `task_tokenize`, …); a step is
+  planned by `compile_call` (resolver) and built by `from_call`
+  (`build_pipeline`) — there is no declaration→step shortcut.
 - **`vla_factory/training/`** — training orchestration + sample building.
   `train.py` (recipe → trained model), `pytorch_trainer.py` (`VLATrainer`,
   wraps HF `Trainer`), `strategies/` (`apply_strategy`: full / freeze /
@@ -127,7 +133,9 @@ through architecture §7.4 stage 3 is implemented).
   - `connectors/` — dependency-free callbacks imported by the robot env
     (`robotwin.py` + bootstrap `robotwin.yml`), runnable without the model deps.
 - **`vla_factory/utils/constants.py`** — on-disk artifact layout:
-  `inference_metadata/{recipe.yaml,schema.json,norm_stats.json}`, `final/model.pt`.
+  `inference_metadata/{assembly.json,recipe.yaml,schema.json,norm_stats.json}`,
+  `final/model.pt`. The engine reads only the first two; `schema.json` /
+  `norm_stats.json` are readable copies for `inspect` and external tooling.
 - **`vla_factory/utils/vocabulary.py`** — the single source for the three
   cross-dimension controlled vocabularies (architecture §4.5): `CAMERA_SEMANTICS`,
   `CONTROL_MODES` (`joint_pos`/`joint_delta`/`joint_vel`), `ACTION_HEADS`, plus
@@ -146,16 +154,20 @@ through architecture §7.4 stage 3 is implemented).
 ## How it runs
 
 A `train` invocation goes: `parse_recipe` → `resolve_recipe` (merge model
-defaults) → `get_entry(model_name)` → factory builds the wrapped model
-from `model.path` (pretrained) or from-scratch → `apply_strategy` freezes
-params per `finetuning_strategy` + `ModelMetadata.components` →
-`create_dataloaders` (reader + codec + transform pipeline + sampler) →
-`VLATrainer` runs HF `Trainer` → saves `final/model.pt` +
-`inference_metadata/{recipe,schema,norm_stats}`.
+defaults) → **`resolve_from_recipe` (the composition, before any side effect —
+no output dir is created or wiped until it succeeds)** → `get_entry(model_name)`
+→ `factory(recipe, assembly)` builds the wrapped model from `model.path`
+(pretrained) or from-scratch → `apply_strategy` freezes params per
+`finetuning_strategy` + `ModelMetadata.components` →
+`create_dataloaders(recipe, assembly)` (reader + codec + the `data_to_model`
+plan instantiated + sampler) → `VLATrainer` runs HF `Trainer` → saves
+`final/model.pt` + `inference_metadata/{assembly,recipe,schema,norm_stats}`.
 
 `deploy --platform {simulator,lerobot,robotwin}` loads a checkpoint's
-`inference_metadata` to rebuild recipe/schema/norm_stats at inference time
-(no re-fit), builds the `InferenceEngine`, and serves it to a platform adapter:
+`inference_metadata/{assembly.json,recipe.yaml}` and **executes** the saved
+assembly (descriptions, IO spec, both pipeline plans; no re-resolution, and a
+checkpoint without `assembly.json` is refused rather than re-derived),
+builds the `InferenceEngine`, and serves it to a platform adapter:
 via `PolicyRunner` (`policy_runtime.py` driving `transports/zmq.py`) for
 `simulator`/`lerobot` real robot, or a
 length-prefixed-JSON TCP server (`transports/length_prefixed_json.py` +
@@ -165,12 +177,15 @@ engine on a dataset sample / per-episode L1.
 
 The transform pipeline is the contract bridge: each model's declaration lists
 the `TransformRegistry` steps it needs in `ModelMetadata.params["transforms"]`,
-while the values those steps depend on (image range, normalize mode, vector
-normalization, pad target) are *facts* on the named metadata fields — a step
-config that repeats one is rejected, not honoured. The training/inference layers
-run the pipeline (the steps themselves live in `assembly/transforms`). The
-adapter never rescales images itself — the pipeline must produce the exact
-layout/range the upstream model expects.
+while interface values (image range, normalize mode, vector normalization,
+vector widths and fixed image resolutions) come from named model facts. ACT's
+optional `input_image_size` is an explicit from-scratch model tunable; absent it,
+the IO spec keeps the dataset-native size. The resolver builds `ModelIOSpec`
+first, then compiles `data_to_model` / `model_to_robot` calls toward that target.
+Steps never report shapes back through `output_widths`/`output_image_sizes`, and
+shape arguments repeated in a step config are rejected. Training and inference
+only instantiate saved plans (`build_pipeline`); the deployed postprocessor is
+the planned inverse, never the forward list reversed.
 
 ---
 
@@ -233,6 +248,26 @@ upstream's batch format; it does not rewrite the upstream model. (Contrast
 RLinf, which *inherits* `PI0Pytorch` to add RL heads for its own use case —
 vla_factory only fine-tunes, so a thin wrapper is the correct boundary.)
 
+**The assembly is the downstream's only entry.** Training and inference read
+every data × model × robot relation off the `ResolvedAssembly` — widths and
+horizon from `model_io_spec`, slots from `camera_mapping`, pipelines from the
+plans — and never re-derive one from a schema, a model name or an array shape
+(architecture §4.2.6). The registry is still consulted for two things: the
+factory (code cannot be serialized) and the checkpoint's declaration-drift check
+(`assembly/artifact.py`). A checkpoint carries its assembly, so serving it never
+re-resolves — a declaration that changed since training is a loud failure rather
+than a pipeline that quietly feeds the model wrong-valued inputs.
+
+**Model IO precedes pipeline planning.** Resolution establishes
+all five Mappings first, builds `ModelIOSpec` directly from `ModelMetadata`,
+resolved model tunables, `DataSchema` and `CameraMapping`, and only then plans
+transforms. State/Action Mapping entries represent real correspondences only;
+never expand target-width padding into source-less Mapping entries. Padding and
+resize calls consume the source/target shapes in `PlanContext`; never recover an
+interface by scanning calls or adding a transform-side `output_*` shape hook.
+At inference, keep `model_output_dim` (network output) distinct from
+`execution_action_dim` (the command leaving `model_to_robot`).
+
 ---
 
 ## Extending VLA Factory: a new model
@@ -243,7 +278,12 @@ Follow `entries/pi0.py` (or `act.py`) as the worked example. Steps:
    This is the whole model declaration; there is no second file:
    - `@register_vla(ModelMetadata(name=..., backend="pytorch",
      action_head_type=..., components={...}))` on a factory
-     `(recipe, schema) -> VLAModel`.
+     `(recipe, assembly) -> VLAModel`. Take every shape and slot from
+     `assembly.model_io_spec` / `assembly.camera_mapping` — deriving
+     `action_dim` from a schema or reading `camera_mapping` off the recipe is
+     the composition's job, and doing it here is how the two used to disagree.
+     `recipe` is only for what is not a relation: `model.path` and
+     `model.config`.
    - Defer heavy/optional upstream imports **inside the factory**, not at
      module top, so registry load stays robust (rationale in
      `registry.py:RegistryLoadError`).
@@ -255,6 +295,11 @@ Follow `entries/pi0.py` (or `act.py`) as the worked example. Steps:
      upstream hyperparameters plus the default `transforms` step list — in
      `params`. Every `params` key must be read by the factory or by a registered
      framework consumer, or model construction fails.
+   - The action horizon follows the paradigm and the resolver enforces it:
+     `pretrained_finetune` declares the named `action_horizon` (a family fact),
+     `from_scratch` declares `params["action_horizon"]` (the user's choice).
+     Declaring both, neither, or the wrong one for the paradigm is a broken
+     entry.
 2. **pyproject extra** — add `[project.optional-dependencies].<name>` for the
    upstream ecosystem deps. If it needs uv (strict pins / patches), wire it
    into `scripts/install.sh` rather than expecting `pip install -e ".[name]"`.

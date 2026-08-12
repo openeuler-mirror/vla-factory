@@ -27,12 +27,20 @@ from vla_factory.robot import get_robot_profile
 
 @pytest.fixture
 def schema() -> DataSchema:
+    # Per-dim names are the LeKiwi motor keys, so this schema composes with the
+    # ``robot`` fixture below: the joint-order check embeds the dataset's dims
+    # into the robot's joint list, and names that match nothing would fail it.
     return make_schema(
         state_dim=6,
         action_dim=8,
         cameras=("front", "wrist"),
         fps=30,
         has_language=True,
+        state_keys=("shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
+                    "wrist_flex.pos", "wrist_roll.pos", "gripper.pos"),
+        action_keys=("base_x", "base_y", "base_z",
+                     "shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
+                     "wrist_flex.pos", "wrist_roll.pos"),
     )
 
 
@@ -40,7 +48,6 @@ def schema() -> DataSchema:
 def metadata() -> ModelMetadata:
     return ModelMetadata(
         name="act",
-        action_dim=7,
         action_horizon=100,
         requires_prompt=False,
     )
@@ -90,7 +97,7 @@ def test_model_io_spec_derived_from_facts(schema, norm_stats, metadata):
     assembly = resolve_assembly(schema, norm_stats, metadata)
     ci = assembly.model_io_spec
     assert ci.cameras == schema.cameras
-    assert ci.action_dim == metadata.action_dim
+    assert ci.action_dim == schema.action_dim
     assert ci.action_horizon == metadata.action_horizon
     assert ci.state_dim == schema.state_dim
     assert ci.requires_language is metadata.requires_prompt
@@ -100,8 +107,16 @@ def test_serialized_assembly_has_metadata_as_only_model_interface_source(
     schema, norm_stats, metadata,
 ):
     serialized = resolve_assembly(schema, norm_stats, metadata).to_dict()
-    assert serialized["metadata_ref"]["action_dim"] == metadata.action_dim
+    assert serialized["metadata_ref"]["action_dim"] == 0
     assert "contract_ref" not in serialized
+
+
+def test_flexible_model_cannot_also_declare_a_fixed_action_width(
+    schema, norm_stats,
+):
+    metadata = ModelMetadata(name="broken", action_dim=7, action_horizon=1)
+    with pytest.raises(ValueError, match="dim_policy='flexible'.*action_dim=7"):
+        resolve_assembly(schema, norm_stats, metadata)
 
 
 # ── Missing input ─────────────────────────────────────────────────

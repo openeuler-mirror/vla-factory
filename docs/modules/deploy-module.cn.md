@@ -223,16 +223,21 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
 - state/action 的维度→key 映射必须来自 schema 快照；禁止在部署时以排序或任何
   猜测方式生成。非零维向量缺 keys、或 key 数量与维度不符，必须失败——旧
   checkpoint 应重新生成完整 metadata，不提供 live dataset 回退。
-- 相机顺序：显式 `camera_names` 覆盖优先于 schema。解析结果必须以只读标准字段
-  （`camera_keys` / `state_keys` / `action_keys` / `schema` / `recipe`）对外
-  暴露，供上层 adapter 构造使用。
+- 相机顺序：来自具身组合的 `model_io_spec.cameras`，**没有部署期改名入口**——改名
+  会让 CameraMapping 指向 observation 里不存在的键（pi0 会静默发占位图继续推理）。
+  平台自己的相机命名由 PlatformAdapter 负责映射。解析结果必须以只读标准字段
+  （`camera_keys` / `state_keys` / `action_keys` / `execution_action_dim` /
+  `model_output_dim` / `schema` / `recipe`）对外暴露，供上层 adapter 构造使用。
+- 动作宽度有两个，不能混用：`model_output_dim` 是模型自身输出的宽度（pi0 = 32），
+  `execution_action_dim` 是 `model_to_robot` 执行完之后离开引擎的宽度（pi0 = 8）。平台动作
+  适配器按后者对齐 motor key。
 
 **模型与 transform**
 
 - 模型必须经 registry 工厂按 recipe + schema 构建；权重加载必须 strict——参数
   多出、缺失或形状不符都是错误，禁止部分加载。
-- preprocessor / postprocessor 必须且只能从 resolved recipe 的
-  `transforms.inputs` 重建；缺该字段即 metadata 不完整，必须失败。recipe 声明
+- preprocessor / postprocessor 必须且只能从 assembly 中已解析的
+  `data_to_model` / `model_to_robot` plan 构造；缺失或 unresolved 必须失败。recipe 声明
   的自定义 transform 模块必须先于 pipeline 构建完成导入，与训练侧一致（见
   [数据模块 §5.3](data-module.cn.md#53-新增变换步骤)）。
 - flow-matching / diffusion 头的推理步数必须来自 `ModelMetadata`；禁止在部署
@@ -272,7 +277,8 @@ ObsDict
 
 必须保证：
 
-- 输出反变换必须由训练 transform 的 `inverse_for_output()` 生成（见
+- 输出反变换必须来自 checkpoint 里规划好的 `model_to_robot` pipeline——它由
+  解析器按各 step 自己的 `inverse_call()` 生成（见
   [数据模块 §4.3](data-module.cn.md#43-模型变换流水线设计)）；禁止在部署侧
   手写第二套反归一化逻辑——正向与反向必须来自同一处声明，才能保证互逆。
 - raw state 必须对反变换可用，为 delta→absolute 类反变换预留

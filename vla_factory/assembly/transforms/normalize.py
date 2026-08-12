@@ -12,8 +12,6 @@ own statistics.  **Images** are normalised with ImageNet channel statistics
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 
 from vla_factory.data.manifest import NormStats
@@ -219,10 +217,6 @@ class NormalizeVector(TransformStep):
         return cls(stats=stats, fields=tuple(args.get("fields", ())),
                    method=args["method"])
 
-    def call_args(self) -> dict:
-        return {"fields": list(self.fields), "method": self.method,
-                "stats_ref": "norm_stats"}
-
     def _normalize(self, x, stats, field_name: str):
         if self.method == "quantile":
             q01, q99 = _require_quantiles(stats, field_name)
@@ -251,21 +245,6 @@ class NormalizeVector(TransformStep):
         name = ("unnormalize_action_quantile" if args.get("method") == "quantile"
                 else "unnormalize_action")
         return name, {"stats_ref": "norm_stats"}
-
-    def inverse_for_output(self, ctx=None) -> TransformStep | None:
-        # The instance knows whether it holds action statistics even when no
-        # context is supplied, so it answers that half itself and defers the
-        # pairing to inverse_call.
-        if self._stats.action is None:
-            return None
-        plan = PlanContext.of(ctx)
-        if not plan.has_action_stats:
-            plan = replace(plan, has_action_stats=True)
-        inverse = type(self).inverse_call(self.call_args(), plan)
-        if inverse is None:
-            return None
-        name, args = inverse
-        return TransformRegistry.get(name).from_call(args, self._stats)
 
 
 # openpi's quantile-normalisation epsilon (transforms.py _normalize_quantile).

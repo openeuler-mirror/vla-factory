@@ -19,11 +19,10 @@ cv2 handles — cannot make that trip, and the resolver must also stay runnable
 without the optional model extras installed (architecture §4.2.2).
 
 So this is not an extra layer over "just build the pipeline": the serialized
-name+args form already exists today as ``model.config.transforms.inputs`` in the
-saved recipe. What the resolver adds is that the facts are already baked in —
-pad target, normalize method, and the skip decisions each step's ``from_config``
-would otherwise re-derive — so the consuming side executes instead of deriving
-the same thing a second time (architecture §4.2.6).
+name+args form is the same shape a model declares its steps in. What the
+resolver adds is that the facts are already baked in — pad target, normalize
+method, and the skip decisions — so the consuming side executes instead of
+deriving the same thing a second time (architecture §4.2.6).
 
 The two names mirror the executable pair they are built into::
 
@@ -34,7 +33,10 @@ The two names mirror the executable pair they are built into::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
+
+from vla_factory.data.manifest import DataSchema, NormStats
 
 
 # ── Transform pipeline (planned calls, not yet instantiated) ──────
@@ -128,7 +130,10 @@ class CameraMapping:
 
 @dataclass(frozen=True)
 class StateMapping:
-    """Data/robot state field → model state-vector correspondence."""
+    """Real data/robot state field → model state-vector correspondence.
+
+    Contains no padding-only model slots; those are an interface/plan concern.
+    """
 
     entries: tuple[dict[str, Any], ...] = ()
     resolved: bool = False
@@ -146,7 +151,10 @@ class StateMapping:
 
 @dataclass(frozen=True)
 class ActionMapping:
-    """Dimension/semantic relation between data / model-output / robot actions."""
+    """Real dimension/semantic relation among data, model and robot actions.
+
+    Contains no padding-only model slots; those are an interface/plan concern.
+    """
 
     entries: tuple[dict[str, Any], ...] = ()
     resolved: bool = False
@@ -210,14 +218,21 @@ class ModelIOSpec:
     required; outputs are the action width and horizon. Downstream builds the
     model against this and feeds it tensors shaped by it.
 
-    Widths are folded through the planned pipeline, so they are the shapes that
-    really arrive, not the ones any single description hoped for.
+    ``cameras`` are the *canonical observation keys* — the data-side names the
+    framework's sample dict and ``ObsDict`` use. They are **not** the model's
+    ``vision_slots``: pi0 declares three openpi roles while the dataset supplies
+    ``front``/``wrist``, and :class:`CameraMapping` is what relates the two.
+
+    The spec is resolved directly from model facts and flexible/native data
+    facts. Pipeline planning consumes these targets; it does not infer them.
     """
 
     action_dim: int = 0
     action_horizon: int = 0
     state_dim: int = 0
     cameras: tuple[str, ...] = ()
+    # Per-camera ``(height, width)`` required at the model boundary.
+    camera_shapes: dict[str, tuple[int, int]] = field(default_factory=dict)
     requires_language: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -226,6 +241,7 @@ class ModelIOSpec:
             "action_horizon": self.action_horizon,
             "state_dim": self.state_dim,
             "cameras": list(self.cameras),
+            "camera_shapes": {k: list(v) for k, v in self.camera_shapes.items()},
             "requires_language": self.requires_language,
         }
 
@@ -236,6 +252,10 @@ class ModelIOSpec:
             action_horizon=int(d.get("action_horizon", 0)),
             state_dim=int(d.get("state_dim", 0)),
             cameras=tuple(d.get("cameras") or ()),
+            camera_shapes={
+                k: (int(v[0]), int(v[1]))
+                for k, v in (d.get("camera_shapes") or {}).items()
+            },
             requires_language=bool(d.get("requires_language", False)),
         )
 
@@ -274,6 +294,25 @@ class ResolvedAssembly:
     data_to_model: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
     robot_to_model: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
     model_to_robot: TransformPipelinePlan = field(default_factory=TransformPipelinePlan)
+
+    # ── Typed views over the serialized description refs ──
+    #
+    # The refs stay plain dicts (the assembly has to survive a JSON round-trip
+    # into a checkpoint), but downstream needs the real objects — the dataset's
+    # per-camera image sizes to build a model, the statistics to build a
+    # pipeline. Reconstructing them here keeps that in one place and keeps the
+    # assembly the single entry point: nobody has to reach back to a reader or a
+    # registry for a description the assembly already carries (§4.2.6).
+    # ``cached_property`` writes straight to the instance ``__dict__``, so it
+    # works on a frozen dataclass.
+
+    @cached_property
+    def schema(self) -> DataSchema:
+        return DataSchema.from_dict(self.schema_ref)
+
+    @cached_property
+    def norm_stats(self) -> NormStats:
+        return NormStats.from_dict(self.norm_stats_ref)
 
     def to_dict(self) -> dict[str, Any]:
         return {

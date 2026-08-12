@@ -8,15 +8,16 @@ Stage               Module
 Load                here
 Validate            here
 Check Pairs         :mod:`.compatibility`
+Resolve Mappings    :mod:`.mappings`
+Build IO Spec       :mod:`.io_spec`
 Plan Pipeline       :mod:`.pipeline_planner`
-Build IO Spec       :mod:`.pipeline_planner`
-Resolve Mapping     :mod:`.mappings`
 Emit                here
 ==================  ==========================
 
-Build IO Spec runs *after* Plan Pipeline: the widths in the model IO spec are
-folded through the planned calls, so the spec can only ever report what the
-pipeline really produces.
+Mappings contain only real semantic correspondences, never synthetic padding
+slots, so they can all be resolved first. Model/data facts then define the
+runtime interface, and transform steps compile the reconciliation needed to
+reach it; the plan is never a second source of tensor shapes.
 
 The function is pure: it creates no model, no DataLoader, no output directory
 and uses no GPU, and its result is fully serializable.
@@ -27,11 +28,11 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from vla_factory.data.manifest import DataSchema, NormStats
+from vla_factory.data.manifest import DataSchema, NormStats, resolve_vector_keys
 from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.robot.profile import RobotProfile
 
-from . import mappings, pipeline_planner
+from . import io_spec as io_spec_resolver, mappings, pipeline_planner
 from .compatibility import check_pairs
 from .errors import (
     INVALID_DESCRIPTION,
@@ -39,7 +40,7 @@ from .errors import (
     UNSUPPORTED_OVERRIDE,
     make_error,
 )
-from .types import ModelIOSpec, ResolvedAssembly
+from .types import ResolvedAssembly
 
 
 # ── helpers ───────────────────────────────────────────────────────
@@ -118,8 +119,21 @@ def _validate_overrides(overrides: dict[str, Any]) -> None:
         )
 
 
-def _validate(robot_profile: RobotProfile | None) -> None:
+def _validate(schema: DataSchema, robot_profile: RobotProfile | None) -> None:
     """Validate each description's internal structure."""
+    # Every non-empty vector must carry exactly one name per dimension: the
+    # dimension→motor-key correspondence is a description fact that the deploy
+    # side reads back, and it is never invented by sorting. Validating it here
+    # rather than in ``train()`` means an incomplete dataset description is
+    # reported before anything downstream (an output directory, a model) exists.
+    try:
+        resolve_vector_keys(schema)
+    except ValueError as e:
+        raise make_error(
+            INVALID_DESCRIPTION, "schema",
+            field_name="state_dims/action_dims", value=None, detail=str(e),
+        ) from e
+
     if robot_profile is not None:
         if not isinstance(robot_profile, RobotProfile):
             raise make_error(
@@ -147,6 +161,7 @@ def resolve_assembly(
     robot_profile: RobotProfile | None = None,
     overrides: dict[str, Any] | None = None,
     model_config: dict[str, Any] | None = None,
+    model_path: str | None = None,
 ) -> ResolvedAssembly:
     """Resolve a ``data × model × robot`` combination into a ``ResolvedAssembly``.
 
@@ -168,8 +183,14 @@ def resolve_assembly(
     model_config
         The recipe's resolved ``model.config`` — this model's tunables after
         ``resolve_recipe()`` merged the declared defaults under the per-run
-        overrides. Only the ``transforms.inputs`` step list is read, to plan
-        the pipelines. Omit it and the model's own declaration is used.
+        overrides. The IO stage reads explicit interface tunables such as ACT's
+        ``action_horizon`` / ``input_image_size``; the planner reads the
+        ``transforms.inputs`` policy list. Omit it and the model's own
+        declaration is used.
+    model_path
+        The recipe's checkpoint selection, used only as the ``task_tokenize``
+        tokenizer fallback when a model declares no ``tokenizer_repo`` (see
+        :func:`pipeline_planner.plan_context`). No file is read from it here.
 
     Returns
     -------
@@ -185,9 +206,9 @@ def resolve_assembly(
         ``params``) and safe for tools to key on.
     ValueError, KeyError
         A registry entry declaring something impossible: a transform step whose
-        model fact it never declared, a ``resize_images`` without usable
-        dimensions, a ``vector_normalization`` no NormalizeVector method
-        implements, a step type that is not registered. These are programming
+        model fact it never declared, an invalid model image size or missing
+        resize policy, a ``vector_normalization`` no NormalizeVector method
+        implements, or a step type that is not registered. These are programming
         errors in a model or transform entry, not properties of this
         data × model × robot combination, so they stay plain exceptions with no
         stable code — the same failures the pipeline build raises.
@@ -200,33 +221,31 @@ def resolve_assembly(
     # 2. Validate (only the optional descriptions need extra checks here; the
     #    core descriptions were type-checked in Load).
     _validate_overrides(overrides_ref)
-    _validate(robot_profile)
+    _validate(schema, robot_profile)
 
     # 3. Check Pairs
     check_pairs(schema, norm_stats, metadata, robot_profile, overrides_ref)
 
-    # 4. Plan Pipeline
-    declaration = pipeline_planner.transform_declaration(metadata, model_config)
-    plan_ctx = pipeline_planner.plan_context(schema, norm_stats, metadata, overrides_ref)
-    data_to_model = pipeline_planner.plan_data_to_model(declaration, plan_ctx)
-    model_to_robot = pipeline_planner.plan_model_to_robot(data_to_model, plan_ctx)
-
-    # 5. Build IO Spec (after Plan Pipeline — see the module docstring)
-    state_dim, action_dim = pipeline_planner.vector_widths(data_to_model, schema, metadata)
-    io_spec = ModelIOSpec(
-        action_dim=action_dim,
-        action_horizon=metadata.action_horizon,
-        state_dim=state_dim,
-        cameras=tuple(schema.cameras),
-        requires_language=bool(metadata.requires_prompt),
-    )
-
-    # 6. Resolve Mapping
+    # 4. Resolve Mappings. They describe only real correspondences, so none
+    #    depends on a model target width or a planned padding call.
     camera_mapping = mappings.resolve_camera_mapping(schema, metadata, overrides_ref)
-    state_mapping = mappings.resolve_state_mapping(schema, state_dim)
-    action_mapping = mappings.resolve_action_mapping(schema, action_dim)
+    state_mapping = mappings.resolve_state_mapping(schema)
+    action_mapping = mappings.resolve_action_mapping(schema)
     language_mapping = mappings.resolve_language_mapping(schema, metadata, overrides_ref)
     joint_mapping = mappings.resolve_joint_mapping(schema, robot_profile)
+
+    # 5. Build IO Spec directly from model/data facts.
+    io_spec = io_spec_resolver.resolve_model_io_spec(
+        schema, metadata, model_config, camera_mapping,
+    )
+
+    # 6. Plan Pipeline against that target interface.
+    declaration = pipeline_planner.transform_declaration(metadata, model_config)
+    plan_ctx = pipeline_planner.plan_context(
+        schema, norm_stats, metadata, io_spec, overrides_ref, model_path,
+    )
+    data_to_model = pipeline_planner.plan_data_to_model(declaration, plan_ctx)
+    model_to_robot = pipeline_planner.plan_model_to_robot(data_to_model, plan_ctx)
 
     # 7. Emit
     return ResolvedAssembly(

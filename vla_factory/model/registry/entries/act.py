@@ -26,7 +26,6 @@ from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 
-from vla_factory.assembly.action_facts import resolve_action_dim, resolve_action_horizon
 from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.model.interfaces.observation import Observation
 from vla_factory.model.registry.registry import register_vla
@@ -310,6 +309,12 @@ _ACT_METADATA = ModelMetadata(
     # computed by the factory from the recipe + schema, and anything omitted
     # falls back to lerobot's own ACTConfig defaults.
     params={
+        # ACT trains from scratch, so its chunk length is the user's choice, not
+        # a pretrained family fact — which is exactly why it is declared here
+        # rather than on ModelMetadata.action_horizon (the resolver enforces
+        # that split by training_paradigm). The composition resolver reads it and
+        # reports it as ModelIOSpec.action_horizon.
+        "action_horizon": 100,
         # ── Transformer / CVAE ──
         "dim_model": 512,
         "n_heads": 8,
@@ -322,18 +327,22 @@ _ACT_METADATA = ModelMetadata(
         "dropout": 0.1,
         # ACT's regression head is deterministic — one forward, no denoising.
         "num_inference_steps": 1,
+        # Optional model input size for this from-scratch family. ``None``
+        # means build ACT around the dataset's native camera resolutions.
+        "input_image_size": None,
         # ── Data transforms ──
         # Dataset images are raw HWC uint8; this chain produces the tensor
         # contract lerobot ACT expects (CHW float32, ImageNet-normalized). ACT
         # does not resize by default — image feature shapes come from
-        # DataSchema; add resize_images with height/width only when an
-        # experiment explicitly wants it. The model-side facts (input range,
+        # DataSchema. ``input_image_size`` changes the model interface and this
+        # placeholder step then reconciles images to it. The model-side facts (input range,
         # imagenet mode, vector normalization) are read from the named fields
         # above and must not be repeated in the step configs.
         "transforms": {
             "inputs": [
                 {"type": "image_to_float"},
                 {"type": "image_layout", "to": "CHW"},
+                {"type": "resize_images"},
                 {"type": "image_normalize"},
                 {"type": "normalize_vector", "fields": ["state", "actions"]},
                 {"type": "pad_dimensions", "fields": ["actions"]},
@@ -344,12 +353,12 @@ _ACT_METADATA = ModelMetadata(
 
 
 @register_vla(_ACT_METADATA)
-def load_act(recipe, schema) -> ACTModelWrapper:
+def load_act(recipe, assembly) -> ACTModelWrapper:
     """Factory: create ACT model via lerobot's official ``ACTPolicy``.
 
     Args:
-        recipe: TrainRecipe with all training configuration.
-        schema: DataSchema with dataset metadata (cameras, state_dim, etc.).
+        recipe: TrainRecipe — checkpoint selection + this model's tunables.
+        assembly: ResolvedAssembly — IO spec, camera mapping, dataset schema.
 
     Returns:
         ACTModelWrapper (nn.Module + VLAModelPyTorch)
@@ -363,7 +372,7 @@ def load_act(recipe, schema) -> ACTModelWrapper:
             "ACT requires lerobot (upstream model impl). "
             f"Install: {_ACT_METADATA.install_hint}"
         )
-    return _load_lerobot(recipe, schema)
+    return _load_lerobot(recipe, assembly)
 
 
 def _resolve_act_config(recipe_or_config) -> TrackedConfig:
@@ -386,65 +395,38 @@ def _resolve_act_config(recipe_or_config) -> TrackedConfig:
     return TrackedConfig(OmegaConf.to_container(merged, resolve=True))
 
 
-def _resolve_resize_image_size(cfg: dict) -> tuple[int, int] | None:
-    """Return the configured resize target, or None for dataset-native size."""
-    transform_inputs = (cfg.get("transforms") or {}).get("inputs") or []
-    for item in transform_inputs:
-        if not isinstance(item, dict) or item.get("type") != "resize_images":
-            continue
-        height = item.get("height")
-        width = item.get("width")
-        if height is None and width is None:
-            return None
-        if height is None or width is None:
-            raise ValueError("resize_images requires both `height` and `width`.")
-        height = int(height)
-        width = int(width)
-        if height <= 0 or width <= 0:
-            raise ValueError("resize_images target height and width must be positive.")
-        return height, width
-    return None
-
-
-def _schema_image_size(schema, camera_name: str) -> tuple[int, int]:
-    image_sizes = getattr(schema, "image_sizes", {}) or {}
-    size = image_sizes.get(camera_name)
-    if size is None and len(image_sizes) == 1:
-        size = next(iter(image_sizes.values()))
-    if size is None:
-        raise ValueError(
-            f"Cannot infer image size for camera `{camera_name}`. "
-            "Set `height` and `width` on the resize_images transform, or use "
-            "a dataset reader that provides DataSchema.image_sizes."
-        )
-    if len(size) != 2:
-        raise ValueError(f"DataSchema.image_sizes[{camera_name!r}] must be (height, width).")
-    return int(size[0]), int(size[1])
-
-
-def _load_lerobot(recipe, schema) -> ACTModelWrapper:
+def _load_lerobot(recipe, assembly) -> ACTModelWrapper:
     """Create the model from lerobot's official ACTPolicy."""
     ACTPolicy, ACTConfig = _try_import_lerobot()
     from lerobot.configs.types import FeatureType, PolicyFeature
 
-    action_spec = recipe.action_spec
-    # WP3 — action facts come from the dimension that owns them: the dataset
-    # decides how many action dims exist, and ACT (from_scratch) legitimately
-    # lets the recipe pick the chunk size. The recipe stays the fallback, and a
-    # disagreement warns rather than silently building a head that does not
-    # match what the dataloader feeds it.
-    action_dim = resolve_action_dim(
-        schema=schema, metadata=_ACT_METADATA,
-        recipe_action_dim=action_spec.action_dim,
-    )
-    action_horizon = resolve_action_horizon(
-        metadata=_ACT_METADATA,
-        recipe_action_horizon=action_spec.action_horizon,
-    )
-    # Stateless datasets fall back to the action width (ACT always takes a state
-    # input); kept as an explicit rule for the resolver to take over in phase 3.
-    state_dim = schema.state_dim or action_dim
-    camera_names = list(schema.cameras) if schema.cameras else ["top"]
+    # Every shape below is the resolved composition's answer, not this adapter's:
+    # The IO spec is resolved from model/data facts before the pipeline is
+    # planned, and the pipeline consumes the same targets. Where the composition
+    # says "nothing", this fails rather than
+    # inventing a default — a model built around a guessed interface trains
+    # happily and wrongly.
+    io_spec = assembly.model_io_spec
+    action_dim = io_spec.action_dim
+    action_horizon = io_spec.action_horizon
+    state_dim = io_spec.state_dim
+    if not state_dim:
+        raise ValueError(
+            "ACT requires a state input, but the resolved composition has "
+            "state_dim=0 (the dataset provides no proprioceptive vector)."
+        )
+    # ACT declares no vision slots, so its visual inputs *are* the dataset
+    # cameras — the camera mapping says so explicitly (identity entries) rather
+    # than this adapter reading schema.cameras and hoping the resolver agreed.
+    camera_names = [
+        entry["data_source"] for entry in assembly.camera_mapping.entries
+        if entry.get("data_source")
+    ]
+    if not camera_names:
+        raise ValueError(
+            "ACT needs at least one camera, but the resolved camera mapping has "
+            "no data source for any slot."
+        )
 
     # Configuration: ACT's declared ``ModelMetadata.params`` are the baseline and
     # the recipe's per-run model.config deep-merges on top (recipe wins), folded
@@ -453,15 +435,15 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
     # not know raises a TypeError there — no silent typo failures either way.
     cfg = _resolve_act_config(recipe)
 
-    # Framework-managed keys are computed from the recipe/schema and must not
-    # pass through to ACTConfig. Image feature sizes come from resize_images
-    # when configured, otherwise from the dataset schema's native image size.
-    resize_image_size = _resolve_resize_image_size(cfg)
+    # Framework-managed keys are computed from the composition and must not pass
+    # through to ACTConfig.
     for fw_key in ("chunk_size", "n_action_steps", "input_features", "output_features",
-                   "transforms", "num_inference_steps"):
+                   "transforms", "num_inference_steps", "action_horizon",
+                   "input_image_size"):
         cfg.pop(fw_key, None)
 
-    # Build input_features dynamically from dataset cameras
+    # Build input_features from the resolved model interface. The transform plan
+    # was compiled from these same sizes.
     input_features = {
         "observation.state": PolicyFeature(
             type=FeatureType.STATE,
@@ -469,7 +451,14 @@ def _load_lerobot(recipe, schema) -> ACTModelWrapper:
         ),
     }
     for cam in camera_names:
-        image_size = resize_image_size or _schema_image_size(schema, cam)
+        image_size = io_spec.camera_shapes.get(cam)
+        if image_size is None:
+            raise ValueError(
+                f"No image size resolved for camera {cam!r}: the dataset "
+                "declares no resolution for it and the model declares no "
+                "input_image_size. Set model.config.input_image_size, or use "
+                "a reader that reports camera resolutions."
+            )
         input_features[f"observation.images.{cam}"] = PolicyFeature(
             type=FeatureType.VISUAL,
             shape=(3, *image_size),

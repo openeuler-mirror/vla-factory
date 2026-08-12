@@ -1,5 +1,10 @@
 # 开发计划：组合解析迁移阶段 3「生成 Mapping 与 T1 TransformPipelinePlan」
 
+> **后续设计更正（阶段 4 review）**：本文记录的 `output_widths()` / pipeline fold 是
+> 当时实现过程，不是当前架构。现实现先从 ModelMetadata、model tunables 与 DataSchema
+> 直接建立 `ModelIOSpec`，再由 pipeline 消费目标接口；`output_widths`、
+> `output_image_sizes`、`fold_widths` 均已删除。当前规则见阶段 4/5 计划 §2.8。
+
 > 状态：**WP0–WP6 已执行完毕**（工作树，未提交），`pytest` 303 passed / 3 skipped。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段3、
 > §4.2.3（Mapping）、§4.2.4（Transform Pipeline）。

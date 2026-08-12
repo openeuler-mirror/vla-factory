@@ -26,7 +26,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from vla_factory.recipe.recipe import ActionSpecConfig, TrainRecipe
-from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
+from vla_factory.data.manifest import (
+    ActionDim, DataSchema, FeatureStats, NormStats, StateDim, resolve_vector_keys,
+)
 from vla_factory.inference.infer import (
     InferenceEngine,
     ObsDict,
@@ -573,17 +575,31 @@ class TestResolveVectorKeys:
         assert sk == ("s0", "s1", "s2")
         assert ak == ("a0", "a1")
 
+    # A nameless dim is what a *broken reader* produces, so these build the
+    # schema directly: ``make_schema`` names every dim, exactly as every real
+    # reader does (and as the resolver's Validate stage now requires).
+
     def test_raises_when_dim_has_no_name(self):
         """A non-empty vector with a nameless dim violates the schema contract."""
-        schema = make_schema(state_dim=3, action_dim=3)  # dims present, no names
+        schema = DataSchema(
+            state_dims=tuple(StateDim(name=None, source_field="observation.state") for _ in range(3)),
+            action_dims=tuple(ActionDim(name=None, source_field="action") for _ in range(3)),
+        )
         with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)
 
     def test_partial_names_raises(self):
         """A dim without a name (keys shorter than dim count) fails."""
-        schema = make_schema(
-            state_dim=3, action_dim=2,
-            state_keys=("a", "b"), action_keys=("x", "y"),  # 3rd state dim unnamed
+        schema = DataSchema(
+            state_dims=(
+                StateDim(name="a", source_field="observation.state"),
+                StateDim(name="b", source_field="observation.state"),
+                StateDim(name=None, source_field="observation.state"),   # 3rd dim unnamed
+            ),
+            action_dims=(
+                ActionDim(name="x", source_field="action"),
+                ActionDim(name="y", source_field="action"),
+            ),
         )
         with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)

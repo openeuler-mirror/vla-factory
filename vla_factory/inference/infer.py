@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections import deque
@@ -16,14 +15,15 @@ import torch
 
 from vla_factory.recipe.parser import parse_recipe
 from vla_factory.recipe.recipe import TrainRecipe
-from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
-from vla_factory.assembly.action_facts import resolve_action_dim, resolve_action_horizon
-from vla_factory.assembly.transforms import build_transforms, TransformContext
+from vla_factory.data.manifest import resolve_vector_keys
+from vla_factory.assembly.artifact import check_declaration_drift, load_assembly_artifact
+from vla_factory.assembly.resolver import ResolvedAssembly
+from vla_factory.assembly.transforms import build_pipeline, TransformContext
 from vla_factory.data.formats import get_reader
 from vla_factory.data.codec import resolve_codec
 from vla_factory.model.interfaces.observation import Observation
 from vla_factory.utils.constants import (
-    INFERENCE_META_DIR, SCHEMA_FILE, NORM_STATS_FILE, RECIPE_FILE,
+    ASSEMBLY_FILE, INFERENCE_META_DIR, RECIPE_FILE,
     FINAL_DIR, MODEL_WEIGHTS_FILE,
 )
 from vla_factory.model.registry import get_entry
@@ -286,77 +286,50 @@ def infer_from_dataset_sample(
     }
 
 
-def _load_saved_metadata(checkpoint_path: Path) -> tuple[DataSchema | None, NormStats | None, TrainRecipe | None]:
-    """Try loading recipe, schema, and norm_stats from checkpoint's inference_metadata/.
+def _load_deployment_artifacts(
+    checkpoint_path: Path,
+) -> tuple[ResolvedAssembly, TrainRecipe]:
+    """Load a checkpoint's execution contract: its assembly + resolved recipe.
 
-    Training saves these at start time, so they're available for any
-    intermediate checkpoint.
+    Training writes both into ``inference_metadata/`` before the first step, so
+    any intermediate checkpoint can be served.
 
-    Returns (schema, norm_stats, recipe). Any may be None if not found.
+    The assembly is *required*. A checkpoint without one was trained by a
+    version that predates the artifact, and there is deliberately no fallback
+    that re-resolves the composition here: that would resolve it against the
+    model declaration installed *today*, which may differ from the one the
+    weights were trained under in ways no shape check can catch.
     """
-    # Walk up from checkpoint to find inference_metadata/ directory
     search_dir = checkpoint_path
     for _ in range(3):  # max 3 levels up
         meta_dir = search_dir / INFERENCE_META_DIR
-        schema_file = meta_dir / SCHEMA_FILE
-        norm_file = meta_dir / NORM_STATS_FILE
-        if schema_file.exists() and norm_file.exists():
+        if meta_dir.is_dir():
             break
         search_dir = search_dir.parent
     else:
-        return None, None, None
-
-    schema = None
-    norm_stats = None
-    recipe = None
-
-    try:
-        with open(schema_file) as f:
-            schema_d = json.load(f)
-        schema = DataSchema.from_dict(schema_d)
-    except Exception as e:
-        logger.warning('Failed to load schema from %s: %s', schema_file, e)
-
-    try:
-        with open(norm_file) as f:
-            ns_d = json.load(f)
-        images_raw = ns_d.get("images")
-        images_stats = None
-        if isinstance(images_raw, dict):
-            images_stats = {
-                k: _parse_feature_stats(v)
-                for k, v in images_raw.items()
-            }
-        norm_stats = NormStats(
-            state=_parse_feature_stats(ns_d.get("state")),
-            action=_parse_feature_stats(ns_d.get("action")),
-            images=images_stats,
-            method=ns_d.get("method", "zscore"),
+        raise FileNotFoundError(
+            f"No {INFERENCE_META_DIR}/ found under {checkpoint_path}. "
+            "Train a model first to generate it."
         )
-    except Exception as e:
-        logger.warning('Failed to load norm_stats from %s: %s', norm_file, e)
 
-    try:
-        recipe_file = meta_dir / RECIPE_FILE
-        if recipe_file.exists():
-            recipe = parse_recipe(recipe_file)
-    except Exception as e:
-        logger.warning('Failed to load recipe from %s: %s', recipe_file, e)
+    assembly_file = meta_dir / ASSEMBLY_FILE
+    if not assembly_file.exists():
+        raise FileNotFoundError(
+            f"{meta_dir} has no {ASSEMBLY_FILE}. This checkpoint was trained by "
+            "a version of VLA Factory that predates the resolved-assembly "
+            "artifact and cannot be served: the composition is not re-derived "
+            "at deploy time, because it would be resolved against the currently "
+            "installed model declaration instead of the one the weights were "
+            "trained with. Retrain with the current version."
+        )
+    assembly = load_assembly_artifact(assembly_file)
 
-    return schema, norm_stats, recipe
-
-
-def _parse_feature_stats(d: dict | None) -> FeatureStats | None:
-    if d is None:
-        return None
-    return FeatureStats(
-        mean=d.get("mean", []),
-        std=d.get("std", []),
-        min=d.get("min", []),
-        max=d.get("max", []),
-        q01=d.get("q01", []),
-        q99=d.get("q99", []),
-    )
+    recipe_file = meta_dir / RECIPE_FILE
+    if not recipe_file.exists():
+        raise FileNotFoundError(
+            f"{meta_dir} has no {RECIPE_FILE}; checkpoint metadata is incomplete."
+        )
+    return assembly, parse_recipe(recipe_file)
 
 
 def resolve_checkpoint_path(path: str | Path) -> Path:
@@ -449,8 +422,12 @@ class ObsDict:
 class InferenceEngine:
     """Transport-agnostic inference core (§12.4).
 
-    Loads model + metadata from a checkpoint directory, runs prediction
-    with configurable action-chunking strategies.
+    Executes a checkpoint's resolved assembly: the pipelines it runs, the shapes
+    it exchanges and the cameras it expects all come from ``assembly.json``, the
+    contract resolved when the checkpoint was trained. Nothing here re-derives a
+    relation between data, model and robot (architecture §4.2.6) — the registry
+    is consulted for exactly two things: the factory (which is code, and cannot
+    be serialized) and a drift check against that snapshot.
 
     Parameters
     ----------
@@ -458,8 +435,14 @@ class InferenceEngine:
         Checkpoint root (must contain ``inference_metadata/``).
     device : str
         Torch device.  Default: auto-detect.
-    camera_names : list[str] | None
-        Override camera key ordering.  Default: read from saved schema.
+
+    There is deliberately no camera-name override: the camera keys are part of
+    the resolved composition, and renaming them here would leave
+    ``camera_mapping`` pointing at names the observation no longer has — pi0
+    would then feed every visual slot its placeholder image and keep predicting,
+    blind. Mapping a platform's own camera names onto these belongs in the
+    platform adapter (and, once it lands, the ``robot_to_model`` pipeline).
+
     ``predict`` always returns a complete :class:`ActionChunk`. Deployment
     execution strategies are composed with this engine by :class:`PolicyExecutor`.
     """
@@ -468,26 +451,23 @@ class InferenceEngine:
         self,
         checkpoint_path: str | Path,
         device: str | None = None,
-        camera_names: list[str] | None = None,
     ) -> None:
         checkpoint_path = Path(checkpoint_path)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ── 1. Load saved metadata ────────────────────────────────
-        schema, norm_stats, recipe = _load_saved_metadata(checkpoint_path)
-        if recipe is None:
-            raise FileNotFoundError(
-                f"No inference_metadata found under {checkpoint_path}. "
-                "Train a model first to generate it."
-            )
-        if schema is None:
-            raise ValueError(
-                "Schema is required for model creation but not found in metadata."
-            )
+        # ── 1. Load the execution contract ────────────────────────
+        assembly, recipe = _load_deployment_artifacts(checkpoint_path)
+        io_spec = assembly.model_io_spec
 
+        self.assembly = assembly
         self.recipe = recipe
-        self.norm_stats = norm_stats
-        self.schema = schema
+        # Descriptions come out of the assembly, not out of the standalone
+        # schema.json / norm_stats.json next to it: those are readable copies for
+        # tooling, and reading half the contract from one place and half from
+        # another is exactly the double-source this layer exists to remove.
+        self.schema = assembly.schema
+        self.norm_stats = assembly.norm_stats
+        schema, norm_stats = self.schema, self.norm_stats
 
         # ── 1.1 Clear model_path for inference ─────────────────────
         # The factory would try to load recipe.model_path (e.g. a pretrained
@@ -501,8 +481,8 @@ class InferenceEngine:
         # ── 1.5 Resolve canonical state/action key order ─────────
         # The dimension→key mapping is a data/model contract, never invented by
         # sorting. It was resolved from the dataset feature ``names`` at train
-        # time and saved into the checkpoint's schema.json — the sole source
-        # here; the training dataset is never re-read at inference time.
+        # time and travels inside the assembly's schema snapshot — the sole
+        # source here; the training dataset is never re-read at inference time.
         # Missing or mismatched keys mean the checkpoint metadata is incomplete
         # and fail here before any platform adapter is constructed.
         # The schema carries the names on its per-dim entries, so validating is
@@ -510,79 +490,68 @@ class InferenceEngine:
         # `action_keys` are derived views over `state_dims` / `action_dims`).
         self.state_keys, self.action_keys = resolve_vector_keys(self.schema)
 
-        # Camera key ordering: explicit > schema > default "front"
-        if camera_names:
-            self.camera_keys = tuple(camera_names)
-        elif schema.cameras:
-            self.camera_keys = schema.cameras
-        else:
-            self.camera_keys = ("front",)
+        # The framework-side observation keys the pipeline consumes (a model's
+        # own vision slots, where it has them, are reached through the
+        # CameraMapping). No default is invented: a composition with no camera
+        # is one this engine cannot serve.
+        if not io_spec.cameras:
+            raise ValueError(
+                f"The assembly saved with {checkpoint_path} declares no cameras; "
+                "there is no observation contract to serve."
+            )
+        self.camera_keys = tuple(io_spec.cameras)
 
         # ── 3. Build & load model ─────────────────────────────────
         entry = get_entry(recipe.model_name)
-        model = entry.factory(recipe=recipe, schema=schema)
+        # The registry is consulted for code (the factory) — and, right here,
+        # for one fact-level question: does the installed declaration still
+        # describe the interface this checkpoint was trained under? A drifted
+        # image range or normalization method loads its weights perfectly and
+        # then behaves wrongly, so it is checked rather than assumed.
+        check_declaration_drift(assembly, entry.metadata)
+        model = entry.factory(recipe=recipe, assembly=assembly)
         ckpt_file = resolve_checkpoint_path(checkpoint_path)
         state_dict = load_checkpoint_state_dict(ckpt_file)
         model.load_state_dict(state_dict, strict=True)
         model.to(self.device)
         model.eval()
         self._model = model
-        # WP3 — the same action-fact routing the training path uses, so a
-        # checkpoint infers with the dims/horizon it was actually trained on.
-        # It also keeps action_dim equal to len(schema.action_keys), which the
-        # platform action adapters assert on.
-        self.action_horizon = resolve_action_horizon(
-            metadata=entry.metadata,
-            recipe_action_horizon=recipe.action_spec.action_horizon,
-        )
-        self.action_dim = resolve_action_dim(
-            schema=schema, metadata=entry.metadata,
-            recipe_action_dim=recipe.action_spec.action_dim,
-        )
+        # A padded model has two action widths. ``model_output_dim`` is what the
+        # network emits (pi0: 32); ``execution_action_dim`` is what leaves this
+        # engine after model_to_robot (today the dataset action space, pi0: 8).
+        # Both are direct contract facts rather than effects re-inferred from
+        # transform implementation details.
+        self.action_horizon = io_spec.action_horizon
+        self.model_output_dim = io_spec.action_dim
+        self.execution_action_dim = schema.action_dim
         # Flow-matching / diffusion heads (pi0) denoise over N steps at inference
         # (pi0=10, ACT's regression head=1). Plumbed into predict_actions so the
         # adapter doesn't hardcode the count and openpi doesn't receive
         # num_steps=None (which crashes its time-step loop).
         #
-        # This is a tunable, not a fact: the value comes from the resolved
-        # recipe, where the model's declared default already sits under any
-        # per-run `model.config` override. Reading the declaration directly here
-        # is what used to make `num_inference_steps` silently unoverridable.
-        steps = (recipe.model_config or {}).get("num_inference_steps")
-        steps_source = "recipe"
-        if steps is None:
-            steps = (entry.metadata.params or {}).get("num_inference_steps", 1)
-            steps_source = "model default"
-        self.num_inference_steps = int(steps)
+        # This is a tunable, not a fact: the saved recipe is already resolved, so
+        # the model's declared default sits under any per-run `model.config`
+        # override in it — there is nothing left to fall back to.
+        self.num_inference_steps = int(
+            (recipe.model_config or {}).get("num_inference_steps", 1)
+        )
 
         # ── 3.5 Forward + reverse transform pipelines ────────────
-        # Built solely from the resolved recipe saved in inference_metadata.
-        transform_inputs = (recipe.model_config.get("transforms") or {}).get("inputs")
-        if not transform_inputs:
-            raise ValueError(
-                f"Resolved recipe at {checkpoint_path} does not contain "
-                "`model.config.transforms.inputs`; checkpoint metadata is incomplete."
-            )
-        tctx = TransformContext(
-            norm_stats=norm_stats,
-            model_action_dim=entry.metadata.action_dim or self.action_dim,
-            dataset_action_dim=schema.action_dim,
-            recipe=recipe,
-            schema=schema,
-            model_config=recipe.model_config,
-            split="infer",
-            metadata=entry.metadata,
-        )
-        self.preprocessor, self.postprocessor = build_transforms(
-            transform_inputs, tctx
-        )
+        # Both are planned in the assembly: `data_to_model` for observations,
+        # `model_to_robot` for the action output. The reverse pipeline is not
+        # this list reversed — each step declared its own inverse at resolve
+        # time (architecture §4.2.4).
+        tctx = TransformContext(norm_stats=norm_stats)
+        self.preprocessor = build_pipeline(assembly.data_to_model, tctx)
+        self.postprocessor = build_pipeline(assembly.model_to_robot, tctx)
 
         logger.info(
             "InferenceEngine ready: model=%s checkpoint=%s cameras=%s "
-            "action_dim=%d action_horizon=%d inference_steps=%d (%s) device=%s",
+            "execution_action_dim=%d model_output_dim=%d "
+            "action_horizon=%d inference_steps=%d device=%s",
             recipe.model_name, ckpt_file, self.camera_keys,
-            self.action_dim, self.action_horizon,
-            self.num_inference_steps, steps_source,
+            self.execution_action_dim, self.model_output_dim, self.action_horizon,
+            self.num_inference_steps,
             self.device,
         )
         logger.info(
@@ -694,6 +663,17 @@ class InferenceEngine:
             # configured with an action horizon > 1 must still return a chunk.
             actions_np = actions_np[None, :]
 
+        # Check the raw output against the model's own width, before the reverse
+        # pipeline changes it — a model that stopped matching its declaration
+        # should be caught here rather than surfacing as a confusing mismatch
+        # after unpadding.
+        model_shape = (self.action_horizon, self.model_output_dim)
+        if actions_np.shape != model_shape:
+            raise ValueError(
+                "Model output does not match the resolved IO spec: expected "
+                f"{model_shape}, got {actions_np.shape}."
+            )
+
         # Reverse: un-normalise (and, in future, delta→absolute) via the
         # postprocessor. Raw obs.state is threaded through for the future
         # AbsoluteActions reverse (absolute = delta + state_raw); ACT's
@@ -704,10 +684,10 @@ class InferenceEngine:
         post_sample = self.postprocessor(post_sample)
 
         chunk = ActionChunk(post_sample["actions"])
-        expected_shape = (self.action_horizon, self.action_dim)
+        expected_shape = (self.action_horizon, self.execution_action_dim)
         if chunk.values.shape != expected_shape:
             raise ValueError(
-                "Model action chunk shape does not match checkpoint metadata: "
-                f"expected {expected_shape}, got {chunk.values.shape}."
+                "Post-processed action chunk does not match the planned command "
+                f"space: expected {expected_shape}, got {chunk.values.shape}."
             )
         return chunk

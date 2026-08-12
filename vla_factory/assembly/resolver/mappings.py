@@ -110,42 +110,37 @@ def resolve_camera_mapping(
 
 def _vector_entries(
     dims: tuple[StateDim, ...] | tuple[ActionDim, ...],
-    data_width: int, model_width: int, with_mode: bool,
+    with_mode: bool,
 ) -> tuple[dict[str, Any], ...]:
-    """One entry per model vector slot: which dataset dim feeds it, or padding.
+    """The real dataset-dimension correspondences, in canonical order.
 
-    The dataset's dims occupy the leading slots in their own order (that is what
-    the sample builder concatenates today); anything beyond the dataset's width
-    is a padded slot with no source.
+    Padding is not a correspondence: it has no source. Model target width
+    belongs to ``ModelIOSpec`` and the padding operation belongs to the pipeline
+    plan, so this Mapping contains no synthetic padding-only entries.
     """
-    mapped = min(data_width, len(dims))
     entries: list[dict[str, Any]] = []
-    for index in range(model_width):
-        dim = dims[index] if index < mapped else None
+    for index, dim in enumerate(dims):
         entry: dict[str, Any] = {
             "model_index": index,
-            "data_dim_index": index if dim is not None else None,
-            "data_name": dim.name if dim is not None else None,
-            "padded": dim is None,
+            "data_dim_index": index,
+            "data_name": dim.name,
         }
         if with_mode:
-            entry["mode"] = getattr(dim, "mode", None) if dim is not None else None
+            entry["mode"] = getattr(dim, "mode", None)
         entries.append(entry)
     return tuple(entries)
 
 
-def resolve_state_mapping(schema: DataSchema, model_width: int) -> StateMapping:
+def resolve_state_mapping(schema: DataSchema) -> StateMapping:
     return StateMapping(
-        entries=_vector_entries(schema.state_dims, schema.state_dim, model_width,
-                                with_mode=False),
+        entries=_vector_entries(schema.state_dims, with_mode=False),
         resolved=True,
     )
 
 
-def resolve_action_mapping(schema: DataSchema, model_width: int) -> ActionMapping:
+def resolve_action_mapping(schema: DataSchema) -> ActionMapping:
     return ActionMapping(
-        entries=_vector_entries(schema.action_dims, schema.action_dim, model_width,
-                                with_mode=True),
+        entries=_vector_entries(schema.action_dims, with_mode=True),
         resolved=True,
     )
 

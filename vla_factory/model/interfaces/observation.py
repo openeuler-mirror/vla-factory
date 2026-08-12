@@ -31,16 +31,6 @@ class ActionSpec:
     bounds_low: tuple[float, ...] | None = None
     bounds_high: tuple[float, ...] | None = None
 
-    @property
-    def model_action_dim(self) -> int:
-        """The dimension the model internally expects (may differ from robot dim).
-
-        For MVP this is identical to ``action_dim``; models that require padding
-        (e.g. PI0 expects dim=32) override this via their ModelMetadata.
-        """
-        return self.action_dim
-
-
 # ── Observation (tensor side) ──────────────────────────────────────
 
 

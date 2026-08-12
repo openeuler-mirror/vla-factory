@@ -5,8 +5,8 @@ Public surface:
 - ``ResolvedAssembly`` and the serializable plan / mapping types
 - ``ResolutionError`` + stable error codes
 
-Stages: Load → Validate → Check Pairs → Plan Pipeline → Build
-Interface → Resolve Mapping → Emit. ``robot_to_model`` is the one product not
+Stages: Load → Validate → Check Pairs → Resolve Mappings → Build IO Spec →
+Plan Pipeline → Emit. ``robot_to_model`` is the one product not
 derivable yet — it needs the joint-reorder step, which has no implementation.
 """
 
@@ -14,7 +14,6 @@ from .errors import (
     CAMERA_MAPPING_INVALID,
     INVALID_DESCRIPTION,
     MISSING_INPUT,
-    PIPELINE_WIDTH_MISMATCH,
     UNSUPPORTED_OVERRIDE,
     ResolutionError,
     UNKNOWN_MODEL,
@@ -52,6 +51,5 @@ __all__ = [
     "UNKNOWN_MODEL",
     "UNKNOWN_ROBOT",
     "CAMERA_MAPPING_INVALID",
-    "PIPELINE_WIDTH_MISMATCH",
     "UNSUPPORTED_OVERRIDE",
 ]

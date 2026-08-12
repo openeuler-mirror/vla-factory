@@ -1,0 +1,118 @@
+"""Where the action horizon comes from, and the mutual exclusion that keeps it
+to one place.
+
+A pretrained model's chunk length is a family fact (``ModelMetadata``); a
+from-scratch model's is the user's choice (``params`` → ``model.config``). The
+recipe side is already guarded by the tunable allow-list, but nothing stops a
+registry entry from declaring both or neither — which would leave two answers,
+or none, for a value the whole pipeline is shaped by.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from helpers import make_norm_stats, make_schema
+
+from vla_factory.assembly.resolver import resolve_assembly
+from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.recipe.defaults import resolve_recipe
+from vla_factory.recipe.parser import parse_recipe_from_string
+
+
+def _resolve(metadata: ModelMetadata, model_config: dict | None = None):
+    schema = make_schema(state_dim=6, action_dim=6, cameras=("front",))
+    return resolve_assembly(
+        schema,
+        make_norm_stats(state_dim=6, action_dim=6),
+        metadata,
+        model_config=model_config,
+    )
+
+
+def _finetune(**kwargs) -> ModelMetadata:
+    return ModelMetadata(
+        name="stub", training_paradigm="pretrained_finetune",
+        requires_prompt=False, vector_normalization="mean_std", **kwargs,
+    )
+
+
+def _from_scratch(**kwargs) -> ModelMetadata:
+    return ModelMetadata(
+        name="stub", training_paradigm="from_scratch",
+        requires_prompt=False, vector_normalization="mean_std", **kwargs,
+    )
+
+
+def test_finetune_horizon_comes_from_the_named_fact():
+    assembly = _resolve(_finetune(action_horizon=50))
+    assert assembly.model_io_spec.action_horizon == 50
+
+
+def test_from_scratch_horizon_comes_from_the_tunable():
+    metadata = _from_scratch(params={"action_horizon": 100})
+    assert _resolve(metadata).model_io_spec.action_horizon == 100
+    # And a per-run override of that tunable wins.
+    assert _resolve(metadata, {"action_horizon": 25}).model_io_spec.action_horizon == 25
+
+
+def test_declaring_both_is_a_broken_entry():
+    metadata = _finetune(action_horizon=50, params={"action_horizon": 100})
+    with pytest.raises(ValueError, match="twice"):
+        _resolve(metadata)
+
+
+def test_finetune_may_not_make_the_horizon_tunable():
+    metadata = _finetune(params={"action_horizon": 100})
+    with pytest.raises(ValueError, match="pretrained"):
+        _resolve(metadata)
+
+
+def test_from_scratch_may_not_hardcode_the_horizon():
+    metadata = _from_scratch(action_horizon=50)
+    with pytest.raises(ValueError, match="from_scratch"):
+        _resolve(metadata)
+
+
+def test_declaring_neither_is_a_broken_entry():
+    with pytest.raises(ValueError, match="no action horizon"):
+        _resolve(_finetune())
+
+
+# ── The deprecated recipe field ───────────────────────────────────
+
+
+def test_legacy_action_spec_horizon_is_forwarded_for_act(caplog):
+    recipe = parse_recipe_from_string(
+        "model:\n  name: act\naction_spec:\n  action_horizon: 17\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.defaults"):
+        resolved = resolve_recipe(recipe)
+    assert resolved.model_config["action_horizon"] == 17
+    assert any("deprecated" in r.message for r in caplog.records)
+
+
+def test_legacy_action_spec_horizon_is_dropped_for_pi0(caplog):
+    """pi0 does not declare the tunable, so forwarding it would trip the
+    allow-list and stop an otherwise fine legacy recipe from running."""
+    recipe = parse_recipe_from_string(
+        "model:\n  name: pi0\naction_spec:\n  action_horizon: 17\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.defaults"):
+        resolved = resolve_recipe(recipe)
+    assert "action_horizon" not in resolved.model_config
+    assert any("ignored" in r.message for r in caplog.records)
+
+
+def test_a_recipe_that_says_nothing_gets_the_model_default():
+    """The framework-wide default (the deleted ``action_spec`` said 50) belonged
+    to no model in particular; ACT's own declaration says 100."""
+    resolved = resolve_recipe(parse_recipe_from_string("model:\n  name: act\n"))
+    assert resolved.model_config["action_horizon"] == 100

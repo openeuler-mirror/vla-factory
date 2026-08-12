@@ -1,10 +1,11 @@
-"""Plan Pipeline: a declared step list → resolved calls.
+"""Plan Pipeline: a target ModelIOSpec + declared policies → resolved calls.
 
-The planner knows *no* step names. Each step owns its own planning rule
-(``TransformStep.compile_call`` / ``inverse_call``), registered under its name
-in the ``TransformRegistry``, so adding a transform never means editing this
-module — and the build path runs the very same rules, which is what keeps a
-plan and the pipeline it describes from drifting apart.
+Each step owns its call argument and inverse rules (``compile_call`` /
+``inverse_call``). The planner additionally owns the two standard interface
+reconciliations: it ensures required zero-padding is present, and requires an
+explicit resize policy when model and data image sizes differ. This is the
+deliberate boundary: ModelIOSpec defines *what shape* must be reached; step
+policy defines *how* to reach it.
 
 ``robot_to_model`` is not planned here: the T1 steps it needs (joint reorder,
 gripper flip) have no implementation to reference yet.
@@ -19,8 +20,7 @@ from vla_factory.assembly.transforms.base import PlanContext
 from vla_factory.data.manifest import DataSchema, NormStats
 from vla_factory.model.interfaces.model import ModelMetadata
 
-from .errors import PIPELINE_WIDTH_MISMATCH, make_error
-from .types import TransformPipelinePlan, TransformStepCall
+from .types import ModelIOSpec, TransformPipelinePlan, TransformStepCall
 
 
 def transform_declaration(
@@ -33,36 +33,37 @@ def transform_declaration(
     return list(((src or {}).get("transforms") or {}).get("inputs") or [])
 
 
-def pad_target(schema: DataSchema, metadata: ModelMetadata) -> int:
-    """The width vector-padding steps pad to.
-
-    Mirrors what training feeds them today (``train.py``: ``metadata.action_dim
-    or <dataset action dim>``). For a model that declares no internal width
-    (ACT) this equals the dataset width, i.e. "no padding".
-    """
-    return int(metadata.action_dim or 0) or int(schema.action_dim)
-
-
 def plan_context(
     schema: DataSchema, norm_stats: NormStats, metadata: ModelMetadata,
-    overrides: dict[str, Any],
+    io_spec: ModelIOSpec, overrides: dict[str, Any],
+    model_path: str | None = None,
 ) -> PlanContext:
     """The resolver's half of the context every ``compile_call`` reads.
 
-    ``TransformContext.plan()`` builds the same type from the runtime side; the
-    two agreeing is what makes the equivalence test meaningful. ``tokenizer_repo``
-    stays ``None`` here: its fallback is the recipe's ``model.path``, which the
-    resolver does not receive — every shipped model that tokenizes declares the
-    repo outright, so no combination depends on the fallback today.
+    ``model_path`` is the recipe's checkpoint selection, passed in purely as the
+    ``tokenizer_repo`` fallback (``task_tokenize`` accepts a base checkpoint that
+    ships its own tokenizer instead of a declared repo). The resolver never opens
+    it — reading a checkpoint is the caller's job. Without it a plan for such a
+    model would serialize a call with no tokenizer address at all, and the
+    execution side has no fallback left to fill in.
     """
+    dataset_camera_shapes = {
+        camera.key: (int(camera.resolution[0]), int(camera.resolution[1]))
+        for camera in schema.cameras_entries
+        if camera.resolution and len(camera.resolution) == 2
+    }
     return PlanContext(
         metadata=metadata,
-        model_action_dim=pad_target(schema, metadata),
-        dataset_action_dim=int(schema.action_dim),
+        target_state_dim=int(io_spec.state_dim),
+        target_action_dim=int(io_spec.action_dim),
+        source_state_dim=int(schema.state_dim),
+        source_action_dim=int(schema.action_dim),
+        source_camera_shapes=dataset_camera_shapes,
+        target_camera_shapes=dict(io_spec.camera_shapes),
         has_norm_stats=True,        # a required resolver input
         has_action_stats=norm_stats.action is not None,
         default_task=overrides.get("default_task"),
-        tokenizer_repo=None,
+        tokenizer_repo=model_path,
     )
 
 
@@ -71,10 +72,10 @@ def plan_data_to_model(
 ) -> TransformPipelinePlan:
     """Compile the declared step list into resolved calls, in declared order.
 
-    The *order* comes from the model declaration and is never re-derived: it is
-    upstream semantics (pi05 must tokenize before padding so the state is
-    digitized at its native width; pi0's letterbox must follow the layout flip),
-    and the framework holds no model architecture knowledge to reinvent it.
+    Declared steps preserve their declared order: it is upstream semantics
+    (pi05 must tokenize before padding so state is digitized at native width;
+    pi0's letterbox follows the layout flip). Standard reconciliation may add
+    missing zero-padding at the end, but never reorders declared calls.
     """
     if not declaration:
         return TransformPipelinePlan()
@@ -89,6 +90,50 @@ def plan_data_to_model(
         if args is None:
             continue                # this step is a no-op for these facts
         calls.append(TransformStepCall(type=step_type, args=args))
+
+    # A target image size alone cannot choose stretch vs letterbox, so unlike
+    # zero-padding this reconciliation cannot be invented safely. Require the
+    # model's step template to provide the resize policy whenever source and
+    # target sizes differ. Its height/width still come only from ModelIOSpec.
+    resize_required = TransformRegistry.get("resize_images").compile_call({}, ctx)
+    if resize_required is not None and not any(
+        call.type == "resize_images" for call in calls
+    ):
+        raise ValueError(
+            "The resolved ModelIOSpec requires image resizing, but the model's "
+            "transform declaration contains no resize_images policy. Add a "
+            "resize_images step with mode/interpolation only; dimensions come "
+            "from the model interface."
+        )
+
+    # Width reconciliation is required by the already-resolved ModelIOSpec; it
+    # is not optional merely because an old transform template omitted a pad
+    # placeholder. Keep an explicitly declared call in its declared position
+    # (pi05 tokenizes native-width state before padding), and append only the
+    # uncovered fields.
+    required_pad_fields = {
+        field for field, source, target in (
+            ("state", ctx.source_state_dim, ctx.target_state_dim),
+            ("actions", ctx.source_action_dim, ctx.target_action_dim),
+        )
+        if int(target or 0) > int(source or 0)
+    }
+    covered_pad_fields = {
+        field
+        for call in calls
+        if call.type == "pad_dimensions"
+        for field in (call.args.get("fields") or ())
+    }
+    missing_pad_fields = [
+        field for field in ("state", "actions")
+        if field in required_pad_fields - covered_pad_fields
+    ]
+    if missing_pad_fields:
+        args = TransformRegistry.get("pad_dimensions").compile_call(
+            {"fields": missing_pad_fields}, ctx,
+        )
+        if args is not None:  # pragma: no branch - required fields cannot no-op
+            calls.append(TransformStepCall(type="pad_dimensions", args=args))
     return TransformPipelinePlan(calls=tuple(calls), resolved=True)
 
 
@@ -114,39 +159,3 @@ def plan_model_to_robot(
         name, args = inverse
         calls.append(TransformStepCall(type=name, args=args))
     return TransformPipelinePlan(calls=tuple(calls), resolved=True)
-
-
-def vector_widths(
-    plan: TransformPipelinePlan, schema: DataSchema, metadata: ModelMetadata,
-) -> tuple[int, int]:
-    """``(state_width, action_width)`` of the model-side vectors.
-
-    Folded through the planned calls, each step reporting its own effect on the
-    widths going in, so the model IO spec reports exactly what the pipeline
-    emits — the mappings and the plan cannot disagree about a width because they
-    read the same number.
-
-    The model declaration does not *supply* a width here, it *constrains* one:
-    a model that declares an action width the pipeline never reaches is a
-    self-inconsistent declaration and fails rather than being silently papered
-    over with one of the two numbers.
-
-    With no plan at all (no step list declared) there is no pipeline to read a
-    width off, and nothing for the declaration to contradict — the declared
-    width is then simply reported.
-    """
-    if not plan.resolved:
-        return int(schema.state_dim), pad_target(schema, metadata)
-
-    widths = {"state": int(schema.state_dim), "actions": int(schema.action_dim)}
-    for call in plan.calls:
-        widths = TransformRegistry.get(call.type).output_widths(call.args, widths)
-
-    action_width = widths["actions"]
-    if metadata.action_dim and action_width != metadata.action_dim:
-        raise make_error(
-            PIPELINE_WIDTH_MISMATCH, "model.action_dim",
-            field="actions", model_dim=int(metadata.action_dim),
-            model_dim_source="metadata", pipeline_dim=action_width,
-        )
-    return widths["state"], action_width

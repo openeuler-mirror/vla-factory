@@ -287,6 +287,19 @@ class FeatureStats:
     q01: list[float] = field(default_factory=list)
     q99: list[float] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "FeatureStats | None":
+        if d is None:
+            return None
+        return cls(
+            mean=list(d.get("mean") or []),
+            std=list(d.get("std") or []),
+            min=list(d.get("min") or []),
+            max=list(d.get("max") or []),
+            q01=list(d.get("q01") or []),
+            q99=list(d.get("q99") or []),
+        )
+
 
 @dataclass(frozen=True)
 class NormStats:
@@ -296,6 +309,27 @@ class NormStats:
     action: FeatureStats | None = None
     images: dict[str, FeatureStats] | None = None
     method: str = "zscore"
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> "NormStats":
+        """Rebuild statistics from their serialized form.
+
+        The counterpart of ``dataclasses.asdict``, which is how they are written
+        into a checkpoint's ``inference_metadata/`` — the deploy process rebuilds
+        them from there and never re-reads the training dataset.
+        """
+        d = d or {}
+        images_raw = d.get("images")
+        images = (
+            {k: FeatureStats.from_dict(v) for k, v in images_raw.items()}
+            if isinstance(images_raw, dict) else None
+        )
+        return cls(
+            state=FeatureStats.from_dict(d.get("state")),
+            action=FeatureStats.from_dict(d.get("action")),
+            images=images,
+            method=d.get("method", "zscore"),
+        )
 
 
 @dataclass

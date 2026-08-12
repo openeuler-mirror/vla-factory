@@ -188,9 +188,9 @@ resolved recipe。部署侧只读取训练产物中的 resolved `recipe.yaml`，
 
 | 对象 | 作用 | 关键接口或字段 |
 |---|---|---|
-| `TransformStep` | 单个样本级变换步骤。 | `from_config`, `inverse_for_output` |
+| `TransformStep` | 单个样本级变换步骤。 | `compile_call`（规划期）, `from_call`（执行期）, `inverse_call` |
 | `TransformPipeline` | 有序 step 列表，负责 raw sample 到 model-ready sample 的转换。 | `steps`, `__call__(sample)` |
-| `TransformContext` | 构造 transform step 的运行时上下文。 | `norm_stats`, `schema`, `model_config`, `model_action_dim`, `dataset_action_dim` |
+| `TransformContext` | 实例化已解析计划时的运行时上下文，只承载 call 参数带不动的活对象。 | `norm_stats` |
 
 ## 3. 外部数据解析层设计
 
@@ -444,18 +444,18 @@ transforms:
     - {type: pad_dimensions}
 ```
 
-`build_preprocessor()` 遍历 `inputs` 列表，对每个条目调用 `TransformRegistry.create_from_config()`，构建 `TransformPipeline`。`TransformContext` 在构建时注入 norm_stats、action_dim、schema 等，运行时不变。
+这份声明**不直接构建 pipeline**：组合解析器逐条调用各 step 的 `compile_call()`，把事实（pad target、归一化方式、图像范围）和跳过判定烤进 `data_to_model` 计划；训练与推理再用 `build_pipeline(plan, ctx)` 把计划实例化。`TransformContext` 此时只提供 call 参数带不动的东西——统计量。
 
 用户也可以注册自定义 transform step 扩展输入处理逻辑，具体扩展方式见 [新增变换步骤](#53-新增变换步骤)。
 
 **output postprocessor**（部署侧）：
 
-TransformPipeline 的每个步骤可以声明 `inverse_for_output()`，生成反变换步骤：
+每个步骤用 `inverse_call()` 声明自己的反向步骤，解析器据此规划 `model_to_robot`：
 
 - `NormalizeVector` → `UnnormalizeActionStep`（z-score 反归一化）
 - `PadDimensions` → `UnpadAction`（截断到原始 action_dim）
 
-部署时 `InferenceEngine` 用反变换将模型输出还原为原始尺度和维度。
+没有反向的步骤（图像类）直接消失，**不是把正向列表倒序**。部署时 `InferenceEngine` 实例化 `model_to_robot` 计划，将模型输出还原为原始尺度和维度。
 
 **tokenizer / prompt 字段生成**：
 
@@ -627,17 +627,19 @@ pipeline 之间的图像标准。
 1. 在 `vla_factory/assembly/transforms/` 下新增或扩展 step。
 2. 使用 `@TransformRegistry.register("your_step")` 注册类型名。
 3. 实现 `__call__(sample)`。
-4. 如需 runtime context，实现 `from_config(cfg, ctx)`。
-5. 如影响模型输出空间，实现 `inverse_for_output(ctx)`。
+4. 如需读取模型事实或有跳过判定，实现 `compile_call(cfg, ctx)`（规划期）；
+   如需活对象（统计量），实现 `from_call(args, ctx)`（执行期）。
+5. 如影响模型输出空间，实现 `inverse_call(args, ctx)`。改变 shape 的 step 只消费 `PlanContext` 中已经解析好的源/目标 shape，不得再用 `output_*` hook 上报第二份接口事实。
 6. 在 model profile 或 recipe 的 `model.config.transforms.inputs` 中引用。
 
 新增的 step 仍需遵守 transform 标准：
 
 - 输入和输出都是 flat sample dict。
 - 小参数写在 transform config 中。
+- 接口 shape 不属于 transform 参数。固定模型尺寸写入 `ModelMetadata`（如 `VisionSlot.resolution`），从头训练模型的可调尺寸使用显式模型 tunable（如 ACT 的 `input_image_size`）；resolver 先写入 `ModelIOSpec`，再编译 call。
 - 大型参数、词表或拟合结果保存为 artifact，并在 resolved recipe 中显式引用。
 - 部署侧不重新拟合 transform，只按 checkpoint metadata 加载配置和 artifact。
-- 如果 step 改变模型输出空间，应实现 `inverse_for_output()` 生成对应 postprocessor。
+- 如果 step 改变模型输出空间，应实现 `inverse_call()`——它是正/反配对的唯一归属；有损步骤必须返回 `None` 而不是找个近似的。
 
 ## 6. 设计约束与注意事项
 

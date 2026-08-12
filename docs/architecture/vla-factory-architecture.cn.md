@@ -488,8 +488,12 @@ def load_act(recipe, schema):
 ```
 
 - **三者描述的规范化引用**：让下游不必再去查询各自的 registry，所有事实都在一个对象里。从下游视角看，它们是具身组合的组成部分，而不是需要再次独立查询的外部输入。
-- **模型输入输出规格（`ModelIOSpec`）**：三者协商之后，模型实际接收和输出的形状与语义——输入侧是相机 key、状态宽度、是否需要 prompt，输出侧是动作宽度与 horizon。它是组合之后的「事实标准」，下游按它构造模型、按它读写 observation / action。
-- **字段映射**：只描述局部字段和语义的对应关系，本身不执行任何张量计算。
+- **模型输入输出规格（`ModelIOSpec`）**：三者协商之后，模型实际接收和输出的形状与语义——输入侧是相机 key、逐相机尺寸、状态宽度、是否需要 prompt，输出侧是动作宽度与 horizon。它是组合之后的「事实标准」，下游按它构造模型、按它读写 observation / action。
+  注意 `cameras` 是**框架 observation 使用的规范相机 key（数据侧命名）**，不是模型自己的视觉槽位：pi0 的数据侧是 `front`/`wrist`，模型侧是三个 openpi 角色，连接两者的是 `CameraMapping`。`ModelIOSpec` 在 pipeline 之前从模型事实与数据的 flexible/native 事实直接解析：pi0 的 `camera_shapes` 来自 `VisionSlot.resolution`，ACT 可用显式 `model.config.input_image_size` 选择输入尺寸，未设置则采用 `DataSchema` 原生尺寸。transform plan 消费这份目标接口来生成 resize/pad call，不能再通过 step 参数或 shape hook 反向定义接口。
+  `action_dim` 描述的是**模型自身的输出宽度**（pi0 = 32）；推理引擎分别暴露 `model_output_dim` 与 `execution_action_dim`。后者今天是 `model_to_robot` 的目标数据动作空间（pi0 = 8），未来接入机器人侧 IO 后再由机器人命令接口提供。
+- **字段映射**：只描述真实字段和语义的对应关系，本身不执行任何张量计算。尤其
+  `StateMapping` / `ActionMapping` 不为 padding 生成无来源的占位 entry；模型目标宽度在
+  `ModelIOSpec`，padding 数量是目标宽度减去真实 mapping 数量，执行动作在 PipelinePlan。
 - **Transform Pipeline 声明**：声明式描述，告诉下游「这条路径上要按顺序执行哪些转换」，但不包含已经实例化的可执行对象。
 
 ##### 具身组合不包含什么
@@ -549,9 +553,9 @@ def load_act(recipe, schema):
 1. Load            加载 DataSchema、NormStats、ModelMetadata、RobotProfile
 2. Validate        分别校验各描述的内部结构和来源
 3. Check Pairs     检查 数据集×模型、模型×机器人、数据集×机器人 两两关系
-4. Plan Pipeline   生成声明式 TransformPipelinePlan，标记顺序与可逆性
-5. Build IO Spec   从规划后的 calls 折叠出 observation、action、language 和 temporal 语义
-6. Resolve Mapping 生成 Camera、State、Action、Language、Joint Mapping
+4. Resolve Mappings 生成 Camera、State、Action、Language、Joint Mapping；只记录真实对应关系
+5. Build IO Spec   从 ModelMetadata、model tunables、DataSchema 与 CameraMapping 直接解析模型接口
+6. Plan Pipeline   以 ModelIOSpec 为目标生成声明式 TransformPipelinePlan
 7. Emit            成功输出具身组合，失败抛出结构化 ResolutionError
 ```
 
@@ -972,7 +976,7 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - **阶段 1：抽取现有隐式事实**。把当前 `action_spec` 字段分别迁移到 DataSchema、ModelMetadata 和 RobotProfile；把 model config 中稳定的输入输出能力迁移到 ModelMetadata 接口部分；让 reader 补充可探测的数据语义；把 model adapter 中的关系假设提取为声明或解析规则；把 deploy adapter 中稳定的本体事实提取到 RobotProfile。
 - **阶段 2：解析诊断**。解析器先运行兼容性检查并生成 explain trace 或 ResolutionError；对维度、相机、统计量、控制模式和字段顺序提前报错；现有下游继续使用原有构建逻辑；用 golden tests 固化代表性 ResolutionError 和 explain trace。
 - **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**。生成 camera、state、action、language 和 joint mapping；规划包含 normalize、padding、关节重排和夹爪 flip 等 T1 step 的 pipeline；用 golden tests 固化代表性具身组合；先提供 dry-run 和 diff，不立即要求下游全面执行。（**已落地 data × model 一半**：五类 Mapping、`data_to_model`、`model_to_robot`。关节重排与夹爪 flip 两个 T1 step 在 `TransformRegistry` 中尚无实现，`robot_to_model` 随之推迟，理由与恢复路径见 `docs/plans/phase3-mapping-and-t1-pipeline.cn.md`。）
-- **阶段 4：下游接入**。训练模块开始消费「数据 × 模型」组合结果；推理模块开始消费「模型 × 机器人」组合结果；删除 adapter 中重复的关系推导；保留显式兼容层并提供迁移告警。
+- **阶段 4：下游接入**（**已落地 data × model 一半**）。训练模块消费「数据 × 模型」组合结果；模型工厂改为接收具身组合（`factory(recipe, assembly)`），adapter 中重复的关系推导全部删除；训练产物新增 `inference_metadata/assembly.json`——带 `format_version` 的**执行契约快照**，推理侧照它执行，并在加载时校验当前模型声明与快照的接口事实一致（图像范围、归一化方式、视觉槽位这类漂移不改变权重形状，`load_state_dict` 拦不住）。兼容承诺分两类：**外部基础 checkpoint**（经 `model.path`）继续支持并做可选一致性检查；**旧版训练产物**（无 `assembly.json`）明确不支持，缺失即保守失败，不在部署期重新解析——那会用当时安装的模型声明重解析出另一条 pipeline 并静默跑起来。「推理消费模型 × 机器人」只落地了 `model_to_robot`，`robot_to_model` 与 JointMapping 的消费随阶段 3 的关节重排一起推迟。
 - **阶段 5：Recipe 瘦身**。标记重复的 action/state 事实为 deprecated；自动把旧 recipe 转换成临时描述和受控 override；新 recipe 的组合部分只保留三者选择和必要 override；提供迁移命令或可读提示；为兼容层设定明确移除周期。
 - **阶段 6：受控扩展 T2**。在真实用例和测试基础上增加 FK/IK、坐标系和频率转换；每项能力独立评审；默认保持保守失败；不把 T2 作为组合解析成立的前提。
 

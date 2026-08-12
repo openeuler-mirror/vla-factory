@@ -28,7 +28,7 @@ if str(_project_root) not in sys.path:
 from vla_factory.assembly.transforms.images import ImageNormalize, ImageToFloat
 from vla_factory.assembly.transforms.normalize import NormalizeVector
 from vla_factory.assembly.transforms.pad_dimensions import PadDimensions
-from vla_factory.assembly.transforms.pipeline import TransformContext
+from vla_factory.assembly.transforms.base import PlanContext
 from vla_factory.data.manifest import FeatureStats, NormStats
 from vla_factory.model.interfaces.model import ModelMetadata
 from vla_factory.recipe.defaults import model_params, resolve_recipe
@@ -157,55 +157,61 @@ class TestUnreadKeyGuard(unittest.TestCase):
 
 class TestFactOverrideRejected(unittest.TestCase):
 
-    def _ctx(self, **metadata_kwargs) -> TransformContext:
-        return TransformContext(
-            norm_stats=NormStats(
-                action=FeatureStats(mean=[0.0] * 4, std=[1.0] * 4),
-            ),
-            model_action_dim=32,
+    def _ctx(self, **metadata_kwargs) -> PlanContext:
+        """The facts a step compiles its call against.
+
+        The gate lives in ``compile_call``, which is where the composition
+        resolver asks each step for its arguments — so this is the real entry
+        point a bad recipe would come through, not a test-only shortcut.
+        """
+        return PlanContext(
             metadata=ModelMetadata(name="stub", **metadata_kwargs),
+            target_action_dim=32,
+            source_action_dim=8,
+            has_norm_stats=True,
+            has_action_stats=True,
         )
 
     def test_image_range_override_rejected(self):
         ctx = self._ctx(image_input_range=(-1.0, 1.0))
         with self.assertRaises(ValueError) as err:
-            ImageToFloat.from_config({"range": [0.0, 1.0]}, ctx)
+            ImageToFloat.compile_call({"range": [0.0, 1.0]}, ctx)
         self.assertIn("image_input_range", str(err.exception))
         # Without the override the declared fact is used.
-        self.assertEqual(ImageToFloat.from_config({}, ctx).range, (-1.0, 1.0))
+        self.assertEqual(ImageToFloat.compile_call({}, ctx)["range"], [-1.0, 1.0])
 
     def test_image_normalize_mode_override_rejected(self):
         ctx = self._ctx(image_normalize_mode="imagenet")
         with self.assertRaises(ValueError):
-            ImageNormalize.from_config({"mode": "none"}, ctx)
-        self.assertEqual(ImageNormalize.from_config({}, ctx).mode, "imagenet")
+            ImageNormalize.compile_call({"mode": "none"}, ctx)
+        self.assertEqual(ImageNormalize.compile_call({}, ctx)["mode"], "imagenet")
 
     def test_normalize_method_override_rejected(self):
         ctx = self._ctx(vector_normalization="quantile")
         with self.assertRaises(ValueError) as err:
-            NormalizeVector.from_config({"method": "zscore"}, ctx)
+            NormalizeVector.compile_call({"method": "zscore"}, ctx)
         self.assertIn("vector_normalization", str(err.exception))
-        step = NormalizeVector.from_config({"fields": ["actions"]}, ctx)
-        self.assertEqual(step.method, "quantile")
+        call = NormalizeVector.compile_call({"fields": ["actions"]}, ctx)
+        self.assertEqual(call["method"], "quantile")
 
     def test_pad_target_override_rejected(self):
         ctx = self._ctx()
         with self.assertRaises(ValueError) as err:
-            PadDimensions.from_config({"target_dim": 64, "fields": ["actions"]}, ctx)
+            PadDimensions.compile_call({"target_dim": 64, "fields": ["actions"]}, ctx)
         self.assertIn("dim_policy_max", str(err.exception))
-        step = PadDimensions.from_config({"fields": ["actions"]}, ctx)
-        self.assertEqual(step.target_dim, 32)
+        call = PadDimensions.compile_call({"fields": ["actions"]}, ctx)
+        self.assertEqual(call["target_dim"], 32)
 
     def test_missing_fact_is_an_error_not_a_default(self):
         """Neither config nor declaration carries it → refuse to guess."""
         ctx = self._ctx()  # no image_input_range declared
         with self.assertRaises(ValueError):
-            ImageToFloat.from_config({}, ctx)
+            ImageToFloat.compile_call({}, ctx)
 
     def test_non_fact_step_keys_stay_configurable(self):
         ctx = self._ctx(vector_normalization="mean_std")
-        step = NormalizeVector.from_config({"fields": ["state"]}, ctx)
-        self.assertEqual(step.fields, ("state",))
+        call = NormalizeVector.compile_call({"fields": ["state"]}, ctx)
+        self.assertEqual(call["fields"], ["state"])
 
 
 # ── Inference steps: one entry, one effective value ──────────────────

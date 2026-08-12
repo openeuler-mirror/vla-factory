@@ -38,7 +38,7 @@ _PI05_PARAMS: dict = {
         "inputs": [
             {"type": "image_to_float"},
             {"type": "image_layout", "to": "CHW"},
-            {"type": "resize_images", "height": 224, "width": 224, "mode": "pad"},
+            {"type": "resize_images", "mode": "pad"},
             {"type": "normalize_vector", "fields": ["state", "actions"]},
             {"type": "task_tokenize", "max_length": 200, "discrete_state": True,
              "tokenizer_repo": "google/paligemma-3b-pt-224"},
@@ -89,7 +89,7 @@ _PI05_METADATA = ModelMetadata(
 
 
 @register_vla(_PI05_METADATA)
-def load_pi05(recipe, schema) -> PI0ModelWrapper:
+def load_pi05(recipe, assembly) -> PI0ModelWrapper:
     """Factory: construct openpi ``PI0Pytorch`` in pi05 mode and wrap it.
 
     Raises ImportError if openpi is not installed.
@@ -102,6 +102,6 @@ def load_pi05(recipe, schema) -> PI0ModelWrapper:
         )
     PI0Pytorch, Pi0Config, _OpenpiObservation = openpi  # noqa: F841
     return _load_pi0(
-        recipe, schema, PI0Pytorch, Pi0Config, model_name="pi05", pi05=True,
+        recipe, assembly, PI0Pytorch, Pi0Config, model_name="pi05", pi05=True,
         metadata=_PI05_METADATA,
     )

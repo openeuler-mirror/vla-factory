@@ -7,7 +7,7 @@ Run:
 """
 
 from __future__ import annotations
-from helpers import make_schema
+from helpers import make_assembly, make_schema
 
 import sys
 import tempfile
@@ -33,15 +33,14 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
     return Observation(images=images, image_masks=image_masks, state=state)
 
 
-def _make_recipe_and_schema(action_dim=6, action_horizon=10, cameras=("front",), state_dim=6):
-    """Create a minimal TrainRecipe + DataSchema pair for factory calls."""
-    from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig
+def _make_recipe_and_assembly(action_dim=6, action_horizon=10, cameras=("front",), state_dim=6):
+    """Create a minimal TrainRecipe + ResolvedAssembly pair for factory calls."""
+    from vla_factory.recipe.recipe import TrainRecipe
     from vla_factory.recipe.defaults import resolve_recipe
-    from vla_factory.data.manifest import DataSchema
 
     recipe = resolve_recipe(TrainRecipe(
         model_name="act",
-        action_spec=ActionSpecConfig(action_dim=action_dim, action_horizon=action_horizon),
+        model_config={"action_horizon": action_horizon},
     ))
     schema = make_schema(
         state_dim=state_dim,
@@ -49,7 +48,7 @@ def _make_recipe_and_schema(action_dim=6, action_horizon=10, cameras=("front",),
         cameras=tuple(cameras),
         image_sizes={cam: (224, 224) for cam in cameras},
     )
-    return recipe, schema
+    return recipe, make_assembly(schema, "act", recipe=recipe)
 
 
 def _lerobot_available():
@@ -93,8 +92,8 @@ class TestAdapter:
         from vla_factory.model.registry import get_entry
 
         entry = get_entry("act")
-        recipe, schema = _make_recipe_and_schema()
-        wrapper = entry.factory(recipe=recipe, schema=schema)
+        recipe, assembly = _make_recipe_and_assembly()
+        wrapper = entry.factory(recipe=recipe, assembly=assembly)
 
         assert isinstance(wrapper, torch.nn.Module)
         assert isinstance(wrapper, VLAModelPyTorch)
@@ -117,8 +116,8 @@ class TestAdapter:
         assert meta.support_full is True
         assert meta.install_hint  # declares how to install the upstream dep
 
-        recipe, schema = _make_recipe_and_schema()
-        wrapper = entry.factory(recipe=recipe, schema=schema)
+        recipe, assembly = _make_recipe_and_assembly()
+        wrapper = entry.factory(recipe=recipe, assembly=assembly)
 
         # The wrapper's image slots follow schema.cameras ("front"), so the
         # observation must carry that same camera — name-mapped, not positional.
@@ -169,8 +168,8 @@ class TestLerobotIntegration:
         from vla_factory.model.registry import get_entry
 
         entry = get_entry("act")
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        wrapper = entry.factory(recipe=recipe, schema=schema)
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
+        wrapper = entry.factory(recipe=recipe, assembly=assembly)
 
         assert wrapper._backend == "lerobot"
 
@@ -178,8 +177,8 @@ class TestLerobotIntegration:
         """Lerobot backend compute_loss returns correct loss_dict keys."""
         from vla_factory.model.registry.entries.act import _load_lerobot
 
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        wrapper = _load_lerobot(recipe, schema)
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
+        wrapper = _load_lerobot(recipe, assembly)
 
         obs = _make_obs(B=2, cameras=("top",), state_dim=6)
         actions = torch.randn(2, 10, 6)
@@ -195,8 +194,8 @@ class TestLerobotIntegration:
         """Lerobot backend predict_actions returns [B, chunk_size, action_dim]."""
         from vla_factory.model.registry.entries.act import _load_lerobot
 
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        wrapper = _load_lerobot(recipe, schema)
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
+        wrapper = _load_lerobot(recipe, assembly)
 
         obs = _make_obs(B=2, cameras=("top",), state_dim=6)
         with torch.no_grad():
@@ -208,8 +207,8 @@ class TestLerobotIntegration:
         """Lerobot backend handles multi-camera when config has multiple image features."""
         from vla_factory.model.registry.entries.act import _load_lerobot
 
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        wrapper = _load_lerobot(recipe, schema)
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
+        wrapper = _load_lerobot(recipe, assembly)
 
         obs = _make_obs(B=2, cameras=("top",), state_dim=6)
         actions = torch.randn(2, 10, 6)
@@ -225,14 +224,14 @@ class TestLerobotIntegration:
         """state_dict round-trip via lerobot wrapper."""
         from vla_factory.model.registry.entries.act import _load_lerobot
 
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
-        wrapper = _load_lerobot(recipe, schema)
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
+        wrapper = _load_lerobot(recipe, assembly)
 
         with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
             torch.save(wrapper.state_dict(), f.name)
             loaded = torch.load(f.name, map_location="cpu", weights_only=True)
 
-        wrapper2 = _load_lerobot(recipe, schema)
+        wrapper2 = _load_lerobot(recipe, assembly)
         wrapper2.load_state_dict(loaded)
 
         for (n1, p1), (n2, p2) in zip(
@@ -255,42 +254,56 @@ class TestDefaultProfile:
 
         d = model_params("act")
         assert "dim_model" in d
-        assert not any(x["type"] == "resize_images" for x in d["transforms"]["inputs"])
+        assert d["input_image_size"] is None
+        assert any(x["type"] == "resize_images" for x in d["transforms"]["inputs"])
 
     def test_resolve_uses_profile_defaults(self):
-        from vla_factory.model.registry.entries.act import _resolve_act_config, _resolve_resize_image_size
+        from vla_factory.model.registry.entries.act import _resolve_act_config
 
         cfg = _resolve_act_config({})
         assert cfg["dim_model"] == 512
-        assert _resolve_resize_image_size(cfg) is None
+        # The placeholder has no shape fact; None keeps dataset-native size.
+        assert cfg["input_image_size"] is None
+        assert {"type": "resize_images"} in cfg["transforms"]["inputs"]
 
     def test_recipe_overrides_profile(self):
         from vla_factory.model.registry.entries.act import _resolve_act_config
 
         cfg = _resolve_act_config({
             "dim_model": 1024,
-            "transforms": {"inputs": [{"type": "resize_images", "height": 480, "width": 640}]},
+            "input_image_size": [480, 640],
         })
         assert cfg["dim_model"] == 1024
-        assert cfg["transforms"]["inputs"][0]["height"] == 480
-        assert cfg["transforms"]["inputs"][0]["width"] == 640
+        assert cfg["input_image_size"] == [480, 640]
         # Non-overridden keys still come from the profile.
         assert cfg["n_decoder_layers"] == 1
 
-    def test_image_size_comes_from_resize_transform(self):
-        from vla_factory.model.registry.entries.act import _resolve_resize_image_size
+    def test_image_size_comes_from_model_config_or_native_data(self):
+        """The interface is resolved first; the resize call consumes it."""
+        from vla_factory.recipe.defaults import resolve_recipe
+        from vla_factory.recipe.parser import parse_recipe_from_string
 
-        size = _resolve_resize_image_size({
-            "transforms": {"inputs": [{"type": "resize_images", "height": 480, "width": 640}]}
-        })
-        assert size == (480, 640)
+        schema = make_schema(
+            state_dim=6, action_dim=6, cameras=("front",),
+            image_sizes={"front": (480, 640)},
+        )
+        native = make_assembly(schema, "act")
+        assert native.model_io_spec.camera_shapes == {"front": (480, 640)}
 
-    def test_image_size_falls_back_to_schema(self):
-        from vla_factory.data.manifest import DataSchema
-        from vla_factory.model.registry.entries.act import _schema_image_size
-
-        schema = make_schema(cameras=("front",), image_sizes={"front": (480, 640)})
-        assert _schema_image_size(schema, "front") == (480, 640)
+        resized = resolve_recipe(parse_recipe_from_string("""
+model:
+  name: act
+  config:
+    input_image_size: [224, 224]
+"""))
+        assembly = make_assembly(schema, "act", recipe=resized)
+        assert assembly.model_io_spec.camera_shapes == {"front": (224, 224)}
+        resize_call = next(
+            call for call in assembly.data_to_model.calls
+            if call.type == "resize_images"
+        )
+        assert resize_call.args["height"] == 224
+        assert resize_call.args["width"] == 224
 
     def test_unknown_model_returns_empty(self):
         from vla_factory.recipe.defaults import model_params
@@ -303,11 +316,11 @@ class TestDefaultProfile:
         from vla_factory.model.registry import get_entry
 
         entry = get_entry("act")
-        recipe, schema = _make_recipe_and_schema(cameras=("top",))
+        recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
         from vla_factory.recipe.defaults import resolve_recipe
         recipe.model_config = {**recipe.model_config, "dim_model": 256}
         recipe = resolve_recipe(recipe)
-        wrapper = entry.factory(recipe=recipe, schema=schema)
+        wrapper = entry.factory(recipe=recipe, assembly=assembly)
         assert wrapper.model.config.dim_model == 256
 
 
@@ -320,53 +333,50 @@ class TestDefaultProfile:
 
 
 @skip_no_lerobot
-class TestActionFactRouting:
-    """The built ACTConfig follows the dataset/model facts, not the recipe alone.
+class TestShapesComeFromTheAssembly:
+    """The built ACTConfig follows the resolved composition, not the recipe.
 
-    Before WP3 the head width came straight from `recipe.action_spec.action_dim`
-    while the dataloader padded to the routed dim, so a recipe that disagreed
-    with its dataset silently built a head of the wrong width.
+    The head width is resolved directly from model/data facts, and the planned
+    calls consume the same target, so the model and dataloader cannot diverge.
     """
 
-    def _recipe(self, action_dim, action_horizon):
-        from vla_factory.recipe.recipe import TrainRecipe, ActionSpecConfig
+    def _recipe(self, action_horizon=None):
+        from vla_factory.recipe.recipe import TrainRecipe
         from vla_factory.recipe.defaults import resolve_recipe
 
-        return resolve_recipe(TrainRecipe(
-            model_name="act",
-            action_spec=ActionSpecConfig(
-                action_dim=action_dim, action_horizon=action_horizon
-            ),
-        ))
+        config = {} if action_horizon is None else {"action_horizon": action_horizon}
+        return resolve_recipe(TrainRecipe(model_name="act", model_config=config))
 
     def _config_of(self, recipe, schema):
         from vla_factory.model.registry.entries.act import _load_lerobot
 
-        wrapper = _load_lerobot(recipe, schema)
-        return wrapper.model.config
+        assembly = make_assembly(schema, "act", recipe=recipe)
+        return _load_lerobot(recipe, assembly).model.config
 
-    def test_head_width_follows_the_dataset(self, caplog):
-        import logging
-
-        schema = make_schema(
-            state_dim=6, action_dim=8, cameras=("top",),
+    def _schema(self, action_dim=8):
+        return make_schema(
+            state_dim=6, action_dim=action_dim, cameras=("top",),
             image_sizes={"top": (224, 224)},
         )
-        with caplog.at_level(logging.WARNING, logger="vla_factory.assembly.action_facts"):
-            config = self._config_of(self._recipe(action_dim=6, action_horizon=10), schema)
 
+    def test_head_width_follows_the_dataset(self):
+        config = self._config_of(self._recipe(), self._schema(action_dim=8))
         assert config.output_features["action"].shape == (8,)
-        assert any("action_dim mismatch" in r.message for r in caplog.records)
 
-    def test_chunk_size_follows_the_recipe_for_from_scratch(self):
+    def test_chunk_size_follows_the_model_config_for_from_scratch(self):
         """ACT is trained from scratch, so the user owns the chunk size."""
-        schema = make_schema(
-            state_dim=6, action_dim=8, cameras=("top",),
-            image_sizes={"top": (224, 224)},
-        )
-        config = self._config_of(self._recipe(action_dim=8, action_horizon=17), schema)
+        config = self._config_of(self._recipe(action_horizon=17), self._schema())
         assert config.chunk_size == 17
         assert config.n_action_steps == 17
+
+    def test_chunk_size_defaults_to_the_act_declaration(self):
+        """A recipe that says nothing gets ACT's own declared default (100).
+
+        Not the framework-wide 50 the deleted ``action_spec`` used to supply —
+        that default belonged to no model in particular.
+        """
+        config = self._config_of(self._recipe(), self._schema())
+        assert config.chunk_size == 100
 
 
 def main():

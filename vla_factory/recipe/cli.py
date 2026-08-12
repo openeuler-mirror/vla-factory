@@ -241,10 +241,9 @@ def main():
         help="Action chunk execution strategy. Defaults to synchronous for "
              "RoboTwin and receding_horizon for other platforms.",
     )
-    deploy_parser.add_argument(
-        "--camera-names", nargs="*", default=None,
-        help="Camera names (default: from saved schema).",
-    )
+    # No --camera-names: camera keys are part of the checkpoint's resolved
+    # composition (see InferenceEngine). Renaming them at deploy time would
+    # desynchronise them from the camera mapping the model was trained with.
     deploy_parser.add_argument(
         "--platform", default="simulator",
         choices=["simulator", "lerobot", "robotwin"],
@@ -477,7 +476,6 @@ def main():
         engine = InferenceEngine(
             checkpoint_path=args.checkpoint,
             device=device,
-            camera_names=args.camera_names,
         )
         strategy = args.strategy or (
             "synchronous" if args.platform == "robotwin" else "receding_horizon"
@@ -485,7 +483,7 @@ def main():
         execution_policy = build_execution_policy(
             strategy,
             action_horizon=engine.action_horizon,
-            action_dim=engine.action_dim,
+            action_dim=engine.execution_action_dim,
             n_action_steps=args.n_action_steps,
         )
         policy = PolicyExecutor(engine, execution_policy)
@@ -511,7 +509,8 @@ def main():
             print(f"[deploy] Model: {engine.recipe.model_name}", flush=True)
             print(f"[deploy] Device: {device}", flush=True)
             print(f"[deploy] Platform: robotwin (cameras={list(engine.camera_keys)}, "
-                  f"state_dim={engine.schema.state_dim}, action_dim={engine.action_dim})", flush=True)
+                  f"state_dim={engine.schema.state_dim}, "
+                  f"action_dim={engine.execution_action_dim})", flush=True)
             print(f"[deploy] Listening on {args.host}:{args.port} — start the RoboTwin "
                   f"client with matching --port.", flush=True)
             server.serve_forever()
@@ -541,7 +540,7 @@ def main():
                     state_dim=engine.schema.state_dim,
                 )
                 action_adapter = LerobotHostActionAdapter(
-                    action_dim=engine.action_dim,
+                    action_dim=engine.execution_action_dim,
                     action_keys=engine.action_keys,
                 )
                 platform_desc = (
@@ -591,99 +590,25 @@ def main():
 def _run_resolve(config_path: str) -> None:
     """``vlafactory-cli resolve --config <recipe>`` dry-run handler.
 
-    Parses the recipe, gathers the three descriptions (data schema/norm_stats,
-    model metadata, optional robot profile), optionally checks checkpoint
-    consistency, runs
-    ``resolve_assembly`` and prints either a summary or a structured
-    ``ResolutionError``. Runs without GPU and without optional model extras —
-    it never triggers the model factory.
+    Delegates the whole recipe → descriptions → ``resolve_assembly`` sequence to
+    ``resolve_from_recipe()`` (the one place that knows it) and only adds the
+    CLI's own surface: a printed summary, a structured error dump, and the exit
+    code. Runs without GPU and without optional model extras — it never triggers
+    the model factory.
     """
-    from pathlib import Path as _Path
-
     from vla_factory.recipe.parser import parse_recipe
     from vla_factory.recipe.defaults import resolve_recipe
-    from vla_factory.assembly.resolver import (
-        make_error,
-        resolve_assembly,
-        UNKNOWN_MODEL,
-        UNKNOWN_ROBOT,
-    )
+    from vla_factory.assembly.from_recipe import resolve_from_recipe
 
     recipe = resolve_recipe(parse_recipe(config_path))
 
-    # ── Model metadata (registry only — no factory, no heavy deps) ──
-    entries = list_entries()
-    metadata = entries.get(recipe.model_name)
-    if metadata is None:
-        err = make_error(
-            UNKNOWN_MODEL, "model.name",
-            model_name=recipe.model_name, known=sorted(entries),
-        )
-        _print_resolution_error(err)
-        sys.exit(1)
-
-    # ── Optional checkpoint consistency check ──
-    if recipe.model_path:
-        try:
-            checkpoint_check = validate_checkpoint_if_available(recipe.model_path, metadata)
-        except CheckpointCompatibilityError as e:
-            print(f"Checkpoint compatibility failed: {e}")
-            sys.exit(1)
-        if checkpoint_check["status"] == "unavailable":
-            print(f"(skipped checkpoint compatibility check: {checkpoint_check['detail']})")
-
-    # ── Optional robot profile ──
-    robot_profile = None
-    if recipe.robot.name:
-        try:
-            from vla_factory.robot import get_robot_profile, list_robot_profiles
-            robot_profile = get_robot_profile(recipe.robot.name)
-        except Exception:
-            err = make_error(
-                UNKNOWN_ROBOT, "robot.name",
-                robot_name=recipe.robot.name, known=list_robot_profiles(),
-            )
-            _print_resolution_error(err)
-            sys.exit(1)
-
-    # ── Data schema + norm_stats (best-effort; meta files only) ──
-    schema = None
-    norm_stats = None
-    data_path = recipe.data.source.path
-    if data_path:
-        try:
-            from vla_factory.data.formats import get_reader
-            reader = get_reader(recipe.data.source.format, path=_Path(data_path))
-            schema = reader.get_schema(_Path(data_path))
-            norm_stats = reader.get_norm_stats(_Path(data_path))
-        except Exception as e:
-            print(f"(skipped dataset read: {e})")
-
-    # ── Controlled overrides from the recipe's ``assembly`` block ──
-    overrides = {
-        k: v for k, v in (
-            ("camera_mapping", recipe.assembly.camera_mapping),
-            ("accept_fps_mismatch", recipe.assembly.accept_fps_mismatch),
-            ("gripper_flip", recipe.assembly.gripper_flip),
-            ("default_task", recipe.assembly.default_task),
-        ) if v is not None
-    }
-
     try:
-        assembly = resolve_assembly(
-            schema=schema,
-            norm_stats=norm_stats,
-            metadata=metadata,
-            robot_profile=robot_profile,
-            overrides=overrides or None,
-            # Tunables after resolve_recipe() merged the model's declared
-            # defaults under this run's model.config — the transform step list
-            # the resolver compiles comes from here, not from the declaration
-            # alone, so a per-run override of it is honoured.
-            model_config=recipe.model_config,
-        )
+        assembly = resolve_from_recipe(recipe)
     except ResolutionError as e:
         _print_resolution_error(e)
+        sys.exit(1)
+    except CheckpointCompatibilityError as e:
+        print(f"Checkpoint compatibility failed: {e}")
         sys.exit(1)
 
     _print_assembly_summary(assembly, checkpoint_path=recipe.model_path)
@@ -703,12 +628,14 @@ def _camera_mapping_summary(mapping) -> str:
     return "; ".join(parts)
 
 
-def _vector_mapping_summary(mapping) -> str:
+def _vector_mapping_summary(mapping, model_width: int) -> str:
     if not mapping.resolved:
         return "unresolved"
-    padded = sum(1 for e in mapping.entries if e.get("padded"))
-    total = len(mapping.entries)
-    return f"{total - padded}/{total} dims from data" + (f", {padded} padded" if padded else "")
+    mapped = len(mapping.entries)
+    padded = max(0, int(model_width) - mapped)
+    return f"{mapped}/{model_width} dims from data" + (
+        f", {padded} padded" if padded else ""
+    )
 
 
 def _language_mapping_summary(mapping) -> str:
@@ -747,8 +674,8 @@ def _print_assembly_summary(assembly, checkpoint_path: str | None = None) -> Non
     print(f"  language:   {'required' if ci.requires_language else 'not required'}")
     print("  mappings:")
     print(f"    camera:   {_camera_mapping_summary(assembly.camera_mapping)}")
-    print(f"    state:    {_vector_mapping_summary(assembly.state_mapping)}")
-    print(f"    action:   {_vector_mapping_summary(assembly.action_mapping)}")
+    print(f"    state:    {_vector_mapping_summary(assembly.state_mapping, ci.state_dim)}")
+    print(f"    action:   {_vector_mapping_summary(assembly.action_mapping, ci.action_dim)}")
     print(f"    language: {_language_mapping_summary(assembly.language_mapping)}")
     joint = assembly.joint_mapping
     print(f"    joint:    {f'{len(joint.entries)} joints' if joint.resolved else 'unresolved (no robot declared)'}")

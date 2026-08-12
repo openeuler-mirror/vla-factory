@@ -17,32 +17,33 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ActionSpecConfig:
-    """Robot action space definition (mirrors YAML ``action_spec``).
+    """**Deprecated** — the action facts now live on the three descriptions.
+
+    Every field here duplicates a fact the composition resolver reads from the
+    dimension that owns it, which is why they all default to ``None``: "the user
+    wrote nothing" has to be distinguishable from "the user asked for the
+    framework default", or a recipe that omits the block would silently override
+    a model's own declaration.
 
     Fields
     ------
-    action_dim : int
-        Number of action dimensions output by the policy.
-        Examples: 6 (SO101 single arm), 14 (ALOHA bimanual), 7 (delta EEF + gripper).
-    action_horizon : int
-        Number of future timesteps the model predicts per inference call.
-        Also called ``chunk_size`` in some frameworks.
-        Examples: 50 (PI0), 100 (ACT), 7 (OpenVLA).
-    action_type : str
-        Semantic type of the action vector. One of:
-          - ``joint_pos``   : absolute joint positions
-          - ``delta_joint`` : joint position deltas
-          - ``delta_eef``   : end-effector pose deltas (x,y,z,rx,ry,rz,gripper)
-          - ``se3``         : SE(3) end-effector pose
-          - ``tokenized``   : discretized action tokens (OpenVLA)
+    action_dim : int | None
+        Deprecated → dataset fact (``DataSchema.action_dim``); the model's
+        ``dim_policy`` decides how it is padded.
+    action_horizon : int | None
+        Deprecated → the model declaration. A pretrained model's chunk length is
+        a family fact (``ModelMetadata.action_horizon``); a from-scratch model's
+        is a tunable (``model.config.action_horizon``). ``resolve_recipe()``
+        forwards a value set here to the latter, once, with a warning.
+    action_type : str | None
+        Deprecated → dataset ``action.dims[].mode`` / robot ``native_action_type``.
     bounds_low / bounds_high : list[float] | None
-        Per-dimension action bounds for clipping / normalization.
-        Length must equal ``action_dim``.  ``None`` means unbounded.
+        Deprecated → ``RobotProfile`` safety bounds.
     """
 
-    action_dim: int = 6
-    action_horizon: int = 50
-    action_type: str = "joint_pos"
+    action_dim: int | None = None
+    action_horizon: int | None = None
+    action_type: str | None = None
     bounds_low: list[float] | None = None
     bounds_high: list[float] | None = None
 
