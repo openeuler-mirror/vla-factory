@@ -508,7 +508,7 @@ The intermediate representation layer is **not responsible** for:
 
 - **Model preprocessing**: image resize size and vector normalization scale are decided by TransformPipeline based on model declarations; Canonical IR only carries raw data.
 - **Model input format adaptation**: upstream model libraries such as lerobot and transformers have their own batch dict formats; model adapters perform this conversion inside `compute_loss()`, and Canonical IR is unaware of it.
-- **Data augmentation**: random crop, color jitter, and similar training augmentations are implemented in TransformPipeline and are not part of the intermediate representation contract.
+- **Data augmentation**: random crop, color jitter and similar training-time augmentations are not part of the intermediate representation contract. None is implemented today; if one is added it belongs in the transform pipeline, as a step the model declares like any other.
 - **Online inference data collection**: deployment observations come from sensors or simulators and do not go through the `VLADataset` pipeline.
 
 ## 5. Extension Guide

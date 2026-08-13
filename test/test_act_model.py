@@ -112,7 +112,6 @@ class TestAdapter:
         assert meta.action_head_type == "regression"
         assert meta.training_paradigm == "from_scratch"
         assert meta.requires_prompt is False
-        assert meta.requires_augmentation is True
         assert meta.support_full is True
         assert meta.install_hint  # declares how to install the upstream dep
 

@@ -209,7 +209,6 @@ _PI0_METADATA = ModelMetadata(
     action_head_type="flow_matching",
     training_paradigm="pretrained_finetune",
     requires_prompt=True,
-    requires_augmentation=False,
     support_lora=True,
     support_full=True,
     support_freeze=True,

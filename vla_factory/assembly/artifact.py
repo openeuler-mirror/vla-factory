@@ -168,7 +168,6 @@ NON_INTERFACE_FACTS: frozenset[str] = frozenset({
     "action_head_type",
     "training_paradigm",
     "components",
-    "requires_augmentation",
     "support_lora",
     "support_full",
     "support_freeze",

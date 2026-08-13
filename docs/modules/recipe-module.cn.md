@@ -99,7 +99,7 @@
 | `data.sampler.*` | `ModelIOSpec.n_obs_steps` / `.action_horizon` |
 | `data.split.*` | 框架固定策略（`training/manifest.py`） |
 | `training.inference_steps` | `model.config.num_inference_steps` |
-| `training.augmentation.*` | 无——声明了、被写进产物，却从未被任何 transform 应用 |
+| `training.augmentation.*` | 无——声明了、被写进产物，却从未被任何 transform 应用；`ModelMetadata.requires_augmentation` 也随之删除 |
 | `model.config.camera_mapping` / `default_task` | `assembly` 块 |
 | `composition:` | `assembly:` |
 | `assembly.accept_fps_mismatch` / `gripper_flip` | 无——对应检查未实现，从来没有效果 |

@@ -559,7 +559,7 @@ TransformPipeline 的 inverse 变换（UnnormalizeAction、UnpadAction）由 che
 
 - **模型预处理**：图像 resize 到多大、向量归一化到什么尺度，由 TransformPipeline 根据模型声明决定，Canonical IR 只承载原始数据
 - **模型输入格式适配**：上游模型库（lerobot、transformers）各有自己的 batch dict 格式，这个转换由 model adapter 在 `compute_loss()` 内部完成，Canonical IR 不感知
-- **数据增强**：随机裁剪、颜色抖动等训练增强在 TransformPipeline 中实现，不属于中间表示层的标准职责
+- **数据增强**：随机裁剪、颜色抖动等训练增强不属于中间表示层的职责。当前**一个都没有实现**；将来要加，应作为模型声明的一个 transform step，与其余步骤同一条路径
 - **在线推理数据采集**：部署侧的观测数据来自传感器/模拟器，不经过 VLADataset 管线
 
 ## 5. 扩展指南

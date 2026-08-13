@@ -280,7 +280,6 @@ _ACT_METADATA = ModelMetadata(
     action_head_type="regression",
     training_paradigm="from_scratch",
     requires_prompt=False,
-    requires_augmentation=True,
     support_lora=False,
     support_full=True,
     support_freeze=True,

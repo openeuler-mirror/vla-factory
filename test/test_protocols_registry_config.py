@@ -33,7 +33,6 @@ def test_protocols():
         action_head_type="regression",
             training_paradigm="from_scratch",
         requires_prompt=False,
-        requires_augmentation=True,
     )
     assert meta.support_lora
     assert not meta.requires_prompt

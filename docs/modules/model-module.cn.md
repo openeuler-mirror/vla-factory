@@ -148,7 +148,7 @@ resolver 先由这里的维度策略与 `DataSchema` 直接建立 `ModelIOSpec`�
 |---|---|
 | `identity.family` | 信息性，无消费方 |
 | `identity.base_checkpoint` / fingerprint / `schema_version` | checkpoint 路径归 recipe `model.path`；同族 checkpoint 不应复制接口声明，当前也没有版本迁移消费方 |
-| `augmentation_trained_with`、`trained_languages` | 信息性；增广需求已有 `requires_augmentation` |
+| `augmentation_trained_with`、`trained_languages` | 信息性，无消费方。（`requires_augmentation` 曾是它们的替代，但框架从未实现数据增广，该字段已随 recipe 的 `augmentation` 块一起删除） |
 | `temporal.latency_assumption_s` | 无消费方 |
 | `finetune.default_strategy`、`precision` | 弱消费（recipe 缺省提示 / 训练参数校验），按需准入 |
 | `runtime` 块（`supports_sampling` / `likelihood_available` / `chunk_streaming`） | 消费方是 RL / TTS / 流式推理（架构 §7.1 对接 RLinf 阶段）；字段设计合理，届时原样准入 |

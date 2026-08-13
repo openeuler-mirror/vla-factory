@@ -73,7 +73,6 @@ class ModelMetadata:
 
     # ── Capabilities ──
     requires_prompt: bool = True
-    requires_augmentation: bool = False
 
     # ── Fine-tuning support ──
     support_lora: bool = True
