@@ -61,44 +61,6 @@ class TestDeclaredKeyAllowList(unittest.TestCase):
         # The near-miss is offered rather than leaving the user to guess.
         self.assertIn("dim_model", message)
 
-    def test_assembly_keys_stay_accepted_in_legacy_location(self):
-        """camera_mapping / default_task migrated to `assembly:` but still parse."""
-        recipe = parse_recipe_from_string(
-            "model:\n"
-            "  name: pi0\n"
-            "  config:\n"
-            "    camera_mapping:\n"
-            "      base_0_rgb: front\n"
-            "    default_task: 'pick up the block'\n"
-        )
-        resolved = resolve_recipe(recipe)
-        self.assertEqual(resolved.model_config["camera_mapping"], {"base_0_rgb": "front"})
-        self.assertEqual(resolved.model_config["default_task"], "pick up the block")
-
-    def test_assembly_block_is_the_preferred_home(self):
-        """The relationship fields read from `assembly:` first, legacy second."""
-        from vla_factory.recipe.recipe import get_camera_mapping, get_default_task
-
-        modern = parse_recipe_from_string(
-            "model:\n"
-            "  name: pi0\n"
-            "assembly:\n"
-            "  camera_mapping:\n"
-            "    base_0_rgb: front\n"
-            "  default_task: 'from assembly'\n"
-        )
-        self.assertEqual(get_camera_mapping(modern), {"base_0_rgb": "front"})
-        self.assertEqual(get_default_task(modern), "from assembly")
-
-        legacy = parse_recipe_from_string(
-            "model:\n"
-            "  name: pi0\n"
-            "  config:\n"
-            "    default_task: 'from model.config'\n"
-        )
-        with self.assertLogs("vla_factory.recipe.recipe", level=logging.WARNING):
-            self.assertEqual(get_default_task(legacy), "from model.config")
-
     def test_unregistered_model_skips_the_gate(self):
         """A model with no declaration must not be unable to take any config."""
         recipe = parse_recipe_from_string(
@@ -228,26 +190,6 @@ class TestInferenceStepsPriority(unittest.TestCase):
         recipe = resolve_recipe(parse_recipe_from_string(
             "model:\n  name: pi0\n  config:\n    num_inference_steps: 2\n"
         ))
-        self.assertEqual(recipe.model_config["num_inference_steps"], 2)
-
-    def test_legacy_training_block_is_forwarded_with_a_warning(self):
-        with self.assertLogs("vla_factory.recipe.parser", level=logging.WARNING) as logs:
-            recipe = parse_recipe_from_string(
-                "model:\n  name: pi0\ntraining:\n  inference_steps: 3\n"
-            )
-        self.assertEqual(recipe.model_config["num_inference_steps"], 3)
-        self.assertIn("deprecated", "\n".join(logs.output))
-
-    def test_model_config_wins_over_the_legacy_block(self):
-        with self.assertLogs("vla_factory.recipe.parser", level=logging.WARNING):
-            recipe = parse_recipe_from_string(
-                "model:\n"
-                "  name: pi0\n"
-                "  config:\n"
-                "    num_inference_steps: 2\n"
-                "training:\n"
-                "  inference_steps: 3\n"
-            )
         self.assertEqual(recipe.model_config["num_inference_steps"], 2)
 
 

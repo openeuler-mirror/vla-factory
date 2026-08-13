@@ -1,8 +1,12 @@
 # 开发计划：组合解析迁移阶段 4「下游接入」+ 阶段 5「Recipe 瘦身」
 
 > 状态：**阶段 4（WP1–WP7 + 一轮 code review 整改）已执行完毕**（工作树，未提交），
-> `pytest` **351 passed**（openpi 环境另跑 330 passed / 21 skipped）；
-> 阶段 5 待执行。分支 `ref_train_infer`（阶段 0–3 已提交至 `a50e83e`）。
+> `pytest` **351 passed**（openpi 环境另跑 330 passed / 21 skipped）；已提交 `a3b7c14`。
+> **阶段 5（WP1–WP6）已执行完毕**（工作树，未提交），`pytest` **348 passed**。
+> **范围按用户决定扩大两处**：① 不做兼容层——旧 recipe 不再能跑，`deprecations.py` 一并
+> 删除（仓库 0.1.0 早期、调用方全在仓内，两种写法并存的成本高于收益）；② `data.sampler`
+> 与 `data.split` 整块删除——前者两端都是模型的时序契约，后者是框架固定策略。
+> 分支 `ref_train_infer`（阶段 0–3 已提交至 `a50e83e`）。
 >
 > **实施中与本文档不同 / 需要补记的七处**（正文已就地更新）：
 > 1. **`_action_horizon` 无 `model_config` 时回退到 `metadata.params`**——与
@@ -598,12 +602,47 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
   ——这是本次唯一有资格脱离 TODO 的模块文档，因为 recipe 的形状到这一步才定下来。
   `assembly-module.cn.md` 继续 TODO（要对齐完整实现，`robot_to_model` 还缺）。
 
-### 3.1 阶段 5 验证
+### 3.1 阶段 5 验证（**实测结果**）
 
-- `pytest` 全绿；四份 example `resolve` 成功且摘要与阶段 4 一致。
-- 构造一份「全是废弃字段」的旧 recipe：逐条告警、不失败、解析结果与新写法等价。
-- act 真实 fixture 上再跑一次 `train --steps 2` + `infer`，动作数值与阶段 4 结束时一致
-  （recipe 瘦身不应改变任何数值行为）。
+- `pytest`：**348 passed**。
+- `resolve`：`act_lekiwi` / `pi0_lora` / 重写后的 `reference.yaml` 摘要与阶段 4 逐行一致
+  （act `dim=8 horizon=100`、pi0 `dim=32 horizon=50`），且不再出现废弃字段提示。
+- **时序契约来源**：新增三条断言 `n_obs_steps` 来自 `history_frames`、默认 1、声明 0 即
+  报错（`test_action_horizon_source.py`）。
+- act 真实 fixture：`train --steps 2` → `infer` 得 `action_shape (100, 8)`、
+  `execution_action_dim=8`、`action_horizon=100`，与阶段 4 结束时逐项相同。
+- 产物 `recipe.yaml` 顶层只剩 `model / data / robot / assembly / finetuning / training /
+  output`；`data` 下只有 `source`，`training` 无 `inference_steps`。
+- 训练侧划分不变：`Manifest: 828 train samples, 414 val samples`，与阶段 4 逐字相同。
+
+### 3.2 阶段 5 的实施差异（与本文档原计划不同的五处）
+
+1. **兼容层独立成 `recipe/deprecations.py`**，而不是散在 parser 与 defaults 里。转换发生在
+   YAML 仍是原始映射时，所以 `parser.py` 之后的代码只见得到当前形状——没有任何「新旧两
+   种拼法」的分支；到期移除是删一个文件加两个调用点。`scan()` / `migrate()` 共用同一段
+   实现，一个字段不可能被一个报告、被另一个处理。
+2. **顺带删掉了 `ActionSpec`**（`model/interfaces/observation.py`）。它是 `action_spec`
+   块的运行时镜像，源字段删掉后零生产消费者；留着会成为第三种「动作宽度」的说法。
+3. **`AssemblyConfig` 的两个无消费者字段直接删除**（原计划写「随对应检查恢复」，做法
+   一致）：写了就报 `UNSUPPORTED_OVERRIDE` 的字段等于「能写、但一定失败」。守护测试
+   `test_every_assembly_override_is_accounted_for` 随之收紧为「声明字段集 ==
+   `CONSUMED_OVERRIDES`」，新增字段必须与消费它的代码同一个 commit 落地。
+4. **不提供兼容层**（用户决定，覆盖 WP5 的「迁移提示」设计）。`deprecations.py`、它的
+   测试、以及 `resolve` 摘要末尾的废弃字段列表全部删除。旧 recipe 里的键成为未知键——
+   `parser.py` 一律忽略，不崩也不生效。迁移方式改为「跑 `resolve` 看解析器推出来的结果，
+   照着删」。理由：0.1.0 早期、调用方全在仓内，维护一层「旧拼法 → 新拼法」只会让两种
+   写法长期并存，而它们随时可能给出不一致的答案。
+5. **`data.sampler` 与 `data.split` 整块删除**（用户决定，原计划只删 `sampler.action_horizon`）。
+   - `n_obs_steps` 归位到 `ModelIOSpec.n_obs_steps`，源头是 `ModelMetadata.history_frames`
+     ——一个早就声明、早就在 `INTERFACE_FACTS` 里、但从来没有人读的模型事实。这同时关闭
+     了阶段 4 推迟表里的「`n_obs_steps` 与 `history_frames` 合并」一项。
+     `int(metadata.history_frames)` 不写 `or 1`：那会把声明的 0 悄悄变成合法窗口，而不是
+     报告坏声明。
+   - `sampler.type` 只有一个合法值，`split.strategy` 的另外两个值直接抛 NotImplementedError
+     ——都是「只有一个选项的选择题」。
+   - `split.train_ratio` / `seed` 变成 `training/manifest.py` 的框架常量。判据是
+     `eval_strategy="no"`：**训练期从不评估**，所以这个旋钮唯一的效果是悄悄缩小训练集。
+     实测 `Manifest: 828 train / 414 val` 与阶段 4 逐字相同。
 
 ---
 

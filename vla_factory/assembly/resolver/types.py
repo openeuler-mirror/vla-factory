@@ -229,6 +229,10 @@ class ModelIOSpec:
 
     action_dim: int = 0
     action_horizon: int = 0
+    # How many observation frames one sample carries — the model's temporal
+    # contract (``ModelMetadata.history_frames``), and therefore also the
+    # sampler's window on the input side.
+    n_obs_steps: int = 1
     state_dim: int = 0
     cameras: tuple[str, ...] = ()
     # Per-camera ``(height, width)`` required at the model boundary.
@@ -239,6 +243,7 @@ class ModelIOSpec:
         return {
             "action_dim": self.action_dim,
             "action_horizon": self.action_horizon,
+            "n_obs_steps": self.n_obs_steps,
             "state_dim": self.state_dim,
             "cameras": list(self.cameras),
             "camera_shapes": {k: list(v) for k, v in self.camera_shapes.items()},
@@ -250,6 +255,7 @@ class ModelIOSpec:
         return cls(
             action_dim=int(d.get("action_dim", 0)),
             action_horizon=int(d.get("action_horizon", 0)),
+            n_obs_steps=int(d.get("n_obs_steps", 1)),
             state_dim=int(d.get("state_dim", 0)),
             cameras=tuple(d.get("cameras") or ()),
             camera_shapes={

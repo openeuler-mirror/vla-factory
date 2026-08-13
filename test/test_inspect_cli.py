@@ -65,22 +65,21 @@ def test_inspect_model_keeps_checkpoint_observations_separate(tmp_path, capsys):
     assert doc["facts"]["checkpoint_check"]["observed"]["action_dim"] == 32
 
 
-def test_model_report_uses_resolver_camera_validation_for_dynamic_slots(caplog):
+def test_model_report_uses_resolver_camera_validation_for_dynamic_slots():
+    """A model with no declared slots (ACT) has no slot vocabulary to check the
+    override against, so only the camera half is validated — the report must not
+    invent an error for a slot name it cannot know."""
+    from vla_factory.recipe.recipe import AssemblyConfig
+
     recipe = TrainRecipe(
         model_name="act",
-        model_config={"camera_mapping": {"dynamic_slot": "front"}},
+        assembly=AssemblyConfig(camera_mapping={"dynamic_slot": "front"}),
     )
-    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.recipe"):
-        report = cli_module._describe_model_config(
-            recipe, make_schema(cameras=("front", "wrist")),
-        )
+    report = cli_module._describe_model_config(
+        recipe, make_schema(cameras=("front", "wrist")),
+    )
     assert "ERROR:" not in report
     assert "dynamic_slot" in report
-    deprecations = [
-        record for record in caplog.records
-        if "camera_mapping is declared under model.config" in record.message
-    ]
-    assert len(deprecations) == 1
 
 
 def test_inspect_robot_envelope(capsys):

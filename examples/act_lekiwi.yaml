@@ -21,25 +21,13 @@ model:
     n_vae_encoder_layers: 4
     kl_weight: 10.0
     dropout: 0.1
-
-action_spec:
-  action_dim: 9
-  action_horizon: 100                # chunk_size
-  action_type: joint_pos
+    action_horizon: 100              # chunk_size — ACT trains from scratch, so
+                                     # the chunk length is the user's choice
 
 data:
   source:
     path: data/banana
     format: lerobot-v3
-  sampler:
-    type: sliding_window
-    n_obs_steps: 1
-    action_horizon: 100
-  split:
-    strategy: episode
-    train_ratio: 0.9
-    val_ratio: 0.1
-    seed: 1000
 
 finetuning:
   strategy: full                     # ACT trains from scratch
@@ -51,7 +39,6 @@ training:
   batch_size: 8
   total_steps: 160000
   gradient_checkpointing: false
-  inference_steps: 1
   num_workers: 4
   augmentation:
     random_crop: false

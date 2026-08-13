@@ -89,12 +89,9 @@ def test_factory_builds_pi05_variant():
         """
 model:
   name: pi05
-  config:
-    camera_mapping:
-      base_0_rgb: front
-action_spec:
-  action_dim: 9
-  action_horizon: 50
+assembly:
+  camera_mapping:
+    base_0_rgb: front
 """
     )
     wrapper = get_entry("pi05").factory(
@@ -111,12 +108,9 @@ def test_pi0_factory_stays_on_pi0_variant():
         """
 model:
   name: pi0
-  config:
-    camera_mapping:
-      base_0_rgb: front
-action_spec:
-  action_dim: 9
-  action_horizon: 50
+assembly:
+  camera_mapping:
+    base_0_rgb: front
 """
     )
     wrapper = get_entry("pi0").factory(

@@ -43,7 +43,7 @@ def create_dataloaders(
     ----------
     recipe : TrainRecipe
         Prepared recipe (``resolve_recipe()`` applied). Only execution config is
-        read here — batch size, workers, split strategy, sampler window.
+        read here — dataset location, batch size, workers.
     assembly : ResolvedAssembly
         The resolved data × model × robot composition: dataset description,
         statistics, the action horizon and the ``data_to_model`` plan.
@@ -53,8 +53,6 @@ def create_dataloaders(
     (train_loader, val_loader)
     """
     data_cfg = recipe.data
-    sampler_cfg = data_cfg.sampler
-    split_cfg = data_cfg.split
     path = Path(data_cfg.source.path)
 
     # 1. Reader + codec (frame access; the descriptions come from the assembly)
@@ -80,19 +78,16 @@ def create_dataloaders(
         assembly.data_to_model, TransformContext(norm_stats=norm_stats),
     )
 
-    # 3. Manifest. The sampler window must be the horizon the model actually
-    #    predicts, so it comes from the composition, not from a second recipe
-    #    field the user has to keep in sync.
+    # 3. Manifest. Both window ends come from the model's temporal contract —
+    #    how many frames it observes and how many actions it predicts — so a
+    #    sample cannot be shaped differently from what the model consumes.
     manifest = build_manifest(
         schema=schema,
         norm_stats=norm_stats,
         episode_ranges=episode_ranges,
         episode_lengths=episode_lengths,
-        n_obs_steps=sampler_cfg.n_obs_steps,
+        n_obs_steps=assembly.model_io_spec.n_obs_steps,
         action_horizon=assembly.model_io_spec.action_horizon,
-        split_strategy=split_cfg.strategy,
-        train_ratio=split_cfg.train_ratio,
-        seed=split_cfg.seed,
     )
 
     logger.info(

@@ -1,5 +1,5 @@
-"""Where the action horizon comes from, and the mutual exclusion that keeps it
-to one place.
+"""Where the model's temporal contract comes from, and the mutual exclusion
+that keeps the chunk length in one place.
 
 A pretrained model's chunk length is a family fact (``ModelMetadata``); a
 from-scratch model's is the user's choice (``params`` → ``model.config``). The
@@ -86,33 +86,32 @@ def test_declaring_neither_is_a_broken_entry():
         _resolve(_finetune())
 
 
-# ── The deprecated recipe field ───────────────────────────────────
-
-
-def test_legacy_action_spec_horizon_is_forwarded_for_act(caplog):
-    recipe = parse_recipe_from_string(
-        "model:\n  name: act\naction_spec:\n  action_horizon: 17\n"
-    )
-    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.defaults"):
-        resolved = resolve_recipe(recipe)
-    assert resolved.model_config["action_horizon"] == 17
-    assert any("deprecated" in r.message for r in caplog.records)
-
-
-def test_legacy_action_spec_horizon_is_dropped_for_pi0(caplog):
-    """pi0 does not declare the tunable, so forwarding it would trip the
-    allow-list and stop an otherwise fine legacy recipe from running."""
-    recipe = parse_recipe_from_string(
-        "model:\n  name: pi0\naction_spec:\n  action_horizon: 17\n"
-    )
-    with caplog.at_level(logging.WARNING, logger="vla_factory.recipe.defaults"):
-        resolved = resolve_recipe(recipe)
-    assert "action_horizon" not in resolved.model_config
-    assert any("ignored" in r.message for r in caplog.records)
-
-
 def test_a_recipe_that_says_nothing_gets_the_model_default():
-    """The framework-wide default (the deleted ``action_spec`` said 50) belonged
-    to no model in particular; ACT's own declaration says 100."""
+    """A recipe that names no chunk length gets the model's own declared one —
+    there is no framework-wide default, because a chunk length belongs to a
+    model and not to the framework."""
     resolved = resolve_recipe(parse_recipe_from_string("model:\n  name: act\n"))
     assert resolved.model_config["action_horizon"] == 100
+
+
+# ── The other half of the temporal contract ───────────────────────
+
+
+def test_observation_window_comes_from_the_model_declaration():
+    """``n_obs_steps`` is the model's ``history_frames``, not a recipe field.
+
+    A sample must carry exactly the frames the model consumes; a second field
+    for it could only ever agree or be wrong.
+    """
+    assembly = _resolve(_finetune(action_horizon=50, history_frames=3))
+    assert assembly.model_io_spec.n_obs_steps == 3
+
+
+def test_the_default_window_is_a_single_frame():
+    assembly = _resolve(_finetune(action_horizon=50))
+    assert assembly.model_io_spec.n_obs_steps == 1
+
+
+def test_a_model_declaring_no_observation_frame_is_a_broken_entry():
+    with pytest.raises(ValueError, match="at least one"):
+        _resolve(_finetune(action_horizon=50, history_frames=0))

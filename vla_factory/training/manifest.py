@@ -20,6 +20,15 @@ from vla_factory.data.manifest import (
 )
 from vla_factory.training.sampling.sampler import SlidingWindowSampler
 
+# Train/val split policy. Fixed rather than configurable: the split is by whole
+# episodes (the only strategy that avoids leakage between a window and its
+# neighbours), and the ratio and seed are framework constants because nothing
+# evaluates the held-out half during training — changing them only changes how
+# much data the run trains on. A recipe field for it would be a knob whose only
+# effect is silently shrinking the training set.
+TRAIN_RATIO = 0.9
+SPLIT_SEED = 42
+
 
 def build_manifest(
     *,
@@ -29,9 +38,6 @@ def build_manifest(
     episode_lengths: dict[int, int],
     n_obs_steps: int,
     action_horizon: int,
-    split_strategy: str = "episode",
-    train_ratio: float = 0.9,
-    seed: int = 42,
 ) -> DatasetManifest:
     """Build a complete ``DatasetManifest``.
 
@@ -42,17 +48,9 @@ def build_manifest(
     episode_lengths
         Mapping ``episode_index -> num_frames``.
     n_obs_steps, action_horizon
-        Sampler hyper-parameters (from ``SamplerConfig``).
-    train_ratio, seed
-        Episode-level train/val split.
+        The model's temporal contract, from ``ModelIOSpec`` — a sample carries
+        exactly the frames the model consumes and the actions it predicts.
     """
-    # Validate split strategy — only "episode" is currently implemented.
-    if split_strategy not in ("episode",):
-        raise ValueError(
-            f"split strategy '{split_strategy}' is not yet implemented. "
-            f"Currently only 'episode' is supported."
-        )
-
     sampler = SlidingWindowSampler(
         n_obs_steps=n_obs_steps,
         action_horizon=action_horizon,
@@ -67,9 +65,9 @@ def build_manifest(
 
     # 2. Split episodes into train / val
     all_ep_indices = sorted(episode_lengths.keys())
-    rng = random.Random(seed)
+    rng = random.Random(SPLIT_SEED)
     rng.shuffle(all_ep_indices)
-    n_train = max(1, int(len(all_ep_indices) * train_ratio))
+    n_train = max(1, int(len(all_ep_indices) * TRAIN_RATIO))
     train_eps = set(all_ep_indices[:n_train])
     val_eps = set(all_ep_indices[n_train:])
 

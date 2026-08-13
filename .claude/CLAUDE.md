@@ -63,7 +63,10 @@ contract. `robot_to_model` and the JointMapping consumers are still deferred.
 - **`vla_factory/recipe/`** — user-expression layer: recipe parsing & model defaults.
   - `recipe.py` — `TrainRecipe` and sub-dataclasses, incl. `RobotConfig` and
     `AssemblyConfig` (composition selection + controlled override).
-  - `parser.py` — `parse_recipe(path|dict) → TrainRecipe`.
+  - `parser.py` — `parse_recipe(path|dict) → TrainRecipe`. Unknown keys are
+    ignored and there is no legacy-shape translation: a field the resolver now
+    derives was removed outright, so an out-of-date recipe has stale keys that
+    simply do nothing (run `resolve` to see what the composition derived).
   - `defaults.py` — `model_params()` + `resolve_recipe()`: the single merge
     point. Deep-merges the model's declared `ModelMetadata.params` under the
     recipe's per-run `model.config` (recipe wins), and enforces the tunable
@@ -209,11 +212,19 @@ Dev deps: `pip install -e ".[dev]"` (pytest, pytest-cov, tensorboard).
 
 ## Key ideas and plugging in
 
-**Recipe is the single source of intent.** Everything the framework needs —
-model name, base checkpoint path, action spec, fine-tuning strategy, data
-source, transforms, training params, output dir — lives in one YAML. CLI
-overrides (`--steps`, `--batch-size`, `--output-dir`) tweak without editing
-the file. `examples/reference.yaml` documents every field.
+**Recipe carries choices, not relations.** One YAML says which model, which
+dataset, which robot, how to train, and where to write — plus, in `assembly:`,
+the controlled overrides for a relation the resolver cannot pin down alone. What
+it does *not* carry is anything derivable from the three descriptions: action
+widths, chunk length, observation window, image size and camera mapping all come
+from the composition, because a recipe that restates them is a second answer
+that can disagree. `data:` therefore holds only `source`, and the train/val
+split is a framework constant (`training/manifest.py`) rather than a knob whose
+only effect is shrinking the training set — nothing evaluates the held-out half
+during training. CLI overrides (`--steps`, `--batch-size`, `--output-dir`)
+tweak without editing the file. `examples/reference.yaml` documents every field;
+`docs/modules/recipe-module.cn.md` documents the three zones and the deprecation
+window.
 
 **Facts vs tunables — the container is the attribute.** A model ships one
 declaration, `ModelMetadata`. Named fields are facts the composition resolver

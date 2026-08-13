@@ -6,11 +6,10 @@ DataSchema entry-table refactor, ``InferenceEngine.__init__`` still tried to
 ``replace(schema, state_keys=...)`` — fields that had become derived properties
 — so *every* checkpoint failed to load while the whole suite stayed green.
 
-It also pins where the shapes come from at both ends: the recipe deliberately
-disagrees with the dataset about ``action_dim`` (a deprecated field nothing
-reads any more), and the composition's direct answer for flexible ACT — the
-dataset width — must be what the head is built with, what the saved assembly
-states, and what the engine serves.
+It also pins where the shapes come from at both ends: the recipe declares no
+action width at all (there is no such field any more), and the composition's
+answer for flexible ACT — the dataset width — must be what the head is built
+with, what the saved assembly states, and what the engine serves.
 """
 
 from __future__ import annotations
@@ -26,8 +25,7 @@ if str(_project_root) not in sys.path:
 
 DATASET_PATH = _project_root / "test/data" / "lerobot_train_data_3_episodes"
 DATASET_ACTION_DIM = 8      # what the dataset actually carries
-RECIPE_ACTION_DIM = 6       # deliberately wrong, to prove the dataset wins
-ACTION_HORIZON = 4
+ACTION_HORIZON = 4          # ACT is from_scratch, so the recipe picks this
 
 
 def _lerobot_available() -> bool:
@@ -57,9 +55,7 @@ model:
     n_encoder_layers: 1
     n_decoder_layers: 1
     n_vae_encoder_layers: 1
-action_spec:
-  action_dim: {RECIPE_ACTION_DIM}
-  action_horizon: {ACTION_HORIZON}
+    action_horizon: {ACTION_HORIZON}
 data:
   source:
     path: {DATASET_PATH}
@@ -67,7 +63,6 @@ data:
   sampler:
     type: sliding_window
     n_obs_steps: 1
-    action_horizon: {ACTION_HORIZON}
   split:
     strategy: episode
     train_ratio: 0.9
@@ -107,8 +102,8 @@ def test_train_then_infer_roundtrip(tmp_path):
         dataset_index=0, split="val", device="cpu",
     )
 
-    # The resolved execution width is 8 (the dataset's), despite the recipe's 6;
-    # ACT is from_scratch, so its declared/overridden tunable owns the horizon.
+    # The width comes from the dataset (ACT is flexible) and the horizon from
+    # the model tunable the recipe set — neither is stated twice.
     assert result["action_shape"] == (ACTION_HORIZON, DATASET_ACTION_DIM)
     assert result["target_shape"] == (ACTION_HORIZON, DATASET_ACTION_DIM)
 

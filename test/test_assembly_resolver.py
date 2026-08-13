@@ -185,19 +185,20 @@ def test_override_without_a_consumer_is_rejected(schema, norm_stats, metadata):
 
 
 def test_every_assembly_override_is_accounted_for():
-    """Drift guard: a new AssemblyConfig field must either be consumed by the
-    resolver or be knowingly unsupported. Adding one without doing either is
-    how a field ends up documented, settable, and silently ignored."""
+    """Drift guard: every AssemblyConfig field must be consumed by the resolver.
+
+    A controlled override nothing reads is a field a user can set and watch do
+    nothing — which is why the two that had no consumer (frequency, gripper) were
+    removed rather than left documented and inert. Add a field in the same commit
+    that starts reading it.
+    """
     from dataclasses import fields
 
     from vla_factory.assembly.resolver.resolver import CONSUMED_OVERRIDES
     from vla_factory.recipe.recipe import AssemblyConfig
 
-    # Set here only after confirming the field genuinely has no consumer yet;
-    # move it into CONSUMED_OVERRIDES in the commit that starts reading it.
-    known_unsupported = {"accept_fps_mismatch", "gripper_flip"}
     declared = {f.name for f in fields(AssemblyConfig)}
-    assert declared == CONSUMED_OVERRIDES | known_unsupported
+    assert declared == set(CONSUMED_OVERRIDES)
 
 
 # ── What stays unresolved after phase 3 ───────────────────────────

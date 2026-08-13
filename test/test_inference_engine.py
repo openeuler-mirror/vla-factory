@@ -25,7 +25,7 @@ import torch
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vla_factory.recipe.recipe import ActionSpecConfig, TrainRecipe
+from vla_factory.recipe.recipe import TrainRecipe
 from vla_factory.data.manifest import (
     ActionDim, DataSchema, FeatureStats, NormStats, StateDim, resolve_vector_keys,
 )
@@ -51,13 +51,10 @@ def _make_recipe(
     state_dim: int = 6,
     has_language: bool = False,
 ) -> TrainRecipe:
+    # The chunk length is a model tunable now; the widths come from the data.
     return TrainRecipe(
         model_name="act",
-        action_spec=ActionSpecConfig(
-            action_dim=action_dim,
-            action_horizon=action_horizon,
-            action_type="joint_pos",
-        ),
+        model_config={"action_horizon": action_horizon},
     )
 
 
@@ -194,7 +191,6 @@ def _setup_checkpoint_dir(
     # Re-structure to match expected YAML layout
     yaml_dict = {
         "model": {"name": recipe.model_name, "path": recipe.model_path},
-        "action_spec": dataclasses.asdict(recipe.action_spec),
         "training": {
             "backend": recipe.backend,
             "lr": recipe.lr,

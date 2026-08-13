@@ -155,9 +155,19 @@ def resolve_model_io_spec(
 ) -> ModelIOSpec:
     """Resolve the model-facing tensor interface before planning transforms."""
     state_dim, action_dim = _model_vector_widths(schema, metadata)
+    # Not ``or 1``: that would silently turn a declared 0 into a valid window
+    # instead of reporting the broken declaration.
+    n_obs_steps = int(metadata.history_frames)
+    if n_obs_steps < 1:
+        raise ValueError(
+            f"Model {metadata.name!r} declares history_frames="
+            f"{metadata.history_frames}; a sample must carry at least one "
+            "observation frame."
+        )
     return ModelIOSpec(
         action_dim=action_dim,
         action_horizon=_action_horizon(metadata, model_config),
+        n_obs_steps=n_obs_steps,
         state_dim=state_dim,
         cameras=tuple(schema.cameras),
         camera_shapes=_camera_shapes(

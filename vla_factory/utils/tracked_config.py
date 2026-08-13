@@ -31,10 +31,6 @@ from typing import Any
 #   transforms           — training/loader.py and inference/infer.py build the
 #                          pipeline from it
 #   num_inference_steps  — inference/infer.py drives predict_actions with it
-#   camera_mapping       — recipe.get_camera_mapping() (legacy model.config
-#                          location, kept during the assembly-block migration)
-#   default_task         — assembly/transforms/task_tokenize.py reads it off
-#                          recipe.model_config directly
 #   action_horizon       — the composition resolver reads it (a from-scratch
 #                          model's chunk length) and reports it as
 #                          ModelIOSpec.action_horizon; the factory takes the
@@ -44,8 +40,6 @@ from typing import Any
 FRAMEWORK_CONSUMED_KEYS: frozenset[str] = frozenset({
     "transforms",
     "num_inference_steps",
-    "camera_mapping",
-    "default_task",
     "action_horizon",
     "input_image_size",
 })

@@ -282,8 +282,6 @@ class TestManifestBuild(unittest.TestCase):
             episode_lengths=cls.episode_lengths,
             n_obs_steps=1,
             action_horizon=ACTION_HORIZON,
-            train_ratio=0.9,
-            seed=42,
         )
 
     def test_total_locators(self):
@@ -313,8 +311,6 @@ class TestManifestBuild(unittest.TestCase):
             episode_lengths=self.episode_lengths,
             n_obs_steps=1,
             action_horizon=ACTION_HORIZON,
-            train_ratio=0.9,
-            seed=42,
         )
         self.assertEqual(
             self.manifest.splits["train"],
@@ -418,8 +414,6 @@ class TestVLADataset(unittest.TestCase):
             episode_lengths=episode_lengths,
             n_obs_steps=1,
             action_horizon=ACTION_HORIZON,
-            train_ratio=0.9,
-            seed=42,
         )
         cls.dataset = VLADataset(
             cls.manifest, cls.reader, cls.codec, DATASET_PATH,
@@ -522,8 +516,6 @@ class TestDataLoaderBatching(unittest.TestCase):
             episode_lengths=episode_lengths,
             n_obs_steps=1,
             action_horizon=ACTION_HORIZON,
-            train_ratio=0.9,
-            seed=42,
         )
         cls.dataset = VLADataset(
             cls.manifest, cls.reader, cls.codec, DATASET_PATH,

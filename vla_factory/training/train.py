@@ -468,12 +468,7 @@ def _recipe_to_yaml_dict(recipe: TrainRecipe) -> dict:
             "path": recipe.model_path,
             "config": recipe.model_config,
         },
-        "action_spec": asdict(recipe.action_spec),
-        "data": {
-            "source": asdict(recipe.data.source),
-            "sampler": asdict(recipe.data.sampler),
-            "split": asdict(recipe.data.split),
-        },
+        "data": {"source": asdict(recipe.data.source)},
         "robot": asdict(recipe.robot) if recipe.robot.name else None,
         "assembly": (
             {k: v for k, v in asdict(recipe.assembly).items() if v is not None}
@@ -492,7 +487,6 @@ def _recipe_to_yaml_dict(recipe: TrainRecipe) -> dict:
             "batch_size": recipe.batch_size,
             "total_steps": recipe.total_steps,
             "gradient_checkpointing": recipe.gradient_checkpointing,
-            "inference_steps": recipe.inference_steps,
             "num_workers": recipe.num_workers,
             "augmentation": asdict(recipe.augmentation),
         },

@@ -13,24 +13,6 @@ from typing import Generic, TypeVar
 T = TypeVar("T")
 
 
-# ── Action specification (YAML config side) ────────────────────────
-
-
-@dataclass(frozen=True)
-class ActionSpec:
-    """Describes the robot action space.
-
-    This is the *runtime* representation built from the YAML ``action_spec``
-    block.  It lives in the protocol layer so both the data pipeline and model
-    wrapper can reference it without circular imports.
-    """
-
-    action_dim: int
-    action_horizon: int
-    action_type: str  # "delta_eef" | "delta_joint" | "joint_pos" | "se3" | "tokenized"
-    bounds_low: tuple[float, ...] | None = None
-    bounds_high: tuple[float, ...] | None = None
-
 # ── Observation (tensor side) ──────────────────────────────────────
 
 

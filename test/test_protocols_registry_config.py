@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test: protocols (Observation, ActionSpec, VLAModel hierarchy, ModelMetadata),
+"""Test: protocols (Observation, VLAModel hierarchy, ModelMetadata),
 registry (register_vla, get_entry, list_entries),
 config parser (YAML → TrainRecipe, example configs)."""
 
@@ -13,16 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def test_protocols():
-    """Protocol layer: Observation, ActionSpec, ModelMetadata, VLAModel hierarchy."""
-    from vla_factory.model.interfaces.observation import ActionSpec, Observation
+    """Protocol layer: Observation, ModelMetadata, VLAModel hierarchy."""
+    from vla_factory.model.interfaces.observation import Observation
     from vla_factory.model.interfaces.model import (
         ModelMetadata, VLAModel, VLAModelPyTorch, VLAModelJAX,
     )
 
-    # ActionSpec
-    spec = ActionSpec(action_dim=6, action_horizon=100, action_type="joint_pos")
-    assert spec.action_dim == 6
-    print(f"  ActionSpec: dim={spec.action_dim}, horizon={spec.action_horizon}, type={spec.action_type}")
 
     # Observation (generic over T)
     obs = Observation(images={"front": "tensor"}, image_masks={"front": "mask"}, state="state_tensor")
@@ -162,23 +158,11 @@ model:
   name: act
   path: null
 
-action_spec:
-  action_dim: 6
-  action_horizon: 100
-  action_type: joint_pos
-
 data:
   source:
     path: /data/lift_cube
     format: lerobot-v3
-  sampler:
-    type: sliding_window
-    n_obs_steps: 1
-    action_horizon: 100
   profile: aloha
-  split:
-    strategy: episode
-    train_ratio: 0.9
 
 finetuning:
   strategy: full
@@ -198,11 +182,8 @@ output:
 """
     recipe = parse_recipe_from_string(act_yaml)
     assert recipe.model_name == "act"
-    assert recipe.action_spec.action_dim == 6
-    assert recipe.action_spec.action_horizon == 100
     assert recipe.data.source.format == "lerobot-v3"
-    assert recipe.data.sampler.action_horizon == 100
-    assert recipe.data.split.train_ratio == 0.9
+    assert recipe.data.source.path == "/data/lift_cube"
     assert recipe.finetuning_strategy == "full"
     assert recipe.lr == 1e-4
     assert recipe.lr_backbone == 1e-5

@@ -40,23 +40,13 @@ assembly:
     left_wrist_0_rgb: wrist
   default_task: "pick up the rectangle"
 
-action_spec:
-  action_dim: 9
-  action_horizon: 50
-  action_type: joint_pos
+# 动作维度与 chunk 长度不在 recipe 里：前者是数据集事实（inspect data 可看），
+# 后者是 pi0 的家族事实（预训练 action expert 的固定长度，改不了）。
 
 data:
   source:
     path: data/banana
     format: lerobot-v3
-  sampler:
-    type: sliding_window
-    n_obs_steps: 1
-    action_horizon: 50
-  split:
-    strategy: episode
-    train_ratio: 0.9
-    seed: 42
 
 finetuning:
   strategy: lora
@@ -73,7 +63,6 @@ training:
   batch_size: 1
   total_steps: 3                  # smoke: 3 optimizer steps
   gradient_checkpointing: true
-  inference_steps: 10
   num_workers: 0
   augmentation:
     random_crop: false

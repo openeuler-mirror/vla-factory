@@ -200,10 +200,10 @@ assembly:                    # 可选，默认留空
   camera_mapping:               # 模型视觉槽位 -> 数据/机器人相机（歧义时指定）
     base_0_rgb: front
     left_wrist_0_rgb: wrist
-  accept_fps_mismatch: true     # 显式接受频率差异
-  gripper_flip: true            # 接受夹爪 convention 翻转
   default_task: "pick up the block"  # 语言兜底（数据/部署无 task 时用）
 ```
+
+本区只放**解析器真正消费**的 override。一个没有消费者的调整项等于「能写、但什么都不做」，因此频率（`accept_fps_mismatch`）与夹爪（`gripper_flip`）两项随它们对应的兼容性检查一起推迟，不预留字段。
 
 **③ 训练参数区**——描述「怎么训练」，与数据/模型/机器人三者之间的关系完全无关：
 
@@ -234,11 +234,9 @@ output:
 | 组合选择 | `model` | `name`、`path` | 模型选择；`path` 微调时必填，从零训练可省 |
 | 组合选择 | `data.source` | `path`、`format`、`video_codec` | 数据集路径与格式，`format: auto` 自动识别 |
 | 组合选择 | `robot` | `name` | 机器人本体声明 |
-| 组合调整（可选） | `assembly` | `camera_mapping`、`state_mapping`、`action_mapping`、`joint_mapping`、`language_mapping`/`default_task`、`accept_fps_mismatch`、`gripper_flip` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限） |
-| 训练参数 | `data.sampler` | `type`、`n_obs_steps`、`action_horizon` | 把 episode 切成训练样本的窗口策略 |
-| 训练参数 | `data.split` | `strategy`、`train_ratio`、`seed` | 训练/验证集划分 |
+| 组合调整（可选） | `assembly` | `camera_mapping`、`default_task` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。只保留有消费者的 override，其余随对应检查一起推迟 |
 | 训练参数 | `finetuning` | `strategy`、`lora`、`freeze_components`、`trainable_components` | 微调策略与组件选择 |
-| 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`inference_steps`、`num_workers`、`augmentation` | 优化器、调度、显存与数据加载 |
+| 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`num_workers`、`augmentation` | 优化器、调度、显存与数据加载 |
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
 
 `vla_factory/recipe/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。
@@ -977,7 +975,7 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - **阶段 2：解析诊断**。解析器先运行兼容性检查并生成 explain trace 或 ResolutionError；对维度、相机、统计量、控制模式和字段顺序提前报错；现有下游继续使用原有构建逻辑；用 golden tests 固化代表性 ResolutionError 和 explain trace。
 - **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**。生成 camera、state、action、language 和 joint mapping；规划包含 normalize、padding、关节重排和夹爪 flip 等 T1 step 的 pipeline；用 golden tests 固化代表性具身组合；先提供 dry-run 和 diff，不立即要求下游全面执行。（**已落地 data × model 一半**：五类 Mapping、`data_to_model`、`model_to_robot`。关节重排与夹爪 flip 两个 T1 step 在 `TransformRegistry` 中尚无实现，`robot_to_model` 随之推迟，理由与恢复路径见 `docs/plans/phase3-mapping-and-t1-pipeline.cn.md`。）
 - **阶段 4：下游接入**（**已落地 data × model 一半**）。训练模块消费「数据 × 模型」组合结果；模型工厂改为接收具身组合（`factory(recipe, assembly)`），adapter 中重复的关系推导全部删除；训练产物新增 `inference_metadata/assembly.json`——带 `format_version` 的**执行契约快照**，推理侧照它执行，并在加载时校验当前模型声明与快照的接口事实一致（图像范围、归一化方式、视觉槽位这类漂移不改变权重形状，`load_state_dict` 拦不住）。兼容承诺分两类：**外部基础 checkpoint**（经 `model.path`）继续支持并做可选一致性检查；**旧版训练产物**（无 `assembly.json`）明确不支持，缺失即保守失败，不在部署期重新解析——那会用当时安装的模型声明重解析出另一条 pipeline 并静默跑起来。「推理消费模型 × 机器人」只落地了 `model_to_robot`，`robot_to_model` 与 JointMapping 的消费随阶段 3 的关节重排一起推迟。
-- **阶段 5：Recipe 瘦身**。标记重复的 action/state 事实为 deprecated；自动把旧 recipe 转换成临时描述和受控 override；新 recipe 的组合部分只保留三者选择和必要 override；提供迁移命令或可读提示；为兼容层设定明确移除周期。
+- **阶段 5：Recipe 瘦身**（**已完成**）。凡是复述解析器可推导事实的字段，一律从 `TrainRecipe` 删除：整块 `action_spec`、整块 `data.sampler` 与 `data.split`、`training.inference_steps`，以及两条 legacy 组合入口（`model.config.camera_mapping` / `default_task`、`composition:` 旧块名）。剩下的只有「选择」——用哪个模型、哪份数据、哪台机器人、怎么训练、写到哪，加上 `assembly:` 里的受控 override。样本形状的两端现在都跟随模型的时序契约（`ModelMetadata.history_frames` → `ModelIOSpec.n_obs_steps`，以及 action horizon）；训练/验证划分改为框架固定策略——训练期从不评估（`eval_strategy="no"`），这个旋钮唯一的效果就是悄悄缩小训练集。**不提供兼容层**：仓库 0.1.0 早期、调用方全在仓内，旧 recipe 就是过期配置，未知键一律忽略，用 `resolve` 看解析器推出来的结果即可。
 - **阶段 6：受控扩展 T2**。在真实用例和测试基础上增加 FK/IK、坐标系和频率转换；每项能力独立评审；默认保持保守失败；不把 T2 作为组合解析成立的前提。
 
 旧配置兼容路径：

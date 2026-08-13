@@ -12,42 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-# ── Action spec ────────────────────────────────────────────────────
-
-
-@dataclass
-class ActionSpecConfig:
-    """**Deprecated** — the action facts now live on the three descriptions.
-
-    Every field here duplicates a fact the composition resolver reads from the
-    dimension that owns it, which is why they all default to ``None``: "the user
-    wrote nothing" has to be distinguishable from "the user asked for the
-    framework default", or a recipe that omits the block would silently override
-    a model's own declaration.
-
-    Fields
-    ------
-    action_dim : int | None
-        Deprecated → dataset fact (``DataSchema.action_dim``); the model's
-        ``dim_policy`` decides how it is padded.
-    action_horizon : int | None
-        Deprecated → the model declaration. A pretrained model's chunk length is
-        a family fact (``ModelMetadata.action_horizon``); a from-scratch model's
-        is a tunable (``model.config.action_horizon``). ``resolve_recipe()``
-        forwards a value set here to the latter, once, with a warning.
-    action_type : str | None
-        Deprecated → dataset ``action.dims[].mode`` / robot ``native_action_type``.
-    bounds_low / bounds_high : list[float] | None
-        Deprecated → ``RobotProfile`` safety bounds.
-    """
-
-    action_dim: int | None = None
-    action_horizon: int | None = None
-    action_type: str | None = None
-    bounds_low: list[float] | None = None
-    bounds_high: list[float] | None = None
-
-
 # ── Data ───────────────────────────────────────────────────────────
 
 
@@ -74,66 +38,20 @@ class DataSourceConfig:
 
 
 @dataclass
-class SamplerConfig:
-    """How raw episodes are sliced into training samples.
-
-    Fields
-    ------
-    type : str
-        Sampling strategy. Currently only ``sliding_window``.
-    n_obs_steps : int
-        Number of observation frames in the input window.
-        Most models use 1 (single frame); some use 2-3 for temporal stacking.
-    action_horizon : int
-        Number of future action steps per sample.
-        Should match ``ActionSpecConfig.action_horizon`` in most cases.
-    """
-
-    type: str = "sliding_window"
-    n_obs_steps: int = 1
-    action_horizon: int = 50
-
-
-@dataclass
-class SplitConfig:
-    """Train / validation data splitting strategy.
-
-    Fields
-    ------
-    strategy : str
-        How to partition the data. One of:
-          - ``episode`` : split by whole episodes (recommended — no data leakage)
-          - ``random``  : randomly assign individual samples (not yet implemented)
-          - ``task``    : split by task name (not yet implemented)
-    train_ratio : float
-        Fraction of data used for training (0.0 - 1.0).
-        The remaining ``1 - train_ratio`` fraction goes to validation.
-    seed : int
-        Random seed for reproducible splits.
-    """
-
-    strategy: str = "episode"
-    train_ratio: float = 0.9
-    seed: int = 42
-
-
-@dataclass
 class DataConfig:
-    """Complete data pipeline configuration.
+    """Which dataset to train on.
+
+    Only the source: how episodes are sliced into samples follows the model's
+    temporal contract (observation frames and chunk length), and the train/val
+    split is a fixed framework policy — neither is a choice the recipe restates.
 
     Fields
     ------
     source : DataSourceConfig
         Where to find data and how to read it.
-    sampler : SamplerConfig
-        How to slice episodes into training samples.
-    split : SplitConfig
-        How to divide data into train / val sets.
     """
 
     source: DataSourceConfig = field(default_factory=DataSourceConfig)
-    sampler: SamplerConfig = field(default_factory=SamplerConfig)
-    split: SplitConfig = field(default_factory=SplitConfig)
 
 
 # ── Fine-tuning ───────────────────────────────────────────────────
@@ -260,60 +178,14 @@ class AssemblyConfig:
     "unset". They never override objective facts (shapes, checkpoint slots,
     joint topology, fixed dim caps).
 
-    Consumed by the ``resolve`` dry-run today; ``train()`` behaviour is
-    unchanged until the resolver takes over downstream execution.
+    Only overrides a resolver stage actually consumes live here. An adjustment
+    nothing reads would be a field a user can set and watch do nothing, so the
+    frequency and gripper knobs return when their checks do (see the deferred
+    table in ``docs/plans/phase2-resolution-diagnostics.cn.md``).
     """
 
     camera_mapping: dict[str, str] | None = None
-    accept_fps_mismatch: bool | None = None
-    gripper_flip: bool | None = None
     default_task: str | None = None
-
-
-def get_camera_mapping(recipe: "TrainRecipe", *, warn_legacy: bool = True):
-    """Resolve the camera mapping with the architecture §3.1 zone priority.
-
-    ``assembly.camera_mapping`` (组合调整区) is the preferred home; the legacy
-    ``model.config.camera_mapping`` (组合选择区) is accepted for backwards
-    compatibility with a deprecation warning. Returns a plain dict or None.
-    """
-    import logging
-
-    if recipe.assembly.camera_mapping:
-        return dict(recipe.assembly.camera_mapping)
-    legacy = (recipe.model_config or {}).get("camera_mapping")
-    if legacy:
-        if warn_legacy:
-            logging.getLogger(__name__).warning(
-                "camera_mapping is declared under model.config (legacy). Move it "
-                "to the `assembly:` block (architecture §3.1) — model.config "
-                "support will be removed once the resolver owns this relationship."
-            )
-        return dict(legacy)
-    return None
-
-
-def get_default_task(recipe: "TrainRecipe", *, warn_legacy: bool = True) -> str | None:
-    """Resolve the task-text fallback with the architecture §3.1 zone priority.
-
-    Same split as :func:`get_camera_mapping`: the language fallback describes a
-    data/model relationship, so it belongs to the ``assembly:`` block; the legacy
-    ``model.config.default_task`` still works with a deprecation warning.
-    """
-    import logging
-
-    if recipe.assembly.default_task:
-        return recipe.assembly.default_task
-    legacy = (recipe.model_config or {}).get("default_task")
-    if legacy:
-        if warn_legacy:
-            logging.getLogger(__name__).warning(
-                "default_task is declared under model.config (legacy). Move it "
-                "to the `assembly:` block (architecture §3.1) — model.config "
-                "support will be removed once the resolver owns this relationship."
-            )
-        return legacy
-    return None
 
 
 # ── Top-level recipe ──────────────────────────────────────────────
@@ -358,11 +230,6 @@ class TrainRecipe:
         Total number of training optimizer steps.
     gradient_checkpointing : bool
         Enable gradient checkpointing to reduce VRAM at the cost of ~30% speed.
-    inference_steps : int
-        **Deprecated** — use ``model.config.num_inference_steps``. Denoising
-        steps are a model knob, not a training one; the parser forwards a value
-        set here (with a warning) and the field is removed when the recipe is
-        slimmed down. Nothing reads this field directly.
     augmentation : AugmentationConfig
         Training-time data augmentation settings.
     output_dir : str
@@ -373,9 +240,6 @@ class TrainRecipe:
     model_name: str = ""
     model_path: str | None = None
     model_config: dict = field(default_factory=dict)  # free-form, adapter-specific
-
-    # Action space
-    action_spec: ActionSpecConfig = field(default_factory=ActionSpecConfig)
 
     # Data
     data: DataConfig = field(default_factory=DataConfig)
@@ -397,7 +261,6 @@ class TrainRecipe:
     batch_size: int = 8
     total_steps: int = 10000
     gradient_checkpointing: bool = False
-    inference_steps: int = 1
     num_workers: int = 4
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
 

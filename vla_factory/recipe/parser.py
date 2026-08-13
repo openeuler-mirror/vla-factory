@@ -2,6 +2,10 @@
 
 Supports both flat and nested YAML styles.  Missing sections fall back to
 dataclass defaults so a minimal config (just model name + data path) works.
+
+A recipe states choices only; every relation between data, model and robot is
+derived by the composition resolver, so there is no legacy-shape translation
+here — an unknown key is simply not read.
 """
 
 from __future__ import annotations
@@ -14,7 +18,6 @@ from typing import Any
 import yaml
 
 from vla_factory.recipe.recipe import (
-    ActionSpecConfig,
     AssemblyConfig,
     AugmentationConfig,
     DataConfig,
@@ -22,8 +25,6 @@ from vla_factory.recipe.recipe import (
     LoraConfig,
     OutputConfig,
     RobotConfig,
-    SamplerConfig,
-    SplitConfig,
     TrainRecipe,
 )
 
@@ -60,15 +61,10 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     model_path = model_block.get("path") if isinstance(model_block, dict) else None
     model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
 
-    # ── Action spec ──
-    action_spec = _pop_dataclass(raw.get("action_spec", {}), ActionSpecConfig)
-
     # ── Data ──
     data_block = raw.get("data", {})
     data_config = DataConfig(
         source=_pop_dataclass(data_block.get("source", {}), DataSourceConfig),
-        sampler=_pop_dataclass(data_block.get("sampler", {}), SamplerConfig),
-        split=_pop_dataclass(data_block.get("split", {}), SplitConfig),
     )
 
     # ── Robot / assembly (composition selection + controlled override) ──
@@ -79,14 +75,10 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         robot_config = RobotConfig(name=robot_block)
 
     assembly_block = raw.get("assembly", {})
-    if isinstance(assembly_block, dict):
-        # Translate a legacy ``composition:`` block name for forwards compat.
-        assembly_config = _pop_dataclass(assembly_block, AssemblyConfig)
-    else:
-        assembly_config = AssemblyConfig()
-    legacy_composition = raw.get("composition")
-    if isinstance(legacy_composition, dict) and not isinstance(assembly_block, dict):
-        assembly_config = _pop_dataclass(legacy_composition, AssemblyConfig)
+    assembly_config = (
+        _pop_dataclass(assembly_block, AssemblyConfig)
+        if isinstance(assembly_block, dict) else AssemblyConfig()
+    )
 
     # ── Fine-tuning ──
     ft_block = raw.get("finetuning", {})
@@ -112,25 +104,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         train_block.get("augmentation", {}), AugmentationConfig
     )
 
-    # Denoising steps are a model knob, not a training knob: the inference engine
-    # reads `model.config.num_inference_steps`. `training.inference_steps` is the
-    # legacy location and drove nothing, so forward it once and say so rather
-    # than leaving the value silently inert.
-    if "inference_steps" in train_block:
-        if "num_inference_steps" in (model_config or {}):
-            logger.warning(
-                "training.inference_steps is deprecated and ignored here because "
-                "model.config.num_inference_steps is already set (that one wins)."
-            )
-        else:
-            model_config = dict(model_config or {})
-            model_config["num_inference_steps"] = int(train_block["inference_steps"])
-            logger.warning(
-                "training.inference_steps is deprecated — move it to "
-                "model.config.num_inference_steps. Forwarding %s for this run.",
-                model_config["num_inference_steps"],
-            )
-
     # ── Output ──
     output_config = _pop_dataclass(raw.get("output", {}), OutputConfig)
 
@@ -138,7 +111,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         model_name=model_name,
         model_path=model_path,
         model_config=model_config,
-        action_spec=action_spec,
         data=data_config,
         robot=robot_config,
         assembly=assembly_config,
@@ -152,7 +124,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         batch_size=int(train_block.get("batch_size", 8)),
         total_steps=int(train_block.get("total_steps", 10000)),
         gradient_checkpointing=bool(train_block.get("gradient_checkpointing", False)),
-        inference_steps=int(train_block.get("inference_steps", 1)),
         num_workers=int(train_block.get("num_workers", 4)),
         augmentation=augmentation,
         output=output_config,

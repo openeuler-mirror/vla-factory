@@ -372,8 +372,8 @@ class TestShapesComeFromTheAssembly:
     def test_chunk_size_defaults_to_the_act_declaration(self):
         """A recipe that says nothing gets ACT's own declared default (100).
 
-        Not the framework-wide 50 the deleted ``action_spec`` used to supply —
-        that default belonged to no model in particular.
+        A chunk length belongs to a model, so there is no framework-wide
+        default to fall back on.
         """
         config = self._config_of(self._recipe(), self._schema())
         assert config.chunk_size == 100

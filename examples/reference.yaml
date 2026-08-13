@@ -3,6 +3,25 @@
 # ║  每个字段都标注了含义、可选值和典型用法。                         ║
 # ║  复制此文件作为起点，删除不需要的部分即可。                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
+#
+# recipe 分三个区（架构 §3.1）：
+#   ① 组合选择：用哪份数据、哪个模型、哪台机器人 —— model / data.source / robot
+#   ② 组合调整：仅当解析器无法唯一确定关系时的受控 override —— assembly
+#   ③ 训练参数：怎么训练，与三者关系无关 —— finetuning / training / output
+#
+# 三者之间的关系（相机进哪个槽位、动作维度怎么 padding、chunk 多长、图像 resize
+# 到多大）**不写在 recipe 里**，由组合解析层从数据、模型、机器人三份描述推导。
+# 用 `vlafactory-cli resolve --config <recipe>` 可以先看一眼推导结果。
+#
+# ── 已删除的字段（写了不会报错，但完全不生效） ─────────────────────
+#   action_spec.*                → 数据集事实 / 模型声明 / 机器人 profile
+#   data.sampler.*               → 模型的时序契约（观测帧数 / chunk 长度）
+#   data.split.*                 → 框架固定策略（按 episode 9:1）
+#   training.inference_steps     → model.config.num_inference_steps
+#   model.config.camera_mapping  → assembly.camera_mapping
+#   model.config.default_task    → assembly.default_task
+#   composition:                 → assembly:
+# 这些键不再被解析（未知键一律忽略），请从 recipe 中删除。
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 模型 ──────────────────────────────────────────────────────────────
@@ -27,43 +46,11 @@ model:
   #                            #   属于模型声明的具名字段，不可在此覆盖。
   #   num_inference_steps: 10  # [可选] 去噪/flow-matching 步数 (pi0 默认 10, ACT 为 1)
   #   pytorch_compile_mode: null  # [可选] pi0/pi05: 小显存或冒烟测试时设 null 走 eager
-  #   camera_mapping:          # [pi0/pi05 必填] {模型相机角色: 数据集相机名}
-  #     base_0_rgb: front      #   角色以 base checkpoint 的 config.json 为准，
-  #     left_wrist_0_rgb: wrist#   用 `vlafactory-cli list --config <recipe>` 查询/校验；
-  #                            #   未映射的角色自动用占位图 (mask=0)
-  #   default_task: "..."      # [可选] 任务文本兜底 (语言条件模型 pi0/pi05)。
-                               #   取值优先级: 帧级任务文本 (数据集/部署端 task 字段)
-                               #   > default_task > "" (空 prompt, 模型仍可运行)。
-                               #   部署时 prompt 由客户端 task 字段传入；数据集缺
-                               #   任务文本或部署端不发 task 时才用到这里的兜底。
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 动作空间 ─────────────────────────────────────────────────────────
-# 描述机器人动作向量的语义。框架据此做归一化、delta转换、padding。
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-action_spec:
-  action_dim: 6                # [必填] 机器人实际动作维度
-                               #   SO101 单臂 = 6, ALOHA 双臂 = 14, delta_eef = 7
-
-  action_horizon: 100          # [必填] 模型每次推理预测的未来步数
-                               #   也叫 chunk_size
-                               #   ACT = 100, PI0 = 50, OpenVLA = 7
-
-  action_type: joint_pos       # [必填] 动作语义类型
-                               #   ┌──────────────┬──────────────────────────────────┐
-                               #   │ 值            │ 含义                              │
-                               #   ├──────────────┼──────────────────────────────────┤
-                               #   │ joint_pos    │ 绝对关节位置 (ACT, 常见)          │
-                               #   │ delta_joint  │ 关节位置增量                       │
-                               #   │ delta_eef    │ 末端执行器位姿增量 (x,y,z,rx,ry,rz,gripper) │
-                               #   │ se3          │ SE(3) 末端位姿                     │
-                               #   │ tokenized    │ 离散化动作 token (OpenVLA)         │
-                               #   └──────────────┴──────────────────────────────────┘
-
-  bounds_low: null             # [可选] 每维最小值, 长度 = action_dim
-  bounds_high: null            # [可选] 每维最大值, 长度 = action_dim
-                               #   示例 (6维): [-1, -1, -1, -1, -1, -1]
+  #   action_horizon: 100      # [仅 from_scratch 模型, 如 ACT] chunk 长度由用户选。
+                               #   pi0/pi05 是预训练固定长度 (家族事实)，不接受此键。
+  #   input_image_size: [224, 224]  # [仅 from_scratch 模型] 模型输入图像尺寸；
+                               #   不写则用数据集原生尺寸。固定槽位模型 (pi0) 的尺寸
+                               #   来自 ModelMetadata.vision_slots，不可在此覆盖。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -85,27 +72,10 @@ data:
                                #   │ zarr         │ Zarr 数组 (BridgeData V2)    │
                                #   └──────────────┴──────────────────────────────┘
 
-  sampler:
-    type: sliding_window       # 采样策略 (当前仅支持 sliding_window)
-
-    n_obs_steps: 1             # 观测窗口帧数
-                               #   大多数模型 = 1; 时序堆叠 = 2-3
-
-    action_horizon: 100        # 每个样本包含的未来动作步数
-                               #   通常与 action_spec.action_horizon 一致
-
-  split:
-    strategy: episode          # 数据划分策略
-                               #   ┌──────────┬──────────────────────────────────────┐
-                               #   │ 值        │ 说明                                 │
-                               #   ├──────────┼──────────────────────────────────────┤
-                               #   │ episode  │ 按 episode 划分 (推荐, 防泄漏)        │
-                               #   │ random   │ 随机打乱划分 (暂未实现)                │
-                               #   │ task     │ 按 task 划分 (多任务数据集, 暂未实现)  │
-                               #   └──────────┴──────────────────────────────────────┘
-
-    train_ratio: 0.9           # 训练集比例 (0.0 - 1.0); 剩余部分自动分配给验证集
-    seed: 42                   # 随机种子
+  # 一个样本携带多少观测帧、多少未来动作，都是模型的时序契约
+  # (ModelMetadata.history_frames / action horizon)，由组合解析层给出；
+  # 训练/验证划分是框架固定策略 (按 episode，9:1)。两者都不在 recipe 里，
+  # 因为 recipe 复述一遍只会多出一个可能与模型不一致的答案。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -121,14 +91,15 @@ robot:
                                #   示例: "lekiwi"。留空表示不绑定具体本体。
 
 assembly:                      # [可选, 默认留空]
-  # camera_mapping:            # 模型视觉槽位 -> 数据/机器人相机 (歧义时显式指定)
-  #   base_0_rgb: front
-  #   left_wrist_0_rgb: wrist
-  # 下面两项解析器尚无消费者，写了会被 resolve 直接报错 (unsupported_override)——
-  # 等对应的检查/step 落地后再启用，不做静默忽略。
-  # accept_fps_mismatch: true  # 显式接受 数据 fps 与 模型/机器人 频率差异
-  # gripper_flip: true         # 显式接受夹爪 convention 翻转
-  # default_task: "pick up the block"  # 语言兜底 (数据/部署无 task 时使用)
+  # camera_mapping:            # 模型视觉槽位 -> 数据集相机 (歧义时显式指定)
+  #   base_0_rgb: front        #   给了就是**完整声明**：没列出的槽位视为有意留空，
+  #   left_wrist_0_rgb: wrist  #   走占位图 + zero mask，不再对它做自动推断。
+  # default_task: "pick up the block"  # 语言兜底 (数据/部署无 task 时使用)。
+                               #   优先级: 帧级 task 文本 > default_task > 空 prompt。
+                               #
+                               # 本区只放解析器真正消费的 override —— 没有消费者的
+                               # 调整项等于"能写、但什么都不做"，因此频率/夹爪两项
+                               # 随它们的检查一起推迟，未提供。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -188,10 +159,6 @@ training:
 
   gradient_checkpointing: false # 梯度检查点: 省 ~40% 显存, 慢 ~30%
                                 #   大模型 (PI0, OpenVLA) 建议开启
-
-  # inference_steps: 1         # [已废弃] 请改用 model.config.num_inference_steps。
-                               #   去噪步数是模型旋钮而非训练参数；写在这里会被转发
-                               #   到 model.config 并打一条 deprecation warning。
 
   num_workers: 4               # DataLoader 子进程数
                                #   0 = 单进程 (调试用)

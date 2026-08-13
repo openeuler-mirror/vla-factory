@@ -20,7 +20,6 @@ from vla_factory.model.checkpoint_validation import (
     validate_checkpoint_if_available,
 )
 from vla_factory.model.registry import list_entries
-from vla_factory.recipe.recipe import get_camera_mapping
 
 
 def _describe_model_config(recipe, schema=None) -> str:
@@ -65,7 +64,7 @@ def _describe_model_config(recipe, schema=None) -> str:
     if schema is not None:
         lines.append(f"Dataset cameras: {dataset_cameras or '(none)'}")
 
-    camera_mapping = get_camera_mapping(recipe)
+    camera_mapping = recipe.assembly.camera_mapping
     if camera_mapping is not None:
         lines.append("camera_mapping:")
         lines.extend(
