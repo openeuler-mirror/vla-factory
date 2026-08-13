@@ -232,11 +232,11 @@ output:
 | 区 | 块 | 主要字段 | 说明 |
 |---|---|---|---|
 | 组合选择 | `model` | `name`、`path` | 模型选择；`path` 微调时必填，从零训练可省 |
-| 组合选择 | `data.source` | `path`、`format`、`video_codec` | 数据集路径与格式，`format: auto` 自动识别 |
+| 组合选择 | `data` | `path`、`format`、`video_codec` | 数据集路径与格式，`format: auto` 自动识别 |
 | 组合选择 | `robot` | `name` | 机器人本体声明 |
 | 组合调整（可选） | `assembly` | `camera_mapping`、`default_task` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。只保留有消费者的 override，其余随对应检查一起推迟 |
 | 训练参数 | `finetuning` | `strategy`、`lora`、`freeze_components`、`trainable_components` | 微调策略与组件选择 |
-| 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`num_workers`、`augmentation` | 优化器、调度、显存与数据加载 |
+| 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`num_workers` | 优化器、调度、显存与数据加载 |
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
 
 `vla_factory/recipe/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。

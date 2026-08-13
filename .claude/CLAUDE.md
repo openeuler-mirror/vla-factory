@@ -218,7 +218,7 @@ the controlled overrides for a relation the resolver cannot pin down alone. What
 it does *not* carry is anything derivable from the three descriptions: action
 widths, chunk length, observation window, image size and camera mapping all come
 from the composition, because a recipe that restates them is a second answer
-that can disagree. `data:` therefore holds only `source`, and the train/val
+that can disagree. `data:` therefore holds only the dataset itself, and the train/val
 split is a framework constant (`training/manifest.py`) rather than a knob whose
 only effect is shrinking the training set — nothing evaluates the held-out half
 during training. CLI overrides (`--steps`, `--batch-size`, `--output-dir`)

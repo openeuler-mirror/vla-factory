@@ -19,9 +19,7 @@ import yaml
 
 from vla_factory.recipe.recipe import (
     AssemblyConfig,
-    AugmentationConfig,
     DataConfig,
-    DataSourceConfig,
     LoraConfig,
     OutputConfig,
     RobotConfig,
@@ -62,10 +60,7 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
     model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
 
     # ── Data ──
-    data_block = raw.get("data", {})
-    data_config = DataConfig(
-        source=_pop_dataclass(data_block.get("source", {}), DataSourceConfig),
-    )
+    data_config = _pop_dataclass(raw.get("data", {}), DataConfig)
 
     # ── Robot / assembly (composition selection + controlled override) ──
     robot_block = raw.get("robot", {})
@@ -100,9 +95,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
 
     # ── Training ──
     train_block = raw.get("training", {})
-    augmentation = _pop_dataclass(
-        train_block.get("augmentation", {}), AugmentationConfig
-    )
 
     # ── Output ──
     output_config = _pop_dataclass(raw.get("output", {}), OutputConfig)
@@ -125,7 +117,6 @@ def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
         total_steps=int(train_block.get("total_steps", 10000)),
         gradient_checkpointing=bool(train_block.get("gradient_checkpointing", False)),
         num_workers=int(train_block.get("num_workers", 4)),
-        augmentation=augmentation,
         output=output_config,
     )
 

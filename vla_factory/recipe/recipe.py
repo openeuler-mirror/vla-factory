@@ -16,8 +16,12 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class DataSourceConfig:
-    """Where to find training data.
+class DataConfig:
+    """Which dataset to train on, and how to read it.
+
+    Only the dataset itself: how episodes are sliced into samples follows the
+    model's temporal contract, and the train/val split is a fixed framework
+    policy — neither is a choice the recipe restates.
 
     Fields
     ------
@@ -27,34 +31,17 @@ class DataSourceConfig:
         Dataset storage format. One of:
           - ``auto``       : auto-detect from path contents
           - ``lerobot-v3`` : HuggingFace LeRobot v3 (Parquet + MP4)
+          - ``robotwin``   : RoboTwin 2.0 HDF5
           - ``hdf5``       : HDF5 (Robomimic, ALOHA raw)
           - ``rlds``       : TFRecord-based RLDS (Open X-Embodiment)
           - ``zarr``       : Chunked Zarr arrays (BridgeData V2)
+    video_codec : str
+        Video decoder to use (``auto`` picks one from the format).
     """
 
     path: str = ""
     format: str = "auto"
     video_codec: str = "auto"
-
-
-@dataclass
-class DataConfig:
-    """Which dataset to train on.
-
-    Only the source: how episodes are sliced into samples follows the model's
-    temporal contract (observation frames and chunk length), and the train/val
-    split is a fixed framework policy — neither is a choice the recipe restates.
-
-    Fields
-    ------
-    source : DataSourceConfig
-        Where to find data and how to read it.
-    """
-
-    source: DataSourceConfig = field(default_factory=DataSourceConfig)
-
-
-# ── Fine-tuning ───────────────────────────────────────────────────
 
 
 @dataclass
@@ -130,27 +117,6 @@ class OutputConfig:
     save_steps: int = 5000
     save_total_limit: int = 3
     overwrite_output_dir: bool = False
-
-
-@dataclass
-class AugmentationConfig:
-    """Data augmentation applied during training only (disabled at eval).
-
-    Fields
-    ------
-    random_crop : bool
-        Apply random spatial crop to input images.
-    crop_scale : tuple[float, float]
-        Minimum and maximum crop area ratio when ``random_crop`` is True.
-        Example: ``(0.9, 1.0)`` crops between 90%-100% of the image.
-    color_jitter : float
-        Strength of color jitter augmentation (0.0 = disabled).
-        Typical: 0.0 - 0.3.
-    """
-
-    random_crop: bool = False
-    crop_scale: tuple[float, float] = (0.9, 1.0)
-    color_jitter: float = 0.0
 
 
 # ── Robot / assembly (composition selection + controlled override) ──
@@ -230,8 +196,6 @@ class TrainRecipe:
         Total number of training optimizer steps.
     gradient_checkpointing : bool
         Enable gradient checkpointing to reduce VRAM at the cost of ~30% speed.
-    augmentation : AugmentationConfig
-        Training-time data augmentation settings.
     output_dir : str
         Directory for checkpoints, logs, and final model weights.
     """
@@ -262,7 +226,6 @@ class TrainRecipe:
     total_steps: int = 10000
     gradient_checkpointing: bool = False
     num_workers: int = 4
-    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
 
     # Output
     output: OutputConfig = field(default_factory=OutputConfig)

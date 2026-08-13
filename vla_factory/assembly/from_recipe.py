@@ -89,21 +89,21 @@ def _read_descriptions(recipe: TrainRecipe) -> tuple[DataSchema, NormStats]:
     The two are read together on purpose: a schema from one source and
     statistics from another would describe a dataset that never existed.
     """
-    path = recipe.data.source.path
+    path = recipe.data.path
     if not path:
         raise make_error(
-            MISSING_INPUT, "data.source.path",
-            field_name="data.source.path",
+            MISSING_INPUT, "data.path",
+            field_name="data.path",
             detail="a dataset path is required to resolve the composition",
         )
     try:
-        reader = get_reader(recipe.data.source.format, path=Path(path))
+        reader = get_reader(recipe.data.format, path=Path(path))
         schema = reader.get_schema(Path(path))
         norm_stats = reader.get_norm_stats(Path(path))
     except Exception as exc:
         raise make_error(
-            MISSING_INPUT, "data.source.path",
-            field_name="data.source.path", detail=f"{path}: {exc}",
+            MISSING_INPUT, "data.path",
+            field_name="data.path", detail=f"{path}: {exc}",
         ) from exc
     return schema, norm_stats
 

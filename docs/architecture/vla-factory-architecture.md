@@ -232,11 +232,11 @@ The table below summarizes the main recipe fields by zone (full fields, defaults
 | Zone | Block | Main fields | Notes |
 |---|---|---|---|
 | Composition selection | `model` | `name`, `path` | Model selection; `path` is required for fine-tuning, optional for from-scratch |
-| Composition selection | `data.source` | `path`, `format`, `video_codec` | Dataset path and format; `format: auto` auto-detects |
+| Composition selection | `data` | `path`, `format`, `video_codec` | Dataset path and format; `format: auto` auto-detects |
 | Composition selection | `robot` | `name` | Robot embodiment declaration |
 | Composition adjustment (optional) | `assembly` | `camera_mapping`, `default_task` | Explicitly specify the three-way relationship when the resolver cannot decide uniquely; cannot rewrite objective facts (shape, checkpoint slots, joint topology, fixed dim caps). Only overrides with a consumer are kept; the rest are deferred with their checks |
 | Training params | `finetuning` | `strategy`, `lora`, `freeze_components`, `trainable_components` | Fine-tuning strategy and component selection |
-| Training params | `training` | `lr`, `lr_backbone`, `batch_size`, `total_steps`, `gradient_checkpointing`, `num_workers`, `augmentation` | Optimizer, scheduling, memory, and data loading |
+| Training params | `training` | `lr`, `lr_backbone`, `batch_size`, `total_steps`, `gradient_checkpointing`, `num_workers` | Optimizer, scheduling, memory, and data loading |
 | Training params | `output` | `output_dir`, `report_to`, `logging_steps`, `save_steps`, `save_total_limit`, `overwrite_output_dir` | Checkpoint, logging, and final weights |
 
 `TrainRecipe` and its sub-dataclasses (`DataConfig`, `SamplerConfig`, `SplitConfig`, `LoraConfig`, `OutputConfig`, `AugmentationConfig`, etc.) in `vla_factory/recipe/recipe.py` are the structural definitions of these fields; `parser.py` constructs them from YAML. Users do not need to fill every field — only the ones whose defaults they want to override.

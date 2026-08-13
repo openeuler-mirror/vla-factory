@@ -25,9 +25,8 @@ model:
                                      # the chunk length is the user's choice
 
 data:
-  source:
-    path: data/banana
-    format: lerobot-v3
+  path: data/banana
+  format: lerobot-v3
 
 finetuning:
   strategy: full                     # ACT trains from scratch
@@ -40,9 +39,6 @@ training:
   total_steps: 160000
   gradient_checkpointing: false
   num_workers: 4
-  augmentation:
-    random_crop: false
-    color_jitter: 0.0
 
 output:
   output_dir: outputs/act_only_banana

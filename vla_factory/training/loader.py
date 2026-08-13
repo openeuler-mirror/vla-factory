@@ -53,11 +53,11 @@ def create_dataloaders(
     (train_loader, val_loader)
     """
     data_cfg = recipe.data
-    path = Path(data_cfg.source.path)
+    path = Path(data_cfg.path)
 
     # 1. Reader + codec (frame access; the descriptions come from the assembly)
-    reader = get_reader(data_cfg.source.format, path=path)
-    codec = resolve_codec(data_cfg.source.video_codec)
+    reader = get_reader(data_cfg.format, path=path)
+    codec = resolve_codec(data_cfg.video_codec)
 
     schema = assembly.schema
     norm_stats = assembly.norm_stats

@@ -15,8 +15,10 @@
 #
 # ── 已删除的字段（写了不会报错，但完全不生效） ─────────────────────
 #   action_spec.*                → 数据集事实 / 模型声明 / 机器人 profile
+#   data.source.*                → 直接写在 data 下（少一层嵌套）
 #   data.sampler.*               → 模型的时序契约（观测帧数 / chunk 长度）
 #   data.split.*                 → 框架固定策略（按 episode 9:1）
+#   training.augmentation.*      → 无（从未被任何 transform 应用过）
 #   training.inference_steps     → model.config.num_inference_steps
 #   model.config.camera_mapping  → assembly.camera_mapping
 #   model.config.default_task    → assembly.default_task
@@ -57,11 +59,10 @@ model:
 # 数据 ─────────────────────────────────────────────────────────────
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 data:
-  source:
-    path: ""                   # [必填] 数据集根路径
+  path: ""                     # [必填] 数据集根路径
                                #   示例: "outputs/lerobot_train_data_100"
 
-    format: auto               # [可选] 数据格式
+  format: auto                 # [可选] 数据格式
                                #   ┌──────────────┬──────────────────────────────┐
                                #   │ 值            │ 说明                         │
                                #   ├──────────────┼──────────────────────────────┤
@@ -71,6 +72,8 @@ data:
                                #   │ rlds         │ TFRecord RLDS 格式           │
                                #   │ zarr         │ Zarr 数组 (BridgeData V2)    │
                                #   └──────────────┴──────────────────────────────┘
+
+  # video_codec: auto          # [可选] 视频解码器 (auto 按格式选择)
 
   # 一个样本携带多少观测帧、多少未来动作，都是模型的时序契约
   # (ModelMetadata.history_frames / action horizon)，由组合解析层给出；
@@ -88,7 +91,10 @@ data:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 robot:
   name: ""                     # [可选] 机器人本体 profile 名 (见 vla_factory/robot/profiles/*.yaml)
-                               #   示例: "lekiwi"。留空表示不绑定具体本体。
+                               #   示例: "robotwin"。留空表示不绑定具体本体。
+                               #   写了之后解析器会把数据的逐维关节名嵌入机器人关节表
+                               #   (产出 JointMapping)，对不上就直接失败——这正是它的
+                               #   价值：错位的命令向量不会流到机器人上。
 
 assembly:                      # [可选, 默认留空]
   # camera_mapping:            # 模型视觉槽位 -> 数据集相机 (歧义时显式指定)
@@ -164,10 +170,6 @@ training:
                                #   0 = 单进程 (调试用)
                                #   4~8 = 多进程并行加载 (推荐, 视频数据集建议 ≥4)
 
-  augmentation:
-    random_crop: true          # 随机裁剪
-    crop_scale: [0.9, 1.0]    # 裁剪面积比例范围
-    color_jitter: 0.1          # 颜色抖动强度 (0.0 = 关闭)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

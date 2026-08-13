@@ -3,9 +3,12 @@
 > 状态：**阶段 4（WP1–WP7 + 一轮 code review 整改）已执行完毕**（工作树，未提交），
 > `pytest` **351 passed**（openpi 环境另跑 330 passed / 21 skipped）；已提交 `a3b7c14`。
 > **阶段 5（WP1–WP6）已执行完毕**（工作树，未提交），`pytest` **348 passed**。
-> **范围按用户决定扩大两处**：① 不做兼容层——旧 recipe 不再能跑，`deprecations.py` 一并
+> **范围按用户决定扩大四处**：① 不做兼容层——旧 recipe 不再能跑，`deprecations.py` 一并
 > 删除（仓库 0.1.0 早期、调用方全在仓内，两种写法并存的成本高于收益）；② `data.sampler`
-> 与 `data.split` 整块删除——前者两端都是模型的时序契约，后者是框架固定策略。
+> 与 `data.split` 整块删除——前者两端都是模型的时序契约，后者是框架固定策略；
+> ③ `data.source` 拍平进 `data`（少一层嵌套，与架构 §3.1 的示例一致）；
+> ④ `training.augmentation` 删除——声明了、被写进产物 recipe，却**从未被任何 transform
+> 应用过**，是这轮重构要消灭的那类「能写但没效果」的字段。
 > 分支 `ref_train_infer`（阶段 0–3 已提交至 `a50e83e`）。
 >
 > **实施中与本文档不同 / 需要补记的七处**（正文已就地更新）：
@@ -643,6 +646,16 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
    - `split.train_ratio` / `seed` 变成 `training/manifest.py` 的框架常量。判据是
      `eval_strategy="no"`：**训练期从不评估**，所以这个旋钮唯一的效果是悄悄缩小训练集。
      实测 `Manifest: 828 train / 414 val` 与阶段 4 逐字相同。
+6. **`data.source` 拍平 + `augmentation` 删除**（用户决定）。`augmentation` 的判据同
+   `assembly` 那两个无消费者字段：全仓 grep 后确认没有任何 transform 或 dataloader 读它，
+   `random_crop: true` 写了什么都不会发生。`ModelMetadata.requires_augmentation` 因此也
+   失去了对应特性——它仍在 `INTERFACE_FACTS` 里，是否一并删除留给下次决定（改它会动
+   artifact 的漂移检查契约）。
+7. **`act_robotwin.yaml` 声明了 `robot: robotwin`**。这是仓库里第一份绑定真实本体的
+   recipe：RoboTwin reader 产出的逐维名（`left_arm_0..`、`left_gripper`…）与
+   `profiles/robotwin.yaml` 的关节表逐字匹配，实测 14 个关节全部映射成功。
+   `act_lekiwi.yaml` **不能**同样处理——fixture 的 action 逐维名是 `dim_0..dim_7`，会按
+   阶段 2 的既定行为报 `JOINT_ORDER_MISMATCH`（那是正确行为，不是障碍）。
 
 ---
 

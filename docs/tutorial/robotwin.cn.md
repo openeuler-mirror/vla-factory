@@ -30,10 +30,11 @@ pip install -e ".[robotwin]"
 
 ```yaml
 data:
-  source:
-    path: /path/to/dataset/<task>/<embodiment>_clean_50
-    format: robotwin
-    video_codec: hdf5_jpeg
+  path: /path/to/dataset/<task>/<embodiment>_clean_50
+  format: robotwin
+  video_codec: hdf5_jpeg
+robot:
+  name: robotwin
 ```
 
 ## 3. 启动模型服务（VLA Factory 环境）

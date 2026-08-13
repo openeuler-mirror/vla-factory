@@ -159,10 +159,8 @@ model:
   path: null
 
 data:
-  source:
-    path: /data/lift_cube
-    format: lerobot-v3
-  profile: aloha
+  path: /data/lift_cube
+  format: lerobot-v3
 
 finetuning:
   strategy: full
@@ -173,22 +171,17 @@ training:
   lr_backbone: 1e-5
   batch_size: 8
   total_steps: 50000
-  augmentation:
-    random_crop: true
-    color_jitter: 0.1
 
 output:
   output_dir: outputs/act_aloha
 """
     recipe = parse_recipe_from_string(act_yaml)
     assert recipe.model_name == "act"
-    assert recipe.data.source.format == "lerobot-v3"
-    assert recipe.data.source.path == "/data/lift_cube"
+    assert recipe.data.format == "lerobot-v3"
+    assert recipe.data.path == "/data/lift_cube"
     assert recipe.finetuning_strategy == "full"
     assert recipe.lr == 1e-4
     assert recipe.lr_backbone == 1e-5
-    assert recipe.augmentation.random_crop is True
-    assert recipe.augmentation.color_jitter == 0.1
     assert recipe.output.output_dir == "outputs/act_aloha"
     print(f"  Full ACT: model={recipe.model_name}, lr={recipe.lr}, steps={recipe.total_steps}")
 

@@ -303,7 +303,7 @@ def main():
         from vla_factory.recipe.parser import parse_recipe
         from vla_factory.data.codec.pyav import preprocess_dataset
         recipe = parse_recipe(args.config)
-        data_path = Path(recipe.data.source.path)
+        data_path = Path(recipe.data.path)
         preprocess_dataset(data_path)
         print("Preprocessing complete.")
 
@@ -321,11 +321,11 @@ def main():
             # only) for the camera diff. Skip silently if the dataset isn't set
             # or unreadable — the model-metadata half still prints.
             schema = None
-            data_path = recipe.data.source.path
+            data_path = recipe.data.path
             if data_path:
                 try:
                     from vla_factory.data.formats import get_reader
-                    reader = get_reader(recipe.data.source.format, path=_Path(data_path))
+                    reader = get_reader(recipe.data.format, path=_Path(data_path))
                     schema = reader.get_schema(_Path(data_path))
                 except Exception as e:
                     print(f"(skipped dataset schema read: {e})")
@@ -357,8 +357,8 @@ def main():
             checkpoint_path=args.checkpoint,
             device=args.device,
         )
-        reader = get_reader(engine.recipe.data.source.format, path=data_path)
-        codec = resolve_codec(engine.recipe.data.source.video_codec)
+        reader = get_reader(engine.recipe.data.format, path=data_path)
+        codec = resolve_codec(engine.recipe.data.video_codec)
         action_horizon = engine.action_horizon
 
         episode_lengths = reader.get_episode_lengths(data_path)
@@ -807,12 +807,12 @@ def _run_inspect(args) -> None:
         # merged underneath — that difference is exactly the "source" column.
         raw_overrides = dict(parsed.model_config or {})
         recipe = resolve_recipe(parsed)
-        if recipe.data.source.path:
+        if recipe.data.path:
             # One unreadable dimension must not hide the other two: a recipe is
             # routinely inspected on a machine that has the model but not the
             # dataset. Report and carry on.
             try:
-                _inspect_data(recipe.data.source.path, recipe.data.source.format,
+                _inspect_data(recipe.data.path, recipe.data.format,
                               bool(args.stats), as_json)
             except Exception as e:
                 print(f"(skipped data dimension: {e})")

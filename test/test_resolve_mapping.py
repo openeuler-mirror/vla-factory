@@ -204,7 +204,7 @@ class TestPlanIsExecutable:
         from vla_factory.recipe.parser import parse_recipe
 
         recipe = resolve_recipe(parse_recipe(str(_project_root / recipe_path)))
-        recipe.data.source.path = str(DATASET_PATH)
+        recipe.data.path = str(DATASET_PATH)
         return recipe, resolve_from_recipe(recipe)
 
     @pytest.mark.parametrize("recipe_path", ["examples/act_lekiwi.yaml",

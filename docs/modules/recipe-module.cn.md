@@ -30,8 +30,8 @@
 | 块 | 字段 | 说明 |
 |---|---|---|
 | `model` | `name`、`path` | 注册表中的模型名；`path` 微调必填，从零训练可省 |
-| `data.source` | `path`、`format`、`video_codec` | 数据集位置与格式（`auto` 自动识别） |
-| `robot` | `name` | 机器人本体 profile 名；留空表示不绑定本体 |
+| `data` | `path`、`format`、`video_codec` | 数据集位置与格式（`auto` 自动识别） |
+| `robot` | `name` | 机器人本体 profile 名；留空表示不绑定本体。写了之后解析器会把数据的逐维关节名嵌入机器人关节表（产出 JointMapping），对不上直接失败——这正是它的价值 |
 
 ### 2.2 组合调整区（`assembly`，可选）
 
@@ -50,8 +50,8 @@
 
 `finetuning`、`training`、`output`。与三者关系无关，改这里不会改变模型接口。
 
-`data` 块下**只有 `source`**：一个样本携带多少观测帧、多少未来动作，两端都是模型的时序
-契约（`ModelMetadata.history_frames` → `ModelIOSpec.n_obs_steps`，以及 action horizon），
+`data` 块下**只有数据集本身**（`path` / `format` / `video_codec`）：一个样本携带多少观测
+帧、多少未来动作，两端都是模型的时序契约（`ModelMetadata.history_frames` → `ModelIOSpec.n_obs_steps`，以及 action horizon），
 由解析器给出；训练/验证划分是框架固定策略（按 episode 9:1，见
 `training/manifest.py:TRAIN_RATIO`）——训练期从不评估（`eval_strategy="no"`），这个旋钮
 唯一的效果就是悄悄缩小训练集。
@@ -95,9 +95,11 @@
 | `action_spec.action_horizon` | 模型声明（from_scratch 走 `model.config.action_horizon`；预训练模型是家族事实） |
 | `action_spec.action_type` | 数据侧 `action.dims[].mode` / 机器人 profile |
 | `action_spec.bounds_low/high` | `RobotProfile` 安全边界 |
+| `data.source.*` | 直接写在 `data` 下（少一层嵌套） |
 | `data.sampler.*` | `ModelIOSpec.n_obs_steps` / `.action_horizon` |
 | `data.split.*` | 框架固定策略（`training/manifest.py`） |
 | `training.inference_steps` | `model.config.num_inference_steps` |
+| `training.augmentation.*` | 无——声明了、被写进产物，却从未被任何 transform 应用 |
 | `model.config.camera_mapping` / `default_task` | `assembly` 块 |
 | `composition:` | `assembly:` |
 | `assembly.accept_fps_mismatch` / `gripper_flip` | 无——对应检查未实现，从来没有效果 |

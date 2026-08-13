@@ -57,9 +57,8 @@ model:
     n_vae_encoder_layers: 1
     action_horizon: {ACTION_HORIZON}
 data:
-  source:
-    path: {DATASET_PATH}
-    format: lerobot-v3
+  path: {DATASET_PATH}
+  format: lerobot-v3
   sampler:
     type: sliding_window
     n_obs_steps: 1

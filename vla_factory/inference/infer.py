@@ -205,9 +205,9 @@ def infer_from_dataset_sample(
     )
 
     # ── 2. Load raw frame from dataset via format reader ─────────────
-    data_path = Path(recipe.data.source.path)
-    reader = get_reader(recipe.data.source.format, path=data_path)
-    codec = resolve_codec(recipe.data.source.video_codec)
+    data_path = Path(recipe.data.path)
+    reader = get_reader(recipe.data.format, path=data_path)
+    codec = resolve_codec(recipe.data.video_codec)
 
     episode_lengths = reader.get_episode_lengths(data_path)
     sorted_eps = sorted(episode_lengths.items())

@@ -640,7 +640,7 @@ class TestEndToEnd(unittest.TestCase):
             raise unittest.SkipTest("YAML config not found")
         cls.recipe = parse_recipe(yaml_path)
         # Override dataset path and batch_size for the small test dataset
-        cls.recipe.data.source.path = str(DATASET_PATH)
+        cls.recipe.data.path = str(DATASET_PATH)
         cls.recipe.batch_size = 2
         cls.recipe = resolve_recipe(cls.recipe)
         # The same two calls train() makes: resolve once, then execute.

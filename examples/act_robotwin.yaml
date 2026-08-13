@@ -23,15 +23,19 @@ model:
     kl_weight: 10.0
     dropout: 0.1
     action_horizon: 100              # chunk_size — ACT's own tunable
-    # The action width is a dataset fact (14 = two 6-DOF arms + two 1-DOF
-    # grippers for Aloha-AgileX); the reader derives it from the joint arrays.
+  # The action width is a dataset fact (14 = two 6-DOF arms + two 1-DOF
+  # grippers for Aloha-AgileX); the reader derives it from the joint arrays.
 
 data:
-  source:
-    # Point at a RoboTwin task-config root (episodes under its data/ dir),
-    path: data/robotwin_raw/dataset/beat_block_hammer/aloha-agilex_clean_50
-    format: robotwin
-    video_codec: hdf5_jpeg
+  # Point at a RoboTwin task-config root (episodes under its data/ dir),
+  path: data/robotwin_raw/dataset/beat_block_hammer/aloha-agilex_clean_50
+  format: robotwin
+  video_codec: hdf5_jpeg
+
+# 声明本体后，解析器会把数据的逐维关节名嵌入机器人的关节表，产出 JointMapping；
+# 名字对不上就直接失败，而不是让一个错位的命令向量流到机器人上。
+robot:
+  name: robotwin                     # 见 vla_factory/robot/profiles/robotwin.yaml
 
 finetuning:
   strategy: full                     # ACT trains from scratch
@@ -44,9 +48,6 @@ training:
   total_steps: 160000
   gradient_checkpointing: false
   num_workers: 4
-  augmentation:
-    random_crop: false
-    color_jitter: 0.0
 
 output:
   output_dir: outputs/act_robotwin

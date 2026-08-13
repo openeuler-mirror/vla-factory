@@ -34,9 +34,8 @@ def _act_recipe(extra: str = ""):
 model:
   name: act
 data:
-  source:
-    path: {DATASET_PATH}
-    format: lerobot-v3
+  path: {DATASET_PATH}
+  format: lerobot-v3
 {extra}
 """)
 
@@ -90,7 +89,7 @@ def test_missing_dataset_path_is_structured():
         resolve_from_recipe(_recipe("model:\n  name: act\n"))
     err = exc.value.to_dict()
     assert err["code"] == MISSING_INPUT
-    assert err["path"] == "data.source.path"
+    assert err["path"] == "data.path"
 
 
 def test_unreadable_dataset_keeps_the_reason():
@@ -100,9 +99,8 @@ def test_unreadable_dataset_keeps_the_reason():
 model:
   name: act
 data:
-  source:
-    path: /nonexistent/dataset
-    format: lerobot-v3
+  path: /nonexistent/dataset
+  format: lerobot-v3
 """)
     with pytest.raises(ResolutionError) as exc:
         resolve_from_recipe(recipe)
@@ -129,9 +127,8 @@ model:
   name: pi0
   path: {tmp}
 data:
-  source:
-    path: {DATASET_PATH}
-    format: lerobot-v3
+  path: {DATASET_PATH}
+  format: lerobot-v3
 """)
         with pytest.raises(CheckpointCompatibilityError, match="max_action_dim"):
             resolve_from_recipe(recipe)
@@ -172,9 +169,8 @@ def test_failed_resolution_leaves_the_output_directory_untouched(tmp_path):
 model:
   name: pi0
 data:
-  source:
-    path: {dataset}
-    format: lerobot-v3
+  path: {dataset}
+  format: lerobot-v3
 assembly:
   camera_mapping:
     base_0_rgb: front
@@ -187,9 +183,8 @@ model:
     transforms:
       inputs: []
 data:
-  source:
-    path: {dataset}
-    format: lerobot-v3
+  path: {dataset}
+  format: lerobot-v3
 """, "no data_to_model pipeline"),
     ],
 )
