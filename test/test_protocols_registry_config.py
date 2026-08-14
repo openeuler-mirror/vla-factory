@@ -11,11 +11,10 @@ from pathlib import Path
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-
 def test_protocols():
     """Protocol layer: Observation, ModelMetadata, VLAModel hierarchy."""
-    from vla_factory.model.interfaces.observation import Observation
-    from vla_factory.model.interfaces.model import (
+    from vla_factory.model.model_interface import Observation
+    from vla_factory.model.model_interface import (
         ModelMetadata, VLAModel, VLAModelPyTorch, VLAModelJAX,
     )
 
@@ -93,8 +92,13 @@ def test_protocols():
 
 def test_registry():
     """Registry: register_vla, get_entry, list_entries."""
-    from vla_factory.model.interfaces.model import ModelMetadata
-    from vla_factory.model.registry import register_vla, get_entry, list_entries
+    from vla_factory.model.model_interface import ModelMetadata
+    from vla_factory.model.registry import (
+        ModelRegistry,
+        get_entry,
+        list_entries,
+        register_vla,
+    )
 
     # Register a mock model
     @register_vla(ModelMetadata(
@@ -132,8 +136,7 @@ def test_registry():
         assert "__nonexistent" in str(e)
 
     # Cleanup
-    from vla_factory.model.registry.registry import _REGISTRY
-    del _REGISTRY["__test_mock"]
+    del ModelRegistry._entries["__test_mock"]
 
     print("  [PASS] registry")
 
@@ -141,15 +144,15 @@ def test_registry():
 def test_config_parser():
     """Config: parse YAML → TrainRecipe."""
     from vla_factory.recipe.parser import parse_recipe_from_string
-    from vla_factory.recipe.recipe import TrainRecipe
+    from vla_factory.recipe import TrainRecipe
 
     # Minimal config
     minimal = "model:\n  name: act"
     recipe = parse_recipe_from_string(minimal)
-    assert recipe.model_name == "act"
-    assert recipe.model_path is None
-    assert recipe.finetuning_strategy == "full"  # default
-    print(f"  Minimal: model={recipe.model_name}, strategy={recipe.finetuning_strategy}")
+    assert recipe.model.name == "act"
+    assert recipe.model.path is None
+    assert recipe.finetuning.strategy == "full"  # default
+    print(f"  Minimal: model={recipe.model.name}, strategy={recipe.finetuning.strategy}")
 
     # Full ACT config
     act_yaml = """
@@ -175,14 +178,14 @@ output:
   output_dir: outputs/act_aloha
 """
     recipe = parse_recipe_from_string(act_yaml)
-    assert recipe.model_name == "act"
+    assert recipe.model.name == "act"
     assert recipe.data.format == "lerobot-v3"
     assert recipe.data.path == "/data/lift_cube"
-    assert recipe.finetuning_strategy == "full"
-    assert recipe.lr == 1e-4
-    assert recipe.lr_backbone == 1e-5
+    assert recipe.finetuning.strategy == "full"
+    assert recipe.training.lr == 1e-4
+    assert recipe.training.lr_backbone == 1e-5
     assert recipe.output.output_dir == "outputs/act_aloha"
-    print(f"  Full ACT: model={recipe.model_name}, lr={recipe.lr}, steps={recipe.total_steps}")
+    print(f"  Full ACT: model={recipe.model.name}, lr={recipe.training.lr}, steps={recipe.training.total_steps}")
 
     # LoRA config
     lora_yaml = """
@@ -192,27 +195,32 @@ model:
 
 finetuning:
   strategy: lora
-  lora:
-    rank: 16
-    alpha: 16
+  config:
+    r: 16
+    lora_alpha: 16
     target_components: ["llm", "action_expert"]
 
 training:
   lr: 2.5e-5
   batch_size: 64
 
-output_dir: outputs/pi0_lora
+output:
+  output_dir: outputs/pi0_lora
 """
     recipe = parse_recipe_from_string(lora_yaml)
-    assert recipe.model_name == "pi0"
-    assert recipe.model_path == "checkpoints/pi0_base"
-    assert recipe.finetuning_strategy == "lora"
-    assert recipe.lora_config is not None
-    # legacy rank/alpha aliases in YAML are promoted to peft names r/lora_alpha
-    assert recipe.lora_config.r == 16
-    assert recipe.lora_config.lora_alpha == 16
-    assert recipe.lora_config.target_components == ["llm", "action_expert"]
-    print(f"  LoRA: model={recipe.model_name}, r={recipe.lora_config.r}, targets={recipe.lora_config.target_components}")
+    assert recipe.model.name == "pi0"
+    assert recipe.model.path == "checkpoints/pi0_base"
+    assert recipe.finetuning.strategy == "lora"
+    assert recipe.finetuning.config == {
+        "r": 16,
+        "lora_alpha": 16,
+        "target_components": ["llm", "action_expert"],
+    }
+    print(
+        f"  LoRA: model={recipe.model.name}, "
+        f"r={recipe.finetuning.config['r']}, "
+        f"targets={recipe.finetuning.config['target_components']}"
+    )
 
     print("  [PASS] config parser")
 
@@ -228,9 +236,9 @@ def test_yaml_files():
 
     for yaml_path in sorted(examples_dir.glob("*.yaml")):
         recipe = parse_recipe(yaml_path)
-        assert recipe.model_name, f"{yaml_path.name}: model_name is empty"
-        print(f"  {yaml_path.name}: model={recipe.model_name}, strategy={recipe.finetuning_strategy}, "
-              f"lr={recipe.lr}, steps={recipe.total_steps}")
+        assert recipe.model.name, f"{yaml_path.name}: model name is empty"
+        print(f"  {yaml_path.name}: model={recipe.model.name}, strategy={recipe.finetuning.strategy}, "
+              f"lr={recipe.training.lr}, steps={recipe.training.total_steps}")
 
     print("  [PASS] yaml files")
 

@@ -6,19 +6,20 @@ full user-facing message).
 """
 
 from __future__ import annotations
+from dataclasses import replace
 from helpers import make_schema
 
 import pytest
 
-from vla_factory.assembly.resolver import (
+from vla_factory.assembly.resolve import (
     INVALID_DESCRIPTION,
     MISSING_INPUT,
     ResolutionError,
-    UNSUPPORTED_OVERRIDE,
-    resolve_assembly,
+    resolve_from_facts as resolve_assembly,
 )
-from vla_factory.data.manifest import DataSchema, NormStats
-from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.data.data_schema import DataSchema, NormStats
+from vla_factory.model.model_interface import ModelMetadata
+from vla_factory.recipe import AssemblyOverrides
 from vla_factory.robot import get_robot_profile
 
 
@@ -27,9 +28,8 @@ from vla_factory.robot import get_robot_profile
 
 @pytest.fixture
 def schema() -> DataSchema:
-    # Per-dim names are the LeKiwi motor keys, so this schema composes with the
-    # ``robot`` fixture below: the joint-order check embeds the dataset's dims
-    # into the robot's joint list, and names that match nothing would fail it.
+    # Names are realistic, but resolver does not infer their relationship to
+    # RobotProfile joint names.
     return make_schema(
         state_dim=6,
         action_dim=8,
@@ -75,7 +75,7 @@ def test_same_inputs_same_output(schema, norm_stats, metadata, robot):
 def test_to_dict_from_dict_round_trip(schema, norm_stats, metadata, robot):
     assembly = resolve_assembly(
         schema, norm_stats, metadata, robot_profile=robot,
-        overrides={"default_task": "pick"},
+        overrides=AssemblyOverrides(default_task="pick"),
     )
     restored = type(assembly).from_dict(assembly.to_dict())
     assert restored == assembly
@@ -84,9 +84,9 @@ def test_to_dict_from_dict_round_trip(schema, norm_stats, metadata, robot):
 def test_overrides_are_recorded(schema, norm_stats, metadata):
     # Architecture §3.4: the assembly records the controlled overrides applied
     # (the source of each adjusted field), rather than silently dropping them.
-    overrides = {"default_task": "pick"}
+    overrides = AssemblyOverrides(default_task="pick")
     assembly = resolve_assembly(schema, norm_stats, metadata, overrides=overrides)
-    assert assembly.overrides_ref == overrides
+    assert assembly.overrides_ref == {"default_task": "pick"}
     # No overrides → empty ref, and it still round-trips.
     plain = resolve_assembly(schema, norm_stats, metadata)
     assert plain.overrides_ref == {}
@@ -158,7 +158,7 @@ def test_wrong_schema_type(norm_stats, metadata):
 
 
 def test_invalid_robot_profile(schema, norm_stats, metadata):
-    from vla_factory.robot.profile import RobotProfile, JointGroup
+    from vla_factory.robot import JointGroup, RobotProfile
 
     bad = RobotProfile(name="bad", joints=JointGroup(names=()))
     with pytest.raises(ResolutionError) as exc_info:
@@ -168,60 +168,21 @@ def test_invalid_robot_profile(schema, norm_stats, metadata):
     assert err.path.startswith("robot")
 
 
-def test_override_without_a_consumer_is_rejected(schema, norm_stats, metadata):
-    """``gripper_flip`` is a documented recipe field that no stage reads yet.
-    Dropping it silently would let a user believe a gripper decision was made
-    on their behalf."""
-    with pytest.raises(ResolutionError) as exc_info:
-        resolve_assembly(schema, norm_stats, metadata,
-                         overrides={"gripper_flip": True})
-    err = exc_info.value.to_dict()
-    assert err["code"] == UNSUPPORTED_OVERRIDE
-    assert err["path"] == "assembly"
-    assert err["params"] == {
-        "keys": ["gripper_flip"],
-        "supported": ["camera_mapping", "default_task"],
-    }
+# ── Pipeline completeness ─────────────────────────────────────────
 
 
-def test_every_assembly_override_is_accounted_for():
-    """Drift guard: every AssemblyConfig field must be consumed by the resolver.
-
-    A controlled override nothing reads is a field a user can set and watch do
-    nothing — which is why the two that had no consumer (frequency, gripper) were
-    removed rather than left documented and inert. Add a field in the same commit
-    that starts reading it.
-    """
-    from dataclasses import fields
-
-    from vla_factory.assembly.resolver.resolver import CONSUMED_OVERRIDES
-    from vla_factory.recipe.recipe import AssemblyConfig
-
-    declared = {f.name for f in fields(AssemblyConfig)}
-    assert declared == set(CONSUMED_OVERRIDES)
-
-
-# ── What stays unresolved after phase 3 ───────────────────────────
-
-
-def test_robot_side_stays_unresolved_without_a_robot(schema, norm_stats, metadata):
-    """No robot declared (every example recipe today) → the two robot-side
-    products are absent, not wrong. JointMapping needs a body to map onto, and
-    ``robot_to_model`` needs the joint-reorder step that does not exist yet.
-    """
-    assembly = resolve_assembly(schema, norm_stats, metadata)
-    assert assembly.joint_mapping.resolved is False
-    assert assembly.joint_mapping.entries == ()
-    assert assembly.robot_to_model.resolved is False
-    assert assembly.robot_to_model.calls == ()
-
-
-def test_pipelines_unresolved_when_the_model_declares_no_transforms(
+def test_robot_to_model_reuses_data_to_model_without_a_robot(
     schema, norm_stats, metadata,
 ):
-    """This ``metadata`` fixture carries no ``params["transforms"]``, so there
-    is no step list to compile — the plan stays unresolved rather than being
-    invented from the facts."""
+    """Both semantic inputs already satisfy the checkpoint DataSchema."""
     assembly = resolve_assembly(schema, norm_stats, metadata)
-    assert assembly.data_to_model.resolved is False
-    assert assembly.model_to_robot.resolved is False
+    assert assembly.robot_to_model is assembly.data_to_model
+    assert assembly.robot_to_model == assembly.data_to_model
+
+
+def test_identity_transform_plan_is_valid(
+    schema, norm_stats, metadata,
+):
+    """No required reconciliation naturally produces an empty plan."""
+    assembly = resolve_assembly(schema, norm_stats, metadata)
+    assert not assembly.data_to_model.calls

@@ -16,9 +16,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-import vla_factory.model.registry.entries.pi0 as pi0_mod
+import vla_factory.model.adapters.openpi as pi0_mod
 from vla_factory.model.registry import get_entry
-from vla_factory.model.interfaces.observation import Observation
+from vla_factory.model.model_interface import Observation
 
 
 # ── Fake openpi (so _to_openpi_observation works without openpi installed) ──
@@ -48,8 +48,8 @@ class _FakePI0Pytorch(nn.Module):
 
 
 # Patch the entry's openpi handle BEFORE building wrappers. The factory caches
-# the import result on _try_import_openpi._cached, so patch that directly.
-pi0_mod._try_import_openpi._cached = (
+# the import result on try_import_openpi._cached, so patch that directly.
+pi0_mod.try_import_openpi._cached = (
     _FakePI0Pytorch,
     types.SimpleNamespace(action_dim=32),
     _FakeOpenpiObs,

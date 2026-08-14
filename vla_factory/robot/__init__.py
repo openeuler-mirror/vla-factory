@@ -1,32 +1,30 @@
-"""Robot body-description module (``RobotProfile``).
+"""Public API for static robot body descriptions.
 
-Describes a robot body — the physical facts a composition resolver and the
-inference layer need: identity / body variant, stable camera semantic names,
-joint names/order/units/types/limits, control modes, gripper convention,
-coordinate frame + URDF reference, static safety bounds and the recommended
-control frequency.
+``RobotProfile`` records body facts such as cameras, joints, control modes,
+gripper conventions, limits, frames, and recommended control frequency. The
+current composition layer validates the profile, checks declared control-mode
+compatibility, and stores a snapshot in ``ResolvedAssembly``.
 
 ``RobotProfile`` deliberately does **not** describe which process the robot is
 attached to or which transport/ROS-topic/IP/port it uses — those runtime
-concerns live in the inference module. The composition resolver only consumes
-the static body facts declared here.
+concerns live in ``vla_factory.inference``. Platform adapters, rather than this
+module, translate live observations and actions. Static fields not named above
+as active checks are declarations only; they do not currently drive runtime
+transforms, safety enforcement, or loop timing.
 """
 
 from .profile import (
     GripperConvention,
     JointGroup,
     RobotProfile,
-    load_robot_profile,
-    profile_from_dict,
 )
-from .registry import get_robot_profile, list_robot_profiles
+from .registry import get_robot_profile, list_robot_profiles, load_robot_profile
 
 __all__ = [
     "GripperConvention",
     "JointGroup",
     "RobotProfile",
     "load_robot_profile",
-    "profile_from_dict",
     "get_robot_profile",
     "list_robot_profiles",
 ]

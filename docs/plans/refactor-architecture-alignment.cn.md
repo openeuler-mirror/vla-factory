@@ -37,12 +37,12 @@
 |---|---|---|
 | `vla_factory/config/` | `vla_factory/recipe/` | recipe.py / parser.py / defaults.py / model/*.yaml 文件名不变 |
 | `vla_factory/cli.py` | `vla_factory/recipe/cli.py` | 文档把 CLI 入口归入用户表达层；`__main__.py` 与 pyproject 同步改 |
-| `vla_factory/model/protocols/` | `vla_factory/model/interfaces/` | Observation / VLAModel / ModelMetadata |
+| `vla_factory/model/protocols/` | `vla_factory/model/model_interface.py` | Observation / VLAModel / ModelMetadata |
 | `vla_factory/data/transforms/` | `vla_factory/assembly/transforms/` | TransformStep / Pipeline / Registry / 各 step |
 | `vla_factory/data/dataset.py`、`loader.py`、`sampling/` | `vla_factory/training/` 下同名文件 | 文档规定「data/ 不构建样本」，样本构建归微调层 |
 | `vla_factory/deploy/` | `vla_factory/inference/` | infer.py / policy_runtime.py / platforms/ / transports/ / connectors/ 整体平移 |
 
-`data/` 保留：`formats/`、`codec/`、`manifest.py`（Canonical IR）。
+`data/` 保留：`reader/`、`codec/`、`data_schema.py`（Canonical IR）。
 
 ### A2. 同步修改点（已探明的全部引用位）
 
@@ -52,8 +52,8 @@
     `"vla_factory.deploy.connectors"` → `"vla_factory.inference.connectors"`
 - **包内 import**（约 20 处）：`training/train.py`、
   `training/strategies/{full,lora}.py`、`inference/infer.py`（改 `data.transforms`→
-  `assembly.transforms`、`model.protocols`→`model.interfaces`）、`inference/platforms/*`、
-  原 `data/dataset.py`（Observation import）、`model/registry/entries/{act,pi0,pi05}.py`、
+  `assembly.transforms`、`model.protocols`→`model_interface.py`）、`inference/platforms/*`、
+  原 `data/dataset.py`（Observation import）、`model/adapters/{act,pi0,pi05}.py`、
   `model/base_contract.py`、`recipe/cli.py` 内全部子命令的懒 import。
 - **`vla_factory/utils/constants.py`**：`MODEL_CONFIG_DIR` 相对 `recipe/` 解析（defaults.py 的
   `Path(__file__).parent` 随目录移动自动生效，仅核对）。

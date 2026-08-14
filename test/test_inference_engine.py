@@ -12,9 +12,7 @@ Run:
 from __future__ import annotations
 from helpers import make_schema
 
-import json
 import sys
-import tempfile
 import warnings
 from pathlib import Path
 
@@ -25,15 +23,14 @@ import torch
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vla_factory.recipe.recipe import TrainRecipe
-from vla_factory.data.manifest import (
+from vla_factory.data.data_schema import (
     ActionDim, DataSchema, FeatureStats, NormStats, StateDim, resolve_vector_keys,
 )
-from vla_factory.inference.infer import (
+from vla_factory.inference.inference_engine import (
     InferenceEngine,
     ObsDict,
 )
-from vla_factory.inference.infer import (
+from vla_factory.inference.execution import (
     ActionChunk,
     ActionCommand,
     PolicyExecutor,
@@ -42,35 +39,6 @@ from vla_factory.inference.infer import (
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
-
-
-def _make_recipe(
-    action_dim: int = 6,
-    action_horizon: int = 10,
-    cameras: tuple[str, ...] = ("front",),
-    state_dim: int = 6,
-    has_language: bool = False,
-) -> TrainRecipe:
-    # The chunk length is a model tunable now; the widths come from the data.
-    return TrainRecipe(
-        model_name="act",
-        model_config={"action_horizon": action_horizon},
-    )
-
-
-def _make_schema(
-    action_dim: int = 6,
-    state_dim: int = 6,
-    cameras: tuple[str, ...] = ("front",),
-    has_language: bool = False,
-) -> DataSchema:
-    return make_schema(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        cameras=cameras,
-        image_sizes={cam: (224, 224) for cam in cameras},
-        has_language=has_language,
-    )
 
 
 def _make_norm_stats(action_dim: int = 6, state_dim: int = 6) -> NormStats:
@@ -146,67 +114,6 @@ class _MockModel:
 
     def __call__(self, *args, **kwargs):
         return self
-
-
-def _setup_checkpoint_dir(
-    tmpdir: Path,
-    recipe: TrainRecipe,
-    schema: DataSchema,
-    norm_stats: NormStats,
-    action_dim: int = 6,
-    action_horizon: int = 10,
-) -> Path:
-    """Create a minimal checkpoint directory with inference_metadata/."""
-    meta_dir = tmpdir / "inference_metadata"
-    meta_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save schema
-    schema_dict = {
-        "state_dim": schema.state_dim,
-        "action_dim": schema.action_dim,
-        "cameras": list(schema.cameras),
-        "has_language": schema.has_language,
-    }
-    with open(meta_dir / "schema.json", "w") as f:
-        json.dump(schema_dict, f)
-
-    # Save norm_stats
-    ns_dict = {
-        "state": {"mean": norm_stats.state.mean, "std": norm_stats.state.std} if norm_stats.state else None,
-        "action": {"mean": norm_stats.action.mean, "std": norm_stats.action.std} if norm_stats.action else None,
-        "method": "zscore",
-    }
-    with open(meta_dir / "norm_stats.json", "w") as f:
-        json.dump(ns_dict, f)
-
-    # Save recipe as YAML (manual serialization for test fixture)
-    import yaml
-    import dataclasses
-    recipe_dict = {}
-    for f_field in dataclasses.fields(recipe):
-        val = getattr(recipe, f_field.name)
-        if dataclasses.is_dataclass(val) and not isinstance(val, type):
-            val = dataclasses.asdict(val)
-        recipe_dict[f_field.name] = val
-    # Re-structure to match expected YAML layout
-    yaml_dict = {
-        "model": {"name": recipe.model_name, "path": recipe.model_path},
-        "training": {
-            "backend": recipe.backend,
-            "lr": recipe.lr,
-            "batch_size": recipe.batch_size,
-            "total_steps": recipe.total_steps,
-        },
-    }
-    with open(meta_dir / "recipe.yaml", "w") as f:
-        yaml.dump(yaml_dict, f)
-
-    # Save model weights (empty state dict is fine for mock)
-    final_dir = tmpdir / "final"
-    final_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({}, final_dir / "model.pt")
-
-    return tmpdir
 
 
 class TestExecutionPolicies:
@@ -320,7 +227,7 @@ class TestObsNormalization:
 
     def test_imagenet_normalization_values(self):
         """Verify ImageNet constants are correct."""
-        from vla_factory.assembly.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import IMAGENET_MEAN, IMAGENET_STD
         np.testing.assert_allclose(IMAGENET_MEAN, [0.485, 0.456, 0.406], atol=1e-6)
         np.testing.assert_allclose(IMAGENET_STD, [0.229, 0.224, 0.225], atol=1e-6)
 
@@ -361,7 +268,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_fallback_imagenet(self):
         """When norm_stats.images is None, both paths use ImageNet."""
-        from vla_factory.assembly.transforms.normalize import Normalize
+        from vla_factory.assembly.transform.normalize import Normalize
 
         norm_stats = NormStats(
             state=FeatureStats(mean=[0.0] * 6, std=[1.0] * 6),
@@ -378,7 +285,7 @@ class TestTrainInferNormalizationConsistency:
         train_result = sample_train["images.front"]
 
         # ── Inference path: _obs_to_observation logic (same code) ──
-        from vla_factory.assembly.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import IMAGENET_MEAN, IMAGENET_STD
         img_inf = img_hwc.transpose(2, 0, 1).copy()
         infer_result = (img_inf - IMAGENET_MEAN[:, None, None]) / IMAGENET_STD[:, None, None]
 
@@ -386,7 +293,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_with_per_camera_stats(self):
         """use_imagenet_stats=False makes Normalize consume per-camera stats."""
-        from vla_factory.assembly.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         custom_mean = [0.3, 0.4, 0.5]
         custom_std = [0.2, 0.3, 0.4]
@@ -419,7 +326,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_state_normalization_uses_saved_stats(self):
         """Both paths use norm_stats.state for z-score."""
-        from vla_factory.assembly.transforms.normalize import Normalize
+        from vla_factory.assembly.transform.normalize import Normalize
 
         state_mean = [1.0, 2.0, 3.0]
         state_std = [0.5, 1.0, 1.5]
@@ -446,7 +353,7 @@ class TestTrainInferNormalizationConsistency:
         Default True → fixed ImageNet constants (the pretrained-backbone default).
         Explicit False → per-camera dataset stats from stats.images.
         """
-        from vla_factory.assembly.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         img_hwc = np.full((16, 16, 3), 0.5, dtype=np.float32)
         img = img_hwc.transpose(2, 0, 1).copy()
@@ -476,6 +383,52 @@ class TestTrainInferNormalizationConsistency:
         assert not np.allclose(result_a, result_b, atol=1e-3), (
             "ImageNet and per-camera normalization should produce different results"
         )
+
+
+class TestDataSchemaObservationBoundary:
+    """The engine rejects adapter output outside the checkpoint DataSchema."""
+
+    @staticmethod
+    def _engine():
+        from vla_factory.inference.inference_engine import InferenceEngine
+
+        engine = object.__new__(InferenceEngine)
+        engine.camera_keys = ("front", "wrist")
+        engine.schema = make_schema(
+            state_dim=3, action_dim=2, cameras=("front", "wrist"),
+        )
+        engine.preprocessor = lambda sample: sample
+        engine.device = torch.device("cpu")
+        return engine
+
+    def test_missing_dataschema_camera_fails_before_preprocessing(self):
+        engine = self._engine()
+        obs = ObsDict(
+            video={"front": np.zeros((8, 8, 3), dtype=np.uint8)},
+            state=np.zeros(3, dtype=np.float32),
+        )
+        with pytest.raises(ValueError, match="missing cameras.*wrist"):
+            engine._obs_to_observation(obs)
+
+    def test_missing_dataschema_state_fails_before_preprocessing(self):
+        engine = self._engine()
+        video = {
+            key: np.zeros((8, 8, 3), dtype=np.uint8)
+            for key in engine.camera_keys
+        }
+        with pytest.raises(ValueError, match="state is required with width 3"):
+            engine._obs_to_observation(ObsDict(video=video, state=None))
+
+    def test_wrong_dataschema_state_width_fails_before_preprocessing(self):
+        engine = self._engine()
+        video = {
+            key: np.zeros((8, 8, 3), dtype=np.uint8)
+            for key in engine.camera_keys
+        }
+        with pytest.raises(ValueError, match=r"expected state shape \(3,\)"):
+            engine._obs_to_observation(
+                ObsDict(video=video, state=np.zeros(2, dtype=np.float32))
+            )
 
 
 # ── Tests: ZMQObsAdapter ───────────────────────────────────────────
@@ -516,7 +469,7 @@ class TestZMQObsAdapter:
 
 class TestReplayPolicy:
     def test_replay_sequence(self):
-        from vla_factory.inference.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         data = [
             {"action": np.array([1.0, 2.0])},
@@ -531,7 +484,7 @@ class TestReplayPolicy:
         np.testing.assert_array_equal(policy.predict(obs).values, [[5.0, 6.0]])
 
     def test_replay_exhausted(self):
-        from vla_factory.inference.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -540,7 +493,7 @@ class TestReplayPolicy:
             policy.predict(obs)
 
     def test_replay_reset(self):
-        from vla_factory.inference.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)

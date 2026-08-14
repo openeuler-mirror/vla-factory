@@ -3,10 +3,9 @@
 A model declares its tunable defaults in ``ModelMetadata.params`` and the recipe
 overrides them through ``model.config``. Nothing in that path checks whether a
 declared key is ever *read*, so a key nobody consumes is a silent no-op: the
-user edits it, the run behaves identically, and no error is raised. Two such
-keys shipped in the baseline profiles — ``num_inference_steps`` (the engine read
-the model metadata instead) and ``tokenizer_max_length`` (the ``task_tokenize``
-step carries its own ``max_length``).
+user edits it, the run behaves identically, and no error is raised.
+``num_inference_steps`` once shipped in that state because the engine read a
+different source.
 
 Wrapping the resolved config in a ``TrackedConfig`` and asserting at the end of
 the factory turns that class of mistake into a startup error. It also makes the
@@ -28,9 +27,7 @@ from typing import Any
 
 # Keys consumed outside the model factory, which therefore can never be observed
 # as "read" on the factory's config object:
-#   transforms           — training/loader.py and inference/infer.py build the
-#                          pipeline from it
-#   num_inference_steps  — inference/infer.py drives predict_actions with it
+#   num_inference_steps  — inference/inference_engine.py passes it to predict_actions
 #   action_horizon       — the composition resolver reads it (a from-scratch
 #                          model's chunk length) and reports it as
 #                          ModelIOSpec.action_horizon; the factory takes the
@@ -38,7 +35,6 @@ from typing import Any
 #   input_image_size     — the composition resolver turns this from-scratch
 #                          model tunable into ModelIOSpec.camera_shapes
 FRAMEWORK_CONSUMED_KEYS: frozenset[str] = frozenset({
-    "transforms",
     "num_inference_steps",
     "action_horizon",
     "input_image_size",

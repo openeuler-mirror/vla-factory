@@ -1,17 +1,5 @@
-"""Platform-specific observation and action adapters."""
+"""Platform-specific observation and action adapters.
 
-from .base import PlatformObservationAdapter
-from .groot import GROOTAdapter
-from .lerobot import LeRobotAdapter, LerobotHostActionAdapter, LerobotHostObsAdapter
-from .robotwin import RoboTwinAdapter
-from .simulator import SimulatorAdapter
-
-__all__ = [
-    "PlatformObservationAdapter",
-    "RoboTwinAdapter",
-    "SimulatorAdapter",
-    "GROOTAdapter",
-    "LeRobotAdapter",
-    "LerobotHostObsAdapter",
-    "LerobotHostActionAdapter",
-]
+Import concrete adapters from their modules so one platform does not require
+the optional dependencies of every other platform.
+"""

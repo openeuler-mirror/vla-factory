@@ -1,17 +1,27 @@
-from .recipe import (
-    AssemblyConfig,
+from .train_recipe import (
+    AssemblyOverrides,
     DataConfig,
-    LoraConfig,
+    FinetuningConfig,
+    ModelConfig,
+    OutputConfig,
     RobotConfig,
+    TrainingConfig,
     TrainRecipe,
 )
-from .parser import parse_recipe
+from .parser import parse_recipe, parse_recipe_from_string
+from .model_config import merge_model_config, model_params
 
 __all__ = [
     "TrainRecipe",
-    "AssemblyConfig",
+    "AssemblyOverrides",
+    "ModelConfig",
     "RobotConfig",
     "DataConfig",
-    "LoraConfig",
+    "FinetuningConfig",
+    "TrainingConfig",
+    "OutputConfig",
     "parse_recipe",
+    "parse_recipe_from_string",
+    "merge_model_config",
+    "model_params",
 ]

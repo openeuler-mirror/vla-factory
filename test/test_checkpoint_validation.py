@@ -13,7 +13,7 @@ from vla_factory.model.checkpoint_validation import (
     load_checkpoint_config,
     validate_checkpoint_if_available,
 )
-from vla_factory.model.interfaces.model import ModelMetadata, VisionSlot
+from vla_factory.model.model_interface import ModelMetadata, VisionSlot
 
 
 PI0_CONFIG = {

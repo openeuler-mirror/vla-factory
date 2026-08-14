@@ -12,11 +12,10 @@ action commands.
 
 The deployment module does not rescan the training dataset, nor does it
 re-merge the current code's model profile. It treats the
-`inference_metadata/{recipe.yaml, schema.json, norm_stats.json}` written at
-the start of training as the single source of truth, reusing the schema /
-norm stats / transform semantics the
-[data module](data-module.md#45-deployment-side-reuse-contract) established
-during training. So the deployment module's core responsibility is not the
+`inference_metadata/{assembly.json, recipe.yaml}` written at the start of
+training as the single source of truth. `assembly.json` already contains the
+schema, normalization statistics, IO spec, and transform plans. So the
+deployment module's core responsibility is not the
 narrow "feed an observation to the model", but rather **reproducing the
 training-time data contract without re-running the data pipeline, and wiring
 it safely onto a concrete runtime platform**.
@@ -115,7 +114,7 @@ pipeline (see [Data Module §4.6](data-module.md#46-non-goals-of-canonical-ir)).
 
 | Stage | Input | Processing | Output |
 |---|---|---|---|
-| Artifact loading | checkpoint path | `InferenceEngine` reads recipe / schema / norm stats, rebuilds the model and loads weights | a ready `InferenceEngine` |
+| Artifact loading | checkpoint path | `InferenceEngine` reads the assembly / recipe, rebuilds the model and loads weights | a ready `InferenceEngine` |
 | Observation adaptation | platform observation | platform adapter converts the wire protocol / embodiment fields | `ObsDict` |
 | Preprocessing | `ObsDict` | reuse the training-side preprocessor (normalize / resize / layout / tokenize) | `Observation` |
 | Model inference | `Observation` | `model.predict_actions(obs, num_steps=...)` | normalized action chunk |
@@ -159,9 +158,8 @@ The deployment pipeline's source of truth comes entirely from
 
 | Metadata file | Source | Deployment use |
 |---|---|---|
-| `recipe.yaml` | resolved recipe from training | model name, action spec, transform inputs, transform imports |
-| `schema.json` | serialized `DataSchema` | camera set, state/action dims, state/action key ordering |
-| `norm_stats.json` | serialized `NormStats` | normalization stats to rebuild the preprocessor / postprocessor |
+| `assembly.json` | training-time `ResolvedAssembly` | execution contract containing schema, norm stats, ModelIOSpec, and all three pipeline plans |
+| `recipe.yaml` | resolved recipe from training | model name, model config, and runtime settings |
 
 The core principle is the same as the data module's: deployment must use the
 **snapshot** saved at training time; re-parsing the training dataset and
@@ -201,7 +199,7 @@ re-merging the current code's model profile are both forbidden (see
 | Object | Role | Boundary |
 |---|---|---|
 | `ZmqPolicyClient` / `ZmqPolicyClientConfig` | LeKiwi-style ZMQ PUSH/PULL pure transport and its config (`transports/zmq.py`). | Only moves observation / action JSON; picks no adapter, drives no inference. |
-| `PolicyRunner` | Client-shaped deployment loop (`policy_runtime.py`): drives an injected client transport, composes obs/action adapters + `PolicyExecutor`, handles reset control messages and loop pacing. | Orchestration layer; does no serialization or framing; the transport is injected via the `PolicyClientTransport` protocol, unaware of any concrete wire protocol. |
+| `PolicyRunner` | Client-shaped deployment loop (`deploy.py`): drives an injected client transport, composes obs/action adapters + `PolicyExecutor`, handles reset control messages and loop pacing. | Orchestration layer; does no serialization or framing; the transport follows `PolicyClientTransport` from `transports/base.py`. |
 | `LengthPrefixedJsonRpcServer` | RPC server using a 4-byte length prefix + numpy-aware JSON. | Only decodes `{cmd, obs}`, dispatches the method, encodes `{res}` or an error. |
 | `RemotePolicyModel` | RPC handler: exposes the engine as `reset_model` / `update_obs` / `get_action`. | Orchestrates reset/cache/predict; does no serialization. |
 
@@ -254,8 +252,8 @@ a "half-usable" engine is forbidden.
 **Source of truth**
 
 - Configuration must come from — and only from — the checkpoint's
-  `inference_metadata/` (resolved recipe, schema, norm stats). A missing
-  recipe or schema must fail.
+  `inference_metadata/` (resolved assembly and recipe). A missing assembly or
+  recipe must fail.
 - Construction must succeed on a machine where neither the training dataset
   nor the original pretrained weights are reachable: the checkpoint already
   contains the full model state and the data-semantics snapshot; portability
@@ -276,24 +274,24 @@ a "half-usable" engine is forbidden.
   (`camera_keys` / `state_keys` / `action_keys` / `execution_action_dim` /
   `model_output_dim` / `schema` / `recipe`) for upper-layer adapters.
 - There are two action widths and they must not be conflated:
-  `model_output_dim` is what the network emits (pi0: 32), `execution_action_dim` is what
-  leaves the engine after `model_to_robot` (pi0: 8). Platform action adapters
+  `model_output_dim` is what the network emits (pi0: 32), while
+  `execution_action_dim` is the DataSchema action width restored by
+  `model_to_robot` (pi0: 8). Platform action adapters
   align motor keys with the latter.
 
 **Model and transforms**
 
-- The model must be built through the registry factory from recipe + schema;
+- The model must be built through the registry factory from recipe + assembly;
   weight loading must be strict — extra, missing, or shape-mismatched
   parameters are all errors, and partial loading is forbidden.
 - The preprocessor / postprocessor must be built from — and only from — the
-  assembly's resolved `data_to_model` / `model_to_robot` plans; a missing or
-  unresolved plan means the
-  metadata is incomplete and must fail. Custom transform modules declared in
-  the recipe must be imported before the pipeline is built, consistent with
-  the training side (see
-  [Data Module §5.3](data-module.md#53-adding-a-transform-step)).
-- The inference step count for flow-matching / diffusion heads must come
-  from `ModelMetadata`; hardcoding it on the deployment side is forbidden.
+  assembly's resolved `robot_to_model` / `model_to_robot` plans. The former is
+  value-equal to the training-side `data_to_model` plan. A missing plan means
+  the metadata is incomplete and must fail; deployment accepts no transform
+  step list or override.
+- The inference step count for flow-matching / diffusion heads comes from the
+  saved resolved recipe's model config; deployment must not invent a second
+  default.
 
 Once constructed, the engine exposes exactly two behavioral entry points:
 `predict(obs) -> ActionChunk` and `reset()`.
@@ -336,6 +334,8 @@ ObsDict
 
 It must be guaranteed that:
 
+- PlatformAdapter output must satisfy the checkpoint DataSchema. Missing
+  required cameras/state or a wrong state width must fail before preprocessing.
 - The output inverse transforms must come from the checkpoint's planned
   `model_to_robot` pipeline, which the resolver builds from each step's own
   `inverse_call()` (see
@@ -511,7 +511,7 @@ The transport layer must not:
 - Orchestrate. Adapter selection, inference driving, episode reset, and loop
   pacing do not belong to the transport: the server-shaped form must live in
   `RemotePolicyModel` (the handler), the client-shaped form in
-  `PolicyRunner`. Both live in `deploy/policy_runtime.py`, decoupled from
+  `PolicyRunner`. Both live in `inference/deploy.py`, decoupled from
   any concrete transport.
 
 ### 5.2 ZMQ transport and runner (simulator / lerobot host)
@@ -666,8 +666,9 @@ policies, or the data pipeline for this is forbidden.
 5. If the platform needs per-motor commands, also implement an action
    adapter (mirror `LerobotHostActionAdapter`: restore by `action_keys`,
    accept single-step vectors only).
-6. Export it in `platforms/__init__.py`, and wire it into the `--platform`
-   choices and branches in `cli.py`.
+6. Assemble it in `deploy.py` and declare it in the CLI's `--platform`
+   choices; do not eagerly import optional platform dependencies from
+   `platforms/__init__.py`.
 7. Add adapter unit tests (mirror `test/test_robotwin_server.py`).
 
 ### 6.2 Adding a transport
@@ -683,8 +684,9 @@ engine is forbidden.
 2. The transport only moves bytes / messages and does not interpret
    observation semantics; orchestration (adapter assembly, inference
    driving, reset, pacing) goes into `PolicyRunner` or an RPC handler.
-3. Export it in `transports/__init__.py` and wire it into the CLI for the
-   corresponding platform.
+3. Client transports implement the protocol in `transports/base.py` and are
+   assembled in `deploy.py`; do not eagerly import optional transports from
+   `transports/__init__.py`.
 
 ### 6.3 Adding an external connector
 
@@ -706,11 +708,11 @@ platform:
 
 ### 7.1 Deployment treats checkpoint metadata as the source of truth
 
-`InferenceEngine` must read only `recipe.yaml` / `schema.json` /
-`norm_stats.json` from the checkpoint; re-parsing the training dataset and
+`InferenceEngine` must read only `recipe.yaml` and `assembly.json` from the
+checkpoint; re-parsing the training dataset and
 re-merging the current code's model profile are forbidden. The camera set,
 state/action dims, key ordering, and normalization stats must all come from
-this snapshot.
+the assembly snapshot.
 
 ### 7.2 Adapters do no model preprocessing
 

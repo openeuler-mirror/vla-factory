@@ -19,13 +19,13 @@ import pytest
 import yaml
 
 from vla_factory.inference.connectors import robotwin as robotwin_connector
-from vla_factory.inference.infer import (
+from vla_factory.inference.execution import (
     ActionChunk,
     PolicyExecutor,
     build_execution_policy,
 )
 from vla_factory.inference.platforms.robotwin import RoboTwinAdapter
-from vla_factory.inference.policy_runtime import RemotePolicyModel
+from vla_factory.inference.deploy import RemotePolicyModel
 from vla_factory.inference.transports.length_prefixed_json import (
     LengthPrefixedJsonRpcServer,
     json_to_numpy,

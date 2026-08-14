@@ -1,135 +1,265 @@
-"""YAML → TrainRecipe parser.
-
-Supports both flat and nested YAML styles.  Missing sections fall back to
-dataclass defaults so a minimal config (just model name + data path) works.
-
-A recipe states choices only; every relation between data, model and robot is
-derived by the composition resolver, so there is no legacy-shape translation
-here — an unknown key is simply not read.
-"""
+"""Strict YAML parsing for the public TrainRecipe structure."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from vla_factory.recipe.recipe import (
-    AssemblyConfig,
+from vla_factory.recipe.train_recipe import (
+    AssemblyOverrides,
     DataConfig,
-    LoraConfig,
+    FinetuningConfig,
+    ModelConfig,
     OutputConfig,
     RobotConfig,
+    TrainingConfig,
     TrainRecipe,
 )
 
-logger = logging.getLogger(__name__)
-
 
 def parse_recipe(path: str | Path) -> TrainRecipe:
-    """Parse a YAML config file into a TrainRecipe."""
+    """Parse one YAML recipe file without consulting live model declarations."""
     path = Path(path)
-    with path.open() as f:
-        raw: dict[str, Any] = yaml.safe_load(f) or {}
-
-    return _build_recipe(raw)
+    return _build_recipe(_load_yaml(path.read_text(encoding="utf-8")))
 
 
 def parse_recipe_from_string(content: str) -> TrainRecipe:
-    """Parse a YAML string into a TrainRecipe (useful for tests)."""
-    raw: dict[str, Any] = yaml.safe_load(content) or {}
-    return _build_recipe(raw)
+    """Parse recipe YAML text, primarily for tests and generated recipes."""
+    return _build_recipe(_load_yaml(content))
 
 
-# ── Internal ──────────────────────────────────────────────────────
+def _load_yaml(content: str) -> dict[str, Any]:
+    raw = yaml.safe_load(content) or {}
+    if not isinstance(raw, dict):
+        raise TypeError("recipe YAML root must be a mapping")
+    return raw
 
 
 def _build_recipe(raw: dict[str, Any]) -> TrainRecipe:
-    # ── Model ──
-    model_block = raw.get("model", {})
-    model_name = model_block.get("name", "") if isinstance(model_block, dict) else str(model_block)
-    if not model_name:
-        raise ValueError(
-            "model.name is required in the recipe YAML — the `model` entry must "
-            "specify a registered model name (e.g. `model: {name: act}`)."
-        )
-    model_path = model_block.get("path") if isinstance(model_block, dict) else None
-    model_config = model_block.get("config", {}) if isinstance(model_block, dict) else {}
-
-    # ── Data ──
-    data_config = _pop_dataclass(raw.get("data", {}), DataConfig)
-
-    # ── Robot / assembly (composition selection + controlled override) ──
-    robot_block = raw.get("robot", {})
-    robot_config = _pop_dataclass(robot_block, RobotConfig) if isinstance(robot_block, dict) else RobotConfig()
-    # Accept ``robot: <name>`` shorthand too.
-    if isinstance(robot_block, str):
-        robot_config = RobotConfig(name=robot_block)
-
-    assembly_block = raw.get("assembly", {})
-    assembly_config = (
-        _pop_dataclass(assembly_block, AssemblyConfig)
-        if isinstance(assembly_block, dict) else AssemblyConfig()
+    _reject_unknown(
+        raw,
+        {
+            "model",
+            "data",
+            "robot",
+            "overrides",
+            "finetuning",
+            "training",
+            "output",
+        },
+        "recipe",
     )
-
-    # ── Fine-tuning ──
-    ft_block = raw.get("finetuning", {})
-    strategy = ft_block.get("strategy", "full")
-    lora_block = ft_block.get("lora", {})
-    if isinstance(lora_block, dict):
-        # Backward-compat aliases: legacy recipes used rank/alpha; promote to the
-        # peft-aligned names r/lora_alpha. Both names still accepted.
-        lora_block = dict(lora_block)
-        if "rank" in lora_block and "r" not in lora_block:
-            lora_block["r"] = lora_block.pop("rank")
-        if "alpha" in lora_block and "lora_alpha" not in lora_block:
-            lora_block["lora_alpha"] = lora_block.pop("alpha")
-        lora_config = _pop_dataclass(lora_block, LoraConfig)
-    else:
-        lora_config = None
-    freeze_components = ft_block.get("freeze_components")
-    trainable_components = ft_block.get("trainable_components")
-
-    # ── Training ──
-    train_block = raw.get("training", {})
-
-    # ── Output ──
-    output_config = _pop_dataclass(raw.get("output", {}), OutputConfig)
-
     return TrainRecipe(
-        model_name=model_name,
-        model_path=model_path,
-        model_config=model_config,
-        data=data_config,
-        robot=robot_config,
-        assembly=assembly_config,
-        finetuning_strategy=strategy,
-        lora_config=lora_config,
-        freeze_components=freeze_components,
-        trainable_components=trainable_components,
-        backend=train_block.get("backend", "pytorch"),
-        lr=float(train_block.get("lr", 1e-4)),
-        lr_backbone=_optional_float(train_block.get("lr_backbone")),
-        batch_size=int(train_block.get("batch_size", 8)),
-        total_steps=int(train_block.get("total_steps", 10000)),
-        gradient_checkpointing=bool(train_block.get("gradient_checkpointing", False)),
-        num_workers=int(train_block.get("num_workers", 4)),
-        output=output_config,
+        model=_parse_model(raw.get("model")),
+        data=_parse_data(raw.get("data")),
+        robot=_parse_robot(raw.get("robot")),
+        overrides=_parse_overrides(raw.get("overrides")),
+        finetuning=_parse_finetuning(raw.get("finetuning")),
+        training=_parse_training(raw.get("training")),
+        output=_parse_output(raw.get("output")),
     )
 
 
-def _optional_float(v: Any) -> float | None:
-    return float(v) if v is not None else None
+def _parse_model(value: Any) -> ModelConfig:
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("model cannot be empty")
+        if "/" not in value:
+            return ModelConfig(name=value)
+        if value.endswith("/"):
+            raise ValueError("model path must not end with '/'")
+        name = value.rsplit("/", 1)[-1]
+        if not name:
+            raise ValueError("model path must end with a model name")
+        return ModelConfig(name=name, path=value)
+
+    block = _mapping(value, "model", required=True)
+    _reject_unknown(block, {"name", "path", "config"}, "model")
+    name = block.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("model.name is required and must be a non-empty string")
+    path = block.get("path")
+    if path is not None and not isinstance(path, str):
+        raise TypeError("model.path must be a string or null")
+    config = block.get("config", {})
+    if not isinstance(config, dict):
+        raise TypeError("model.config must be a mapping")
+    return ModelConfig(name=name, path=path, config=dict(config))
 
 
-def _pop_dataclass(data: dict[str, Any], cls: type) -> Any:
-    """Construct a dataclass from a dict, ignoring unknown keys."""
-    if not isinstance(data, dict):
-        return cls()
-    # Only pass keys that the dataclass accepts
-    valid_fields = {f.name for f in fields(cls)}
-    filtered = {k: v for k, v in data.items() if k in valid_fields}
-    return cls(**filtered)
+def _parse_robot(value: Any) -> RobotConfig:
+    if value is None:
+        return RobotConfig()
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("robot cannot be an empty string")
+        return RobotConfig(name=value)
+    block = _mapping(value, "robot")
+    _reject_unknown(block, {"name"}, "robot")
+    name = block.get("name", "")
+    if not isinstance(name, str):
+        raise TypeError("robot.name must be a string")
+    return RobotConfig(name=name)
+
+
+def _parse_data(value: Any) -> DataConfig:
+    block = _mapping(value, "data")
+    _reject_unknown(block, {item.name for item in fields(DataConfig)}, "data")
+    return DataConfig(
+        path=_string(block.get("path", ""), "data.path"),
+        format=_string(block.get("format", "auto"), "data.format"),
+        video_codec=_string(
+            block.get("video_codec", "auto"), "data.video_codec"
+        ),
+    )
+
+
+def _parse_overrides(value: Any) -> AssemblyOverrides:
+    block = _mapping(value, "overrides")
+    _reject_unknown(
+        block,
+        {item.name for item in fields(AssemblyOverrides)},
+        "overrides",
+    )
+    camera_mapping = block.get("camera_mapping")
+    if camera_mapping is not None:
+        if not isinstance(camera_mapping, dict) or not all(
+            isinstance(key, str) and isinstance(camera, str)
+            for key, camera in camera_mapping.items()
+        ):
+            raise TypeError(
+                "overrides.camera_mapping must be a string-to-string mapping or null"
+            )
+        camera_mapping = dict(camera_mapping)
+    default_task = block.get("default_task")
+    if default_task is not None and not isinstance(default_task, str):
+        raise TypeError("overrides.default_task must be a string or null")
+    return AssemblyOverrides(
+        camera_mapping=camera_mapping,
+        default_task=default_task,
+    )
+
+
+def _parse_finetuning(value: Any) -> FinetuningConfig:
+    block = _mapping(value, "finetuning")
+    _reject_unknown(block, {"strategy", "config"}, "finetuning")
+    strategy = block.get("strategy", "full")
+    if not isinstance(strategy, str) or not strategy:
+        raise TypeError("finetuning.strategy must be a non-empty string")
+    config = block.get("config", {})
+    if not isinstance(config, dict):
+        raise TypeError("finetuning.config must be a mapping")
+    return FinetuningConfig(strategy=strategy, config=dict(config))
+
+
+def _parse_training(value: Any) -> TrainingConfig:
+    block = _mapping(value, "training")
+    valid = {item.name for item in fields(TrainingConfig)}
+    _reject_unknown(block, valid, "training")
+    return TrainingConfig(
+        backend=_string(block.get("backend", "pytorch"), "training.backend"),
+        lr=_float(block.get("lr", 1e-4), "training.lr"),
+        lr_backbone=_optional_float(
+            block.get("lr_backbone"), "training.lr_backbone"
+        ),
+        batch_size=_integer(
+            block.get("batch_size", 8), "training.batch_size"
+        ),
+        total_steps=_integer(
+            block.get("total_steps", 10000), "training.total_steps"
+        ),
+        gradient_checkpointing=_boolean(
+            block.get("gradient_checkpointing", False),
+            "training.gradient_checkpointing",
+        ),
+        num_workers=_integer(
+            block.get("num_workers", 4), "training.num_workers"
+        ),
+    )
+
+
+def _parse_output(value: Any) -> OutputConfig:
+    block = _mapping(value, "output")
+    valid = {item.name for item in fields(OutputConfig)}
+    _reject_unknown(block, valid, "output")
+    return OutputConfig(
+        output_dir=_string(
+            block.get("output_dir", "outputs/default"), "output.output_dir"
+        ),
+        report_to=_string(block.get("report_to", "none"), "output.report_to"),
+        logging_steps=_integer(
+            block.get("logging_steps", 50), "output.logging_steps"
+        ),
+        save_steps=_integer(block.get("save_steps", 5000), "output.save_steps"),
+        save_total_limit=_integer(
+            block.get("save_total_limit", 3), "output.save_total_limit"
+        ),
+        overwrite_output_dir=_boolean(
+            block.get("overwrite_output_dir", False),
+            "output.overwrite_output_dir",
+        ),
+    )
+
+
+def _mapping(
+    value: Any,
+    path: str,
+    *,
+    required: bool = False,
+) -> dict[str, Any]:
+    if value is None:
+        if required:
+            raise ValueError(f"{path} is required")
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"{path} must be a mapping")
+    return value
+
+
+def _reject_unknown(data: dict, valid: set[str], path: str) -> None:
+    unknown = sorted(set(data) - valid)
+    if unknown:
+        raise ValueError(
+            f"Unknown {path} field(s): {unknown}; supported fields are "
+            f"{sorted(valid)}"
+        )
+
+
+def _string(value: Any, path: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{path} must be a string")
+    return value
+
+
+def _integer(value: Any, path: str) -> int:
+    if isinstance(value, bool):
+        raise TypeError(f"{path} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{path} must be an integer") from exc
+
+
+def _float(value: Any, path: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{path} must be a number")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{path} must be a number") from exc
+
+
+def _optional_float(value: Any, path: str) -> float | None:
+    return None if value is None else _float(value, path)
+
+
+def _boolean(value: Any, path: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{path} must be a boolean")
+    return value
+
+
+__all__ = ["parse_recipe", "parse_recipe_from_string"]

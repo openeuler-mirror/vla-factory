@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from vla_factory.model.interfaces.model import ModelMetadata
+from vla_factory.model.model_interface import ModelMetadata
 
 
 class CheckpointCompatibilityError(ValueError):

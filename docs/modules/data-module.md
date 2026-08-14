@@ -4,7 +4,7 @@
 
 The data module is the input side of VLA Factory. It parses externally stored robot datasets, such as LeRobot v3, into a unified internal Canonical IR. The transform pipeline, training sample construction, and batching logic then assemble this IR into model-consumable batches such as `{"observation": Observation, "actions": Tensor}`.
 
-The data module is not only for training. The `schema.json`, `norm_stats.json`, and resolved `recipe.yaml` written at the beginning of training are reused on the deployment inference side to reconstruct schema, statistics, and transform semantics. The core responsibility of the data module is therefore not merely "feed a batch to training"; it is to establish a data contract that remains valid from external data parsing through training and deployment.
+The data module is not only for training. The training artifact's `assembly.json` preserves the resolved DataSchema, NormStats, and TransformPipelinePlans for direct deployment-side execution. The core responsibility of the data module is therefore not merely "feed a batch to training"; it is to establish a data contract consumed consistently by composition, training, and deployment.
 
 ### Layer Boundaries
 
@@ -15,7 +15,7 @@ At the architecture level, the data module covers two layers:
 | **External data parsing layer** | Understand external formats such as LeRobot, HDF5, RLDS, and ROS bag, and parse external metadata, episode boundaries, frame indices, state/action vectors, and video references into internal data facts. | May understand external formats; must not leak external field names, directory layouts, or file structures upward; must not perform model preprocessing or construct batches. |
 | **Intermediate data representation layer** | Represent data facts with stable objects and organize them into data contracts shared by training and deployment. | Does not understand external storage formats; does not represent upstream model-native batches; does not turn the data module into a model-branching adapter. |
 
-In the overall architecture, the data module corresponds to the "external data parsing layer" and the "intermediate data representation layer" in the main architecture document. It consumes data, sampling, and transform configuration from the recipe and model profile, and provides a unified data contract to training and deployment. The `recipe.yaml`, `schema.json`, and `norm_stats.json` in training artifacts are the deployment-side source of truth for reconstructing data semantics.
+In the overall architecture, the data module corresponds to the "external data parsing layer" and the "intermediate data representation layer" in the main architecture document. It derives DataSchema, NormStats, and episode/frame data from the actual dataset; it does not consume model or training-sampling configuration. Assembly combines these data facts with model facts, and the resulting `assembly.json` is the deployment execution source for data semantics and transform plans.
 
 This document covers:
 
@@ -73,7 +73,7 @@ This document does not cover:
   - [7.1 Reader Indexing and Performance](#71-reader-indexing-and-performance)
   - [7.2 Video and Image Schema](#72-video-and-image-schema)
   - [7.3 Data Format and Video Decoding Strategy Extensions](#73-data-format-and-video-decoding-strategy-extensions)
-  - [7.4 Manifest Persistence](#74-manifest-persistence)
+  - [7.4 Sample-Window Persistence](#74-sample-window-persistence)
   - [7.5 Data Visualization](#75-data-visualization)
   - [7.6 Data Format Conversion](#76-data-format-conversion)
 
@@ -88,8 +88,8 @@ The data module has two core flows: the training data flow and the deployment in
 | Stage | Input | Processing | Output |
 |---|---|---|---|
 | Data parsing | dataset path | `FormatReader` reads schema, norm stats, and episode information | `DataSchema` / `NormStats` / `Episode` |
-| Transform configuration | resolved recipe + schema/stats | `TransformPipeline` is built from `model.config.transforms.inputs` | model input transform |
-| Sample indexing | episode information + sampler config | `DatasetManifest` + `SlidingWindowSampler` build sliding-window sample indices | train / val sample index |
+| Transform configuration | `ResolvedAssembly` | instantiate `TransformPipeline` from `assembly.data_to_model` | model input transform |
+| Sample indexing | episode information + model temporal contract | `build_sample_windows` constructs `SampleWindow` values for every episode | training window list |
 | Sample construction | sample index | `VLADataset` reads frames, decodes images, and assembles observation/action | raw sample |
 | Data transform | raw sample | `TransformPipeline` applies normalization, resize, padding, or tokenization | model-ready sample |
 | Batching | model-ready sample | `collate_fn` aggregates batches | Trainer batch |
@@ -101,15 +101,15 @@ The training side only sees a unified Dataset and batch. It does not need to und
 
 Deployment inference does not rescan the training dataset as its source of truth. At the beginning of training, VLA Factory writes `inference_metadata/`, which contains:
 
-- `recipe.yaml`: the resolved recipe used by training and the deployment-side configuration source of truth.
-- `schema.json`: a snapshot of the training data `DataSchema`.
-- `norm_stats.json`: a snapshot of the training data `NormStats`.
+- `assembly.json`: the deployment contract containing schema, norm stats, IO
+  spec, and pipeline plans.
+- `recipe.yaml`: the resolved recipe used by training.
 
 ![VLA Factory deployment inference flow, generated from ../graph/architecture-text.md](../graph/vla-factory-deployment-inference-flow.en.svg)
 
 | Stage | Input | Processing | Output |
 |---|---|---|---|
-| Artifact loading | checkpoint path | Read recipe, schema, norm stats, and load model weights | `InferenceEngine` |
+| Artifact loading | checkpoint path | Read the assembly / recipe snapshots and load model weights | `InferenceEngine` |
 | Observation adaptation | platform observation | platform adapter converts wire protocol | `ObsDict` |
 | Preprocessing | `ObsDict` | Reuse training-side transform logic | `Observation` |
 | Model inference | `Observation` | `model.predict_actions` | normalized action chunk |
@@ -125,7 +125,7 @@ There are four categories of source-of-truth in the data flow:
 - **authoring recipe**: the direct experiment configuration entry point maintained by the user.
 - **model profile**: the source of model defaults, used as the default value for `model.config`.
 - **schema / stats**: data facts parsed from the dataset.
-- **training artifact metadata**: the `recipe.yaml`, `schema.json`, and `norm_stats.json` saved during training and read by deployment.
+- **training artifact metadata**: the `recipe.yaml` and `assembly.json` saved during training and read by deployment.
 
 The training entry point merges the authoring recipe, CLI overrides, and model profile into a resolved recipe. Deployment only reads the resolved `recipe.yaml` from the training artifacts and does not merge the current codebase's model profile again.
 
@@ -135,6 +135,7 @@ The training entry point merges the authoring recipe, CLI overrides, and model p
 
 | Object | Role | Boundary |
 |---|---|---|
+| `describe_dataset` | Dataset-description orchestration entry that returns `DataSchema` and `NormStats` from one selected reader. | Assembly calls this entry without understanding registration or detection. |
 | `FormatReader` | Data format reader protocol that defines how external formats are parsed into internal data facts. | Understands external formats; does not perform model preprocessing or construct training batches. |
 | `LeRobotV3Reader` | Current primary implementation; reads LeRobot v3 metadata, stats, parquet files, and video layout. | LeRobot v3 details stay inside the reader and do not leak into Dataset or model adapters. |
 
@@ -153,15 +154,15 @@ The training entry point merges the authoring recipe, CLI overrides, and model p
 
 | Object | Role | Key Fields |
 |---|---|---|
-| `SampleLocator` | Pointer to the location of one training sample. | `episode_index`, `start_frame_index`, `n_obs_steps`, `action_horizon` |
-| `DatasetManifest` | Dataset-level sample index and split index. | `locators`, `schema`, `norm_stats`, `episode_ranges`, `splits` |
-| `SlidingWindowSampler` | Slices episodes into sliding-window sample locators. | `n_obs_steps`, `action_horizon` |
+| `SampleWindow` | Temporal window needed to materialize one training sample. | `episode_index`, `start_frame_index`, `n_obs_steps`, `action_horizon` |
+| `build_episode_windows` | Slices one episode into `SampleWindow` values. | `n_obs_steps`, `action_horizon` |
+| `build_sample_windows` | Builds one deterministic window list from every episode. | `episode_lengths`, model temporal contract |
 
 ### 2.4 Training Sample and Batch Objects
 
 | Object | Role | Boundary |
 |---|---|---|
-| `VLADataset` | Reads samples from `SampleLocator`, decodes images on demand, assembles flat samples, and calls the transform pipeline. | Does not understand external format fields; does not implement model internals. |
+| `VLADataset` | Reads samples from `SampleWindow`, decodes images on demand, assembles flat samples, and calls the transform pipeline. | Does not understand external format fields; does not implement model internals. |
 | `collate_fn` | Aggregates flat samples into the batch used by the training protocol. | Does not branch on `model_name`; does not create model-specific Observation types. |
 | `Observation` | Unified observation container in the model protocol. | Fields are optional; field requirements are declared by model metadata / profile. |
 
@@ -189,7 +190,7 @@ Reader may:
 Reader must not:
 
 - Decode video frames; it only generates `VideoRef`.
-- Construct `SampleLocator` or `DatasetManifest`.
+- Construct training-side `SampleWindow` values.
 - Perform image resize, layout conversion, normalization, or action padding.
 - Construct training batches.
 - Depend on a specific model adapter.
@@ -211,6 +212,12 @@ Once Reader-parsed data facts enter VLA Factory, they should become the consiste
 | `VideoRef` | video path, frame index, height, width, channels. |
 
 ### 3.2 FormatReader Protocol
+
+The public reading and call entry is `data/data_schema.py`. Here, data schema
+means the data layer's whole format-neutral representation, not only the
+`DataSchema` class: static facts, normalization statistics, runtime records,
+and `describe_dataset()` live together. The reader extension interface lives
+in `data/reader/base.py`.
 
 ```python
 @runtime_checkable
@@ -234,7 +241,19 @@ Protocol intent:
 
 ### 3.3 Reader Registration and Discovery
 
-Readers are registered through a registry. `get_reader("auto", path)` iterates over every reader's `can_read()` and returns the first reader that claims it can handle the path.
+In-tree readers register classes with `@ReaderRegistry.register(name, aliases=...)`.
+The registry stores factories rather than shared instances. `get_reader("auto", path)`
+tries built-ins first, then loads Python entry points in the
+`vla_factory.readers` group when no built-in recognises the path. External
+packages therefore extend the framework without editing its source:
+
+```toml
+[project.entry-points."vla_factory.readers"]
+my-format = "my_package.reader:MyFormatReader"
+```
+
+Unknown names, duplicate names, and plugins that do not implement
+`FormatReader` fail explicitly instead of silently selecting another format.
 
 `can_read()` should be conservative: it should return `True` only when key metadata and version information are sufficient to prove that the reader can parse the dataset correctly. Directories that look similar but have incomplete schema should not be misidentified.
 
@@ -374,26 +393,23 @@ New video decoding strategies can be added later, such as `DecordCodec`, `OpenCV
 
 ### 4.3 Model Transform Pipeline Design
 
-`TransformPipeline` is the execution layer for the model input contract. It converts a canonical raw sample into a model-consumable model-ready sample. It reflects the model's requirements for image size, layout, normalization, action dimension, and related input formatting. This coupling is **declarative** and YAML-driven; it is not hardcoded into Dataset or collate by `model_name`.
+`TransformPipeline` is the execution layer for the model input contract. It converts a canonical raw sample into a model-ready sample. The requirements are declared as immutable `ModelMetadata` facts rather than as a YAML step list, and the assembly resolver derives the required operations without branching on `model_name`. Dataset and collate remain model-agnostic.
 
 The logic that arranges `Observation` into an upstream model-library-native batch dict still belongs to the model adapter. For example, the ACT adapter maps `Observation.images["front"]` to LeRobot's expected `observation.images.front`.
 
 **Input transform** (training side):
 
-```yaml
-# ACT's ModelMetadata.params["transforms"]
-transforms:
-  inputs:
-    - {type: image_to_float}
-    - {type: image_layout, layout: "chw"}
-    - {type: image_normalize}
-    - {type: normalize_vector, fields: ["state", "actions"]}
-    - {type: pad_dimensions}
-```
+For example, ACT declares an image range, CHW layout, stretch resize policy,
+ImageNet normalization and vector normalization as named model facts. The
+resolver compares those facts with `DataSchema` and `ModelIOSpec`, then emits
+only the calls that are needed. Padding comes from a vector-width difference;
+resize comes from an image-size difference. There is no
+`model.config.transforms.inputs` field and no per-run ordering override.
 
-This declaration does **not** build a pipeline directly: the composition resolver calls each step's `compile_call()`, baking the facts (pad target, normalization method, image range) and the skip decisions into the `data_to_model` plan; training and inference then instantiate it with `build_pipeline(plan, ctx)`. At that point `TransformContext` supplies only what a serialized call cannot carry — the dataset statistics.
-
-Users can also register custom transform steps to extend input processing. See [Adding a Transform Step](#53-adding-a-transform-step).
+The resolver calls each selected step's `compile_call()`, baking arguments and
+skip decisions into `data_to_model`; training and inference instantiate that
+saved plan with `build_pipeline(plan, ctx)`. `TransformContext` supplies only
+what a serialized call cannot carry, currently the dataset statistics.
 
 **Output postprocessor** (deployment side):
 
@@ -408,7 +424,7 @@ During deployment, `InferenceEngine` uses these reverse transforms to restore mo
 
 **Tokenizer / prompt field generation**:
 
-For models that need language instructions, such as PI0 and OpenVLA, `Observation` reserves `tokenized_prompt` and related mask fields. The current `collate_fn` does not generate these fields; it only performs generic stacking. Future tokenizers should be explicit transform steps in TransformPipeline, with tokenizer type, parameters, and artifact paths declared in configuration, rather than letting `collate_fn` handle model semantics.
+For models that need language instructions, such as PI0 and OpenVLA, `Observation` reserves `tokenized_prompt` and related mask fields. The current `collate_fn` does not generate these fields; it only performs generic stacking. Tokenizer requirements are named model facts (`tokenizer_repo`, `tokenizer_max_length`, and whether state enters the prompt); the resolver derives the `task_tokenize` call.
 
 ### 4.4 Training-Side Data Contract
 
@@ -416,7 +432,7 @@ The training-side data contract defines the stable path from episode to training
 
 ```text
 Episode / Frame / VideoRef
-  -> SampleLocator
+  -> SampleWindow
   -> canonical raw sample dict
   -> TransformPipeline
   -> collate_fn
@@ -425,39 +441,38 @@ Episode / Frame / VideoRef
 
 #### 4.4.1 Sample Indexing and Splits
 
-`SampleLocator` is a pointer to one training sample. It does not hold data; it only records which episode and timestep are used to construct the sample, along with the observation window and action horizon for that sample:
+`SampleWindow` does not hold data; it only records which episode and timestep are used to construct the sample, along with the observation window and action horizon for that sample:
 
 ```python
 @dataclass(frozen=True)
-class SampleLocator:
+class SampleWindow:
     episode_index: int
     start_frame_index: int
-    n_obs_steps: int = 1
-    action_horizon: int = 100
+    n_obs_steps: int
+    action_horizon: int
 ```
 
-`SlidingWindowSampler` generates one `SampleLocator` for every valid observation position in each episode:
+`build_episode_windows()` generates one `SampleWindow` for every valid observation position in an episode:
 
 ```text
 episode (length = L, n_obs_steps = 1, action_horizon = H)
 
-  frame 0: locator(episode=0, start=0, n_obs=1, horizon=H)
-  frame 1: locator(episode=0, start=1, n_obs=1, horizon=H)
+  frame 0: window(episode=0, start=0, n_obs=1, horizon=H)
+  frame 1: window(episode=0, start=1, n_obs=1, horizon=H)
   ...
-  frame L-1: locator(episode=0, start=L-1, n_obs=1, horizon=H)
+  frame L-1: window(episode=0, start=L-1, n_obs=1, horizon=H)
 ```
 
 Currently, `VLADataset._load_sample()` materializes only the last frame of the observation window as images/state. `n_obs_steps` is the contract entry point for future multi-frame observation support. The action chunk starts from the last frame of the observation window and has length `action_horizon`.
 
 **Tail padding**: when `action_horizon` exceeds the episode length, `VLADataset._load_sample` uses repeat-last padding, filling out-of-range positions with the last valid action in the episode. If every frame action in the episode is `None`, it raises `ValueError`.
 
-`DatasetManifest` is built by the `build_manifest()` factory:
-
-1. **Build locators**: for each episode, `SlidingWindowSampler.sample_episode()` creates a `SampleLocator` for every valid observation position.
-2. **Episode-level split**: all `episode_index` values are shuffled with `seed`, then split into train/val according to `train_ratio`, with default `train_ratio=0.9`. Only the `"episode"` split strategy is supported: an entire episode belongs to one split, preventing frames from the same episode from appearing in both train and val.
-3. **Map locator -> split**: iterate over all locators and put each locator index into `_train_indices` / `_val_indices` based on whether `locator.episode_index` belongs to `train_eps` or `val_eps`.
-
-The split granularity is episode rather than frame because frames within one episode are highly correlated. Mixing frames from the same episode into both train and val would make validation a poor measure of generalization.
+`build_sample_windows()` creates no aggregate sample-index object. It calls
+`build_episode_windows()` in deterministic episode/frame order and gives the
+complete list directly to one `VLADataset`. Training currently has no evaluation
+loop, so there is no unconsumed validation list that silently shrinks the training
+set. When validation is implemented, it should split by episode rather than frame
+to prevent temporal-trajectory leakage between training and validation.
 
 #### 4.4.2 Dataset and Batch
 
@@ -465,10 +480,10 @@ The split granularity is episode rather than frame because frames within one epi
 
 ```python
 def __getitem__(self, idx):
-    # 1. locator -> episode -> frames (LRU cache)
+    # 1. window -> episode -> frames (LRU cache)
     # 2. VideoRef -> VideoCodec.decode_frame() -> HWC uint8
     # 3. assemble canonical raw sample dict
-    sample = self._load_sample(locator, frames)
+    sample = self._load_sample(window)
     # 4. TransformPipeline transform
     sample = self.transforms(sample)
     return sample
@@ -495,12 +510,11 @@ The deployment side does not run the full data pipeline, but it reuses metadata 
 | Metadata File | Source | Deployment Use |
 |---|---|---|
 | `recipe.yaml` | complete configuration used by training | model name, strategy, and parameters |
-| `schema.json` | serialized `DataSchema` | input format contract: cameras, state_dim, action_dim, keys |
-| `norm_stats.json` | serialized `NormStats` | unnormalize model outputs |
+| `assembly.json` | training-time `ResolvedAssembly` | execute schema/stats, ModelIOSpec, and the three PipelinePlans |
 
 **Core principle**: deployment-side metadata is the version saved in the checkpoint, **not** a version reparsed from the training dataset. The training dataset may no longer be in place or may have been updated; deployment uses the training-time snapshot. This is the point of saving checkpoint metadata.
 
-The inverse transforms in TransformPipeline, such as UnnormalizeAction and UnpadAction, are rebuilt from the resolved `recipe.yaml`, `schema.json`, and `norm_stats.json` in the checkpoint. This ensures deployment does not re-merge the current codebase's model profile. Large transform parameters or fitted results should be saved as artifacts and explicitly referenced in the resolved recipe.
+Deployment instantiates inverse transforms such as UnnormalizeAction and UnpadAction from `assembly.model_to_robot`; live runtime objects are built from the NormStats stored in the assembly. It neither reparses transform declarations nor re-merges the current codebase's model profile.
 
 ### 4.6 Non-Goals of Canonical IR
 
@@ -519,13 +533,14 @@ When adding a data format, add a new `FormatReader` implementation instead of mo
 
 #### 5.1.1 Basic Steps for Adding a Reader
 
-1. Add a reader file under `vla_factory/data/formats/`.
+1. Add a reader file under `vla_factory/data/reader/`.
 2. Implement `can_read(path)` using minimal metadata to identify the format.
 3. Implement `get_schema(path)` and fill `DataSchema`.
 4. Implement `get_norm_stats(path)` and fill `NormStats`.
 5. Implement `get_episode_lengths(path)` and `get_episode_ranges(path)`.
 6. Implement `read_episode(path, episode_index, codec)` and construct `Episode`, `Frame`, and `VideoRef`.
-7. Register the reader in the formats registry.
+7. Use `@ReaderRegistry.register("name")` in-tree, or publish an external
+   `vla_factory.readers` entry point.
 8. Add tests for schema, episode reading, dataset samples, and dataloader smoke coverage.
 
 #### 5.1.2 Reader Documentation Section Template
@@ -560,23 +575,34 @@ class MyCodec:
 
 A new codec should guarantee `numpy HWC uint8` output because that is the image contract between Dataset and the transform pipeline.
 
+In-tree implementations use `@CodecRegistry.register("my-codec")`; external
+packages publish a `vla_factory.codecs` entry point:
+
+```toml
+[project.entry-points."vla_factory.codecs"]
+my-codec = "my_package.codec:MyCodec"
+```
+
+`resolve_codec("auto")` explicitly selects PyAV. Any other unknown name fails
+instead of silently falling back to PyAV.
+
 ### 5.3 Adding a Transform Step
 
-To add a transform step, subclass `TransformStep` and register it with `TransformRegistry`. Built-in steps and user-defined steps use the same registry. `transforms.inputs` only depends on the `type` name and does not care whether the step comes from VLA Factory core code or a user module. This allows users to extend input processing without modifying Dataset, collate, or model adapters.
+To add a transform step, subclass `TransformStep` and register it with `TransformRegistry`. A step is not activated from a recipe list: its need must be represented by a named model/data fact, and the resolver selects it from that fact. This keeps Dataset, collate and model adapters free of preprocessing decisions while preserving one planning path.
 
 Basic steps:
 
-1. Add or extend a step under `vla_factory/assembly/transforms/`.
+1. Add or extend a step under `vla_factory/assembly/transform/`.
 2. Register the type name with `@TransformRegistry.register("your_step")`.
 3. Implement `__call__(sample)`.
 4. If the step reads a model fact or has a skip rule, implement `compile_call(cfg, ctx)` (planning time); if it needs a live object such as statistics, implement `from_call(args, ctx)` (execution time).
 5. If the step changes the model output space, implement `inverse_call(args, ctx)`. Shape-changing calls consume source/target shapes already resolved in `PlanContext`; a step must not report a second interface through an `output_*` hook.
-6. Reference it in the model profile or recipe under `model.config.transforms.inputs`.
+6. Add the resolver rule that selects it from that fact, with tests for both the required and no-op cases.
 
 A new step must still follow the transform contract:
 
 - Input and output are flat sample dicts.
-- Small parameters are written in transform config.
+- Small execution parameters are written into the resolved `TransformStepCall.args`.
 - Interface shapes are not transform parameters. Declare fixed model shapes in `ModelMetadata` (for example `VisionSlot.resolution`) or an explicit model tunable such as ACT's `input_image_size`; the resolver writes them to `ModelIOSpec` before compiling calls.
 - Large parameters, vocabularies, or fitted results are saved as artifacts and explicitly referenced in the resolved recipe.
 - Deployment does not refit transforms; it only loads configuration and artifacts from checkpoint metadata.
@@ -600,7 +626,7 @@ Dataset should not change the global output contract because one model needs CHW
 
 ### 6.3 Transform Defines the Model Input Contract
 
-Model input format belongs to the transform pipeline. Different models may declare different default transforms, and users may override them in recipes.
+Model input formatting is executed by the transform pipeline. Different models declare different immutable interface facts; the resolver derives the operations. Recipes cannot replace the step list or its order.
 
 ### 6.4 Observation Field Requirements Are Declared by Models
 
@@ -614,7 +640,7 @@ The data module only produces the unified `Observation` container, aggregates ex
 
 ### 6.6 Training Artifact Metadata Is the Deployment-Side Source of Truth
 
-Deployment should read the resolved `recipe.yaml`, `schema.json`, and `norm_stats.json` from training artifacts. It should not re-merge the current codebase's model profile, nor should it guess whether the original authoring recipe or the final resolved configuration is more trustworthy.
+Deployment should read the resolved `recipe.yaml` and `assembly.json`; the latter is the single execution source for schema, statistics, ModelIOSpec, and PipelinePlans. It should not re-merge the current codebase's model profile or reconstruct a second execution plan.
 
 ## 7. Future Evolution
 
@@ -630,20 +656,20 @@ When a single camera has multiple MP4 chunks, video files should be selected pre
 
 Formats such as HDF5, RLDS, and ROS bag should be integrated by adding Readers. Video decoding strategies may also be extended with Decord, OpenCV, image folder, remote object storage, and similar implementations.
 
-### 7.4 Manifest Persistence
+### 7.4 Sample-Window Persistence
 
-`DatasetManifest` could be serialized to reduce repeated construction cost and improve reproducibility. Once manifest persistence exists, it needs a clear consistency-check strategy against live dataset metadata.
+If constructing window lists becomes a measured bottleneck, the `SampleWindow` list could be persisted. Until then it is generated quickly and deterministically from episode lengths and the model temporal contract, without a dedicated Manifest.
 
 ### 7.5 Data Visualization
 
 Visualization support can be added on top of the intermediate representation layer to inspect Reader parsing results, sample construction logic, and data semantics before and after transforms. For example:
 
 - Browse video frames, timestamps, state, and action by episode.
-- Display observation frame, action horizon, and `action_is_pad` by `SampleLocator`.
+- Display observation frame, action horizon, and `action_is_pad` by `SampleWindow`.
 - Compare raw images with images after resize/layout/normalize.
 - Display the video frames corresponding to an action segment to debug action alignment, video frame misalignment, and padding issues.
 
-These tools should preferentially read Canonical IR, manifest, and checkpoint metadata instead of binding directly to one external data format.
+These tools should preferentially read Canonical IR, sample windows, and checkpoint metadata instead of binding directly to one external data format.
 
 ### 7.6 Data Format Conversion
 

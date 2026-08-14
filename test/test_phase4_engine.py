@@ -42,7 +42,7 @@ skip_no_lerobot = pytest.mark.skipif(
 
 def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
     """Create a dummy Observation for testing."""
-    from vla_factory.model.interfaces.observation import Observation
+    from vla_factory.model.model_interface import Observation
 
     images = {cam: torch.randn(B, 3, *image_size) for cam in cameras}
     image_masks = {cam: torch.ones(B, dtype=torch.bool) for cam in cameras}
@@ -50,22 +50,26 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
     return Observation(images=images, image_masks=image_masks, state=state)
 
 
-def _make_model_and_recipe(strategy="full", freeze_components=None, trainable_components=None):
+def _make_model_and_recipe(strategy="full", components=None):
     """Create an ACT model wrapper and matching TrainRecipe (requires lerobot)."""
-    from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
-    from vla_factory.recipe.defaults import resolve_recipe
-    from vla_factory.data.manifest import DataSchema
+    from vla_factory.recipe import (
+        FinetuningConfig,
+        ModelConfig,
+        OutputConfig,
+        TrainingConfig,
+        TrainRecipe,
+        merge_model_config,
+    )
+    from vla_factory.data.data_schema import DataSchema
     from vla_factory.model.registry import get_entry
 
-    recipe = resolve_recipe(TrainRecipe(
-        model_name="act",
-        model_config={"action_horizon": 10},
-        finetuning_strategy=strategy,
-        freeze_components=freeze_components,
-        trainable_components=trainable_components,
-        lr=1e-4,
-        total_steps=3,
-        batch_size=2,
+    recipe = merge_model_config(TrainRecipe(
+        model=ModelConfig(name="act", config={"action_horizon": 10}),
+        finetuning=FinetuningConfig(
+            strategy=strategy,
+            config={"components": components or []} if components else {},
+        ),
+        training=TrainingConfig(lr=1e-4, total_steps=3, batch_size=2),
         output=OutputConfig(output_dir=tempfile.mkdtemp()),
     ))
     schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
@@ -101,7 +105,7 @@ class TestStrategy:
         from vla_factory.training.strategies import apply_strategy
 
         model, recipe, metadata = _make_model_and_recipe(
-            strategy="freeze", freeze_components=["backbone"]
+            strategy="freeze", components=["backbone"]
         )
         apply_strategy(model, recipe, metadata)
 
@@ -125,7 +129,7 @@ class TestStrategy:
         from vla_factory.training.strategies import apply_strategy
 
         model, recipe, metadata = _make_model_and_recipe(
-            strategy="selective", trainable_components=["transformer"]
+            strategy="selective", components=["transformer"]
         )
         apply_strategy(model, recipe, metadata)
 
@@ -150,7 +154,7 @@ class TestStrategy:
         from vla_factory.training.strategies import apply_strategy
 
         model, recipe, metadata = _make_model_and_recipe(
-            strategy="freeze", freeze_components=["nonexistent_component"]
+            strategy="freeze", components=["nonexistent_component"]
         )
         with caplog.at_level(logging.WARNING):
             apply_strategy(model, recipe, metadata)
@@ -171,20 +175,26 @@ class TestTrainingArgsMapping:
 
     def test_recipe_to_training_args(self):
         """TrainRecipe fields map to correct TrainingArguments."""
-        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
-        from vla_factory.training.train import _build_training_args
+        from vla_factory.recipe import (
+            ModelConfig,
+            OutputConfig,
+            TrainingConfig,
+            TrainRecipe,
+        )
+        from vla_factory.training.trainer import build_training_args
 
         recipe = TrainRecipe(
-            model_name="act",
-            model_config={"action_horizon": 10},
-            lr=5e-5,
-            lr_backbone=1e-5,
-            batch_size=4,
-            total_steps=10000,
-            gradient_checkpointing=True,
+            model=ModelConfig(name="act", config={"action_horizon": 10}),
+            training=TrainingConfig(
+                lr=5e-5,
+                lr_backbone=1e-5,
+                batch_size=4,
+                total_steps=10000,
+                gradient_checkpointing=True,
+            ),
             output=OutputConfig(output_dir="/tmp/test_output"),
         )
-        args = _build_training_args(recipe)
+        args = build_training_args(recipe)
 
         assert args.learning_rate == 5e-5
         assert args.per_device_train_batch_size == 4
@@ -208,22 +218,25 @@ class TestCPUTrainingLoop:
         """Train ACT model for 3 steps on CPU with dummy data."""
         from torch.utils.data import Dataset
 
-        from vla_factory.training.pytorch_trainer import VLATrainer
+        from vla_factory.training.trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
-        from vla_factory.recipe.defaults import resolve_recipe
-        from vla_factory.data.manifest import DataSchema
+        from vla_factory.recipe import (
+            FinetuningConfig,
+            ModelConfig,
+            OutputConfig,
+            TrainingConfig,
+            TrainRecipe,
+            merge_model_config,
+        )
+        from vla_factory.data.data_schema import DataSchema
 
         # 1. Create model
         entry = get_entry("act")
-        recipe = resolve_recipe(TrainRecipe(
-            model_name="act",
-            model_config={"action_horizon": 10},
-            finetuning_strategy="full",
-            lr=1e-4,
-            total_steps=3,
-            batch_size=2,
+        recipe = merge_model_config(TrainRecipe(
+            model=ModelConfig(name="act", config={"action_horizon": 10}),
+            finetuning=FinetuningConfig(strategy="full"),
+            training=TrainingConfig(lr=1e-4, total_steps=3, batch_size=2),
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
         schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
@@ -246,7 +259,7 @@ class TestCPUTrainingLoop:
             obs_list = [item["observation"] for item in batch]
             actions = torch.cat([item["actions"] for item in batch], dim=0)
 
-            from vla_factory.model.interfaces.observation import Observation
+            from vla_factory.model.model_interface import Observation
             merged_obs = Observation(
                 images={k: torch.cat([o.images[k] for o in obs_list]) for k in obs_list[0].images},
                 image_masks={k: torch.cat([o.image_masks[k] for o in obs_list]) for k in obs_list[0].image_masks},
@@ -292,23 +305,28 @@ class TestCPUTrainingLoop:
         """Train with freeze strategy: backbone frozen, non-backbone trainable."""
         from torch.utils.data import Dataset
 
-        from vla_factory.training.pytorch_trainer import VLATrainer
+        from vla_factory.training.trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe.recipe import TrainRecipe, OutputConfig
-        from vla_factory.recipe.defaults import resolve_recipe
-        from vla_factory.data.manifest import DataSchema
+        from vla_factory.recipe import (
+            FinetuningConfig,
+            ModelConfig,
+            OutputConfig,
+            TrainingConfig,
+            TrainRecipe,
+            merge_model_config,
+        )
+        from vla_factory.data.data_schema import DataSchema
         from transformers import TrainingArguments
 
         entry = get_entry("act")
-        recipe = resolve_recipe(TrainRecipe(
-            model_name="act",
-            model_config={"action_horizon": 10},
-            finetuning_strategy="freeze",
-            freeze_components=["backbone"],
-            lr=1e-4,
-            total_steps=2,
-            batch_size=2,
+        recipe = merge_model_config(TrainRecipe(
+            model=ModelConfig(name="act", config={"action_horizon": 10}),
+            finetuning=FinetuningConfig(
+                strategy="freeze",
+                config={"components": ["backbone"]},
+            ),
+            training=TrainingConfig(lr=1e-4, total_steps=2, batch_size=2),
             output=OutputConfig(output_dir=tempfile.mkdtemp()),
         ))
         schema = make_schema(state_dim=6, action_dim=6, cameras=("front",), image_sizes={"front": (224, 224)})
@@ -326,7 +344,7 @@ class TestCPUTrainingLoop:
                 }
 
         def dummy_collate(batch):
-            from vla_factory.model.interfaces.observation import Observation
+            from vla_factory.model.model_interface import Observation
             obs_list = [item["observation"] for item in batch]
             merged_obs = Observation(
                 images={k: torch.cat([o.images[k] for o in obs_list]) for k in obs_list[0].images},
@@ -374,7 +392,7 @@ class TestObservationTo:
 
     def test_to_with_token_masks(self):
         """Observation.to() moves all fields including token_ar_mask."""
-        from vla_factory.model.interfaces.observation import Observation
+        from vla_factory.model.model_interface import Observation
 
         obs = Observation(
             images={"front": torch.randn(2, 3, 224, 224)},

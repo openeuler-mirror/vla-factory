@@ -8,9 +8,9 @@
 运行模型前向，再把模型输出的归一化 action chunk 还原成平台可执行的动作命令。
 
 部署模块不重新扫描训练数据集，也不重新合并当前代码里的 model profile。它以
-训练开始时写出的 `inference_metadata/{recipe.yaml, schema.json, norm_stats.json}`
-为唯一事实来源，复用[数据模块](data-module.cn.md#45-部署侧复用标准)在训练阶段
-建立的 schema / norm stats / transform 语义。因此部署模块的核心职责不是“把
+训练开始时写出的 `inference_metadata/{assembly.json, recipe.yaml}` 为唯一事实
+来源；`assembly.json` 已包含 schema、norm stats、IO spec 和 transform plans。
+因此部署模块的核心职责不是“把
 observation 喂给模型”这么窄，而是**在不重跑数据管线的前提下，复现训练时的数据
 标准，并把它安全地对接到具体运行平台**。
 
@@ -97,7 +97,7 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
 
 | 阶段 | 输入 | 处理 | 输出 |
 |---|---|---|---|
-| 产物加载 | checkpoint path | `InferenceEngine` 读取 recipe / schema / norm stats，重建模型并加载权重 | 就绪的 `InferenceEngine` |
+| 产物加载 | checkpoint path | `InferenceEngine` 读取 assembly / recipe，重建模型并加载权重 | 就绪的 `InferenceEngine` |
 | 观测适配 | platform observation | platform adapter 转换线协议 / 具身字段 | `ObsDict` |
 | 前处理 | `ObsDict` | 复用训练侧 preprocessor（normalize / resize / layout / tokenize） | `Observation` |
 | 模型推理 | `Observation` | `model.predict_actions(obs, num_steps=...)` | normalized action chunk |
@@ -131,9 +131,8 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
 
 | 元数据文件 | 来源 | 部署用途 |
 |---|---|---|
-| `recipe.yaml` | 训练时的 resolved recipe | 模型名、动作规格、transform inputs、transform imports |
-| `schema.json` | `DataSchema` 序列化 | 相机集合、state/action 维度、state/action key 顺序 |
-| `norm_stats.json` | `NormStats` 序列化 | 重建 preprocessor / postprocessor 的归一化统计量 |
+| `assembly.json` | 训练时的 `ResolvedAssembly` | schema、norm stats、ModelIOSpec 与三条 pipeline plan 的执行契约 |
+| `recipe.yaml` | 训练时的 resolved recipe | 模型名、模型配置和运行参数 |
 
 核心原则与数据模块一致：部署必须使用训练时保存的**快照**；禁止重新解析训练
 数据集，禁止重新合并当前代码里的 model profile（详见
@@ -172,7 +171,7 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
 | 对象 | 作用 | 边界 |
 |---|---|---|
 | `ZmqPolicyClient` / `ZmqPolicyClientConfig` | LeKiwi 风格 ZMQ PUSH/PULL 纯 transport 与其配置（`transports/zmq.py`）。 | 只搬运 observation / action JSON；不选 adapter、不驱动推理。 |
-| `PolicyRunner` | 客户端形态的部署循环（`policy_runtime.py`）：驱动注入的 client transport，组合 obs/action adapter + `PolicyExecutor`，处理 reset 控制消息与限频。 | 编排层，不做序列化与分帧；transport 按 `PolicyClientTransport` 协议注入，不感知具体线协议。 |
+| `PolicyRunner` | 客户端形态的部署循环（`deploy.py`）：驱动注入的 client transport，组合 obs/action adapter + `PolicyExecutor`，处理 reset 控制消息与限频。 | 编排层，不做序列化与分帧；transport 按 `transports/base.py` 的 `PolicyClientTransport` 协议注入。 |
 | `LengthPrefixedJsonRpcServer` | 4 字节长度前缀 + numpy-aware JSON 的 RPC 服务端。 | 只解 `{cmd, obs}`、分发方法、编码 `{res}` 或错误。 |
 | `RemotePolicyModel` | RPC handler：把 engine 暴露成 `reset_model` / `update_obs` / `get_action`。 | 编排 reset/缓存/预测，不做序列化。 |
 
@@ -213,8 +212,8 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
 
 **事实来源**
 
-- 配置必须且只能来自 checkpoint 的 `inference_metadata/`（resolved recipe、
-  schema、norm stats）。缺 recipe 或 schema 必须失败。
+- 配置必须且只能来自 checkpoint 的 `inference_metadata/`（resolved assembly
+  与 recipe）。缺 assembly 或 recipe 必须失败。
 - 必须能在训练数据集与原始预训练权重都不可达的机器上完成构造：checkpoint 已含
   完整模型状态与数据语义快照，可移植性是硬约束。
 
@@ -229,19 +228,18 @@ checkpoint 中的训练产物 metadata，向仿真器与真机平台提供统一
   （`camera_keys` / `state_keys` / `action_keys` / `execution_action_dim` /
   `model_output_dim` / `schema` / `recipe`）对外暴露，供上层 adapter 构造使用。
 - 动作宽度有两个，不能混用：`model_output_dim` 是模型自身输出的宽度（pi0 = 32），
-  `execution_action_dim` 是 `model_to_robot` 执行完之后离开引擎的宽度（pi0 = 8）。平台动作
+  `execution_action_dim` 是 `model_to_robot` 恢复后的 DataSchema action 宽度（pi0 = 8）。平台动作
   适配器按后者对齐 motor key。
 
 **模型与 transform**
 
-- 模型必须经 registry 工厂按 recipe + schema 构建；权重加载必须 strict——参数
+- 模型必须经 registry 工厂按 recipe + assembly 构建；权重加载必须 strict——参数
   多出、缺失或形状不符都是错误，禁止部分加载。
 - preprocessor / postprocessor 必须且只能从 assembly 中已解析的
-  `data_to_model` / `model_to_robot` plan 构造；缺失或 unresolved 必须失败。recipe 声明
-  的自定义 transform 模块必须先于 pipeline 构建完成导入，与训练侧一致（见
-  [数据模块 §5.3](data-module.cn.md#53-新增变换步骤)）。
-- flow-matching / diffusion 头的推理步数必须来自 `ModelMetadata`；禁止在部署
-  侧硬编码。
+  `robot_to_model` / `model_to_robot` plan 构造；前者与训练使用的 `data_to_model`
+  值相等。缺失 plan 必须失败；部署侧不接受 transform step list 或改写。
+- flow-matching / diffusion 头的推理步数来自保存的 resolved recipe 中的模型
+  配置；禁止在部署侧硬编码另一份默认值。
 
 构造成功后，engine 对外只有 `predict(obs) -> ActionChunk` 与 `reset()` 两个
 行为入口。
@@ -277,6 +275,8 @@ ObsDict
 
 必须保证：
 
+- PlatformAdapter 输出必须满足 checkpoint DataSchema；缺少必需相机/state
+  或 state 宽度不符时，必须在 preprocessor 之前失败。
 - 输出反变换必须来自 checkpoint 里规划好的 `model_to_robot` pipeline——它由
   解析器按各 step 自己的 `inverse_call()` 生成（见
   [数据模块 §4.3](data-module.cn.md#43-模型变换流水线设计)）；禁止在部署侧
@@ -417,7 +417,7 @@ observation adapter 是可替换的策略对象；`RemotePolicyModel` 与 `Polic
 - 硬编码任何模型方法名——`{cmd}` 决定调哪个 handler 方法。
 - 做编排。adapter 选择、推理驱动、episode reset、限频都不属于传输层：服务端
   形态必须放在 `RemotePolicyModel`（handler），客户端形态必须放在
-  `PolicyRunner`。两者同住 `deploy/policy_runtime.py`，与具体 transport 解耦。
+  `PolicyRunner`。两者同住 `inference/deploy.py`，与具体 transport 解耦。
 
 ### 5.2 ZMQ transport 与 runner（仿真器 / lerobot host）
 
@@ -543,8 +543,8 @@ RoboTwin (SAPIEN 进程，零模型依赖)          VLA Factory (模型进程)
    transform。
 5. 若平台需要逐电机命令，再实现一个 action adapter（参照
    `LerobotHostActionAdapter`：按 `action_keys` 还原，只接受单步向量）。
-6. 在 `platforms/__init__.py` 导出，在 `cli.py` 的 `--platform` choices 与分支
-   里接入。
+6. 在 `deploy.py` 中装配，在 `cli.py` 的 `--platform` choices 中声明；不要从
+   `platforms/__init__.py` eager import 可选平台依赖。
 7. 增加 adapter 单元测试（参照 `test/test_robotwin_server.py`）。
 
 ### 6.2 新增 transport
@@ -557,7 +557,8 @@ adapter、runner 或 engine。
    `LengthPrefixedJsonRpcServer`（RPC 服务端）。
 2. transport 只搬字节 / 消息，不解释 observation 语义；编排（adapter 装配、
    推理驱动、reset、限频）放进 `PolicyRunner` 或 RPC handler。
-3. 在 `transports/__init__.py` 导出，在 CLI 中接入对应平台。
+3. 客户端 transport 实现 `transports/base.py` 的协议，并在 `deploy.py` 中装配；
+   不要从 `transports/__init__.py` eager import 可选传输依赖。
 
 ### 6.3 新增外置 connector
 
@@ -575,10 +576,10 @@ adapter、runner 或 engine。
 
 ### 7.1 部署以 checkpoint metadata 为事实来源
 
-`InferenceEngine` 必须只读 checkpoint 中的 `recipe.yaml` / `schema.json` /
-`norm_stats.json`；禁止重新解析训练数据集、禁止重新合并当前代码的 model
+`InferenceEngine` 必须只读 checkpoint 中的 `recipe.yaml` 与 `assembly.json`；
+禁止重新解析训练数据集、禁止重新合并当前代码的 model
 profile。相机集合、state/action 维度、key 顺序、归一化统计量都必须来自这份
-快照。
+assembly 快照。
 
 ### 7.2 Adapter 不做模型预处理
 

@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 import cv2  # noqa: E402 — after skip guard; cv2 is a core dep
 
 from vla_factory.data.codec import resolve_codec  # noqa: E402
-from vla_factory.data.formats import get_reader, RoboTwinReader  # noqa: E402
+from vla_factory.data.reader import get_reader, RoboTwinReader  # noqa: E402
 
 CAMERAS = ("head_camera", "left_camera", "right_camera")
 ARM_DIM = 6

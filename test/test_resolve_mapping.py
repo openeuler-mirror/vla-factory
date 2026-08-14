@@ -28,13 +28,15 @@ if str(_project_root) not in sys.path:
 
 from helpers import make_schema
 
-from vla_factory.assembly.resolver import (
+from vla_factory.assembly import MappingSource
+from vla_factory.assembly.resolve import (
     CAMERA_MAPPING_INVALID,
     ResolutionError,
-    resolve_assembly,
+    resolve_from_facts as resolve_assembly,
 )
-from vla_factory.data.manifest import ActionDim, DataSchema, FeatureStats, NormStats
-from vla_factory.model.interfaces.model import ModelMetadata, VisionSlot
+from vla_factory.data.data_schema import ActionDim, DataSchema, FeatureStats, NormStats
+from vla_factory.model.model_interface import ModelMetadata, VisionSlot
+from vla_factory.recipe import AssemblyOverrides
 
 DATASET_PATH = _project_root / "test/data" / "lerobot_train_data_3_episodes"
 
@@ -58,7 +60,7 @@ class TestGoldenRealData:
     def schema():
         if not DATASET_PATH.exists():
             pytest.skip("test dataset not found")
-        from vla_factory.data.formats.lerobot_v3 import LeRobotV3Reader
+        from vla_factory.data.reader.lerobot_v3 import LeRobotV3Reader
         return LeRobotV3Reader().get_schema(DATASET_PATH)
 
     @staticmethod
@@ -66,28 +68,34 @@ class TestGoldenRealData:
     def norm_stats():
         if not DATASET_PATH.exists():
             pytest.skip("test dataset not found")
-        from vla_factory.data.formats.lerobot_v3 import LeRobotV3Reader
+        from vla_factory.data.reader.lerobot_v3 import LeRobotV3Reader
         return LeRobotV3Reader().get_norm_stats(DATASET_PATH)
 
     def test_act_mappings_and_plans(self, schema, norm_stats):
         """ACT declares no vision slots and no internal width: cameras map
         one-to-one onto the dataset's, nothing pads, and the declared
-        ``pad_dimensions`` step is dropped because 8 → 8 is a no-op."""
+        no width reconciliation is needed because 8 → 8 is a no-op."""
         a = resolve_assembly(schema, norm_stats, _metadata("act"))
 
         assert a.camera_mapping.entries == (
-            {"model_slot": "front", "data_source": "front", "source": "inferred"},
-            {"model_slot": "wrist", "data_source": "wrist", "source": "inferred"},
+            {
+                "model_slot": "front", "data_source": "front",
+                "source": MappingSource.INFERRED,
+            },
+            {
+                "model_slot": "wrist", "data_source": "wrist",
+                "source": MappingSource.INFERRED,
+            },
         )
         assert len(a.state_mapping.entries) == 6
         assert a.state_mapping.entries[0] == {
             "model_index": 0, "data_dim_index": 0,
             "data_name": "shoulder_pan.pos",
+            "source": MappingSource.INFERRED,
         }
         assert len(a.action_mapping.entries) == 8
         assert all("padded" not in e for e in a.action_mapping.entries)
-        # requires_prompt=False → nothing to map, and that is a resolved answer.
-        assert a.language_mapping.resolved is True
+        # requires_prompt=False → nothing to map.
         assert a.language_mapping.entries == ()
 
         assert _calls(a.data_to_model) == [
@@ -105,16 +113,26 @@ class TestGoldenRealData:
         """``examples/pi0_lora.yaml`` maps two of pi0's three slots and
         documents the third as intentionally unmapped. The override must
         therefore be complete: inferring ``wrist`` into ``right_wrist_0_rgb``
-        would claim a camera ``entries/pi0.py`` never passes (it hands unlisted
+        would claim a camera ``adapters/openpi.py`` never passes (it hands unlisted
         roles a -1 placeholder + zero mask)."""
-        overrides = {"camera_mapping": {"base_0_rgb": "front",
-                                        "left_wrist_0_rgb": "wrist"}}
+        overrides = AssemblyOverrides(camera_mapping={
+            "base_0_rgb": "front", "left_wrist_0_rgb": "wrist",
+        })
         a = resolve_assembly(schema, norm_stats, _metadata("pi0"), overrides=overrides)
 
         assert a.camera_mapping.entries == (
-            {"model_slot": "base_0_rgb", "data_source": "front", "source": "override"},
-            {"model_slot": "left_wrist_0_rgb", "data_source": "wrist", "source": "override"},
-            {"model_slot": "right_wrist_0_rgb", "data_source": None, "source": "padding"},
+            {
+                "model_slot": "base_0_rgb", "data_source": "front",
+                "source": MappingSource.OVERRIDE,
+            },
+            {
+                "model_slot": "left_wrist_0_rgb", "data_source": "wrist",
+                "source": MappingSource.OVERRIDE,
+            },
+            {
+                "model_slot": "right_wrist_0_rgb", "data_source": None,
+                "source": MappingSource.INFERRED,
+            },
         )
 
     def test_pi0_pads_both_vectors_to_32(self, schema, norm_stats):
@@ -147,7 +165,7 @@ class TestGoldenRealData:
             ("unnormalize_action", {"stats_ref": "norm_stats"}),
         ]
 
-    def test_pi05_plans_the_quantile_inverse_and_keeps_declared_order(
+    def test_pi05_plans_quantile_inverse_and_state_tokenization_dependency(
         self, schema, norm_stats,
     ):
         """pi05 differs from pi0 in two ways the plan must carry: quantile
@@ -174,8 +192,7 @@ class TestGoldenRealData:
             "model_field": "tokenized_prompt",
             "data_field": "task",
             "template": "{task}",
-            "fallback": None,
-            "source": "inferred",
+            "source": MappingSource.INFERRED,
         },)
 
     def test_resolution_is_deterministic(self, schema, norm_stats):
@@ -199,26 +216,25 @@ class TestPlanIsExecutable:
 
     @staticmethod
     def _assembly_for(recipe_path: str):
-        from vla_factory.assembly.from_recipe import resolve_from_recipe
-        from vla_factory.recipe.defaults import resolve_recipe
+        from vla_factory.assembly import resolve_assembly
+        from vla_factory.recipe.model_config import merge_model_config
         from vla_factory.recipe.parser import parse_recipe
 
-        recipe = resolve_recipe(parse_recipe(str(_project_root / recipe_path)))
+        recipe = merge_model_config(parse_recipe(str(_project_root / recipe_path)))
         recipe.data.path = str(DATASET_PATH)
-        return recipe, resolve_from_recipe(recipe)
+        return recipe, resolve_assembly(recipe)
 
     @pytest.mark.parametrize("recipe_path", ["examples/act_lekiwi.yaml",
                                              "examples/pi0_lora.yaml"])
     def test_planned_calls_build_the_steps_they_describe(self, recipe_path):
         if not DATASET_PATH.exists():
             pytest.skip("test dataset not found")
-        from vla_factory.assembly.transforms import (
+        from vla_factory.assembly.transform import (
             TransformContext, TransformRegistry, build_pipeline,
         )
 
         _, assembly = self._assembly_for(recipe_path)
         plan = assembly.data_to_model
-        assert plan.resolved is True
 
         pipeline = build_pipeline(
             plan, TransformContext(norm_stats=assembly.norm_stats),
@@ -242,7 +258,7 @@ class TestPlanIsExecutable:
         """``model_to_robot`` keeps only the steps that declared an inverse."""
         if not DATASET_PATH.exists():
             pytest.skip("test dataset not found")
-        from vla_factory.assembly.transforms import TransformContext, build_pipeline
+        from vla_factory.assembly.transform import TransformContext, build_pipeline
 
         _, assembly = self._assembly_for(recipe_path)
         forward = [c.type for c in assembly.data_to_model.calls]
@@ -288,7 +304,7 @@ def test_camera_override_naming_an_unknown_slot_fails():
     with pytest.raises(ResolutionError) as exc:
         resolve_assembly(
             _schema_with_cameras(), _usable_stats(), _pi0_like(),
-            overrides={"camera_mapping": {"nose_cam": "front"}},
+            overrides=AssemblyOverrides(camera_mapping={"nose_cam": "front"}),
         )
     err = exc.value.to_dict()
     assert err["code"] == CAMERA_MAPPING_INVALID
@@ -303,7 +319,7 @@ def test_camera_override_naming_an_unknown_camera_fails():
     with pytest.raises(ResolutionError) as exc:
         resolve_assembly(
             _schema_with_cameras(), _usable_stats(), _pi0_like(),
-            overrides={"camera_mapping": {"base_0_rgb": "frotn"}},
+            overrides=AssemblyOverrides(camera_mapping={"base_0_rgb": "frotn"}),
         )
     err = exc.value.to_dict()
     assert err["code"] == CAMERA_MAPPING_INVALID
@@ -312,15 +328,11 @@ def test_camera_override_naming_an_unknown_camera_fails():
 
 
 def test_model_io_width_generates_missing_padding_call():
-    """The resolved interface drives reconciliation even when a legacy step
-    template omitted its padding placeholder."""
+    """The resolved interface directly drives width reconciliation."""
     metadata = ModelMetadata(
         name="stub", action_dim=32, action_horizon=50,
         dim_policy="padded_to_max", dim_policy_max=32,
         vector_normalization="mean_std", requires_prompt=False,
-        params={"transforms": {"inputs": [
-            {"type": "normalize_vector", "fields": ["actions"]},
-        ]}},
     )
     assembly = resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
     assert assembly.model_io_spec.action_dim == 32
@@ -329,16 +341,14 @@ def test_model_io_width_generates_missing_padding_call():
     )
 
 
-def test_unregistered_step_type_fails_loudly():
-    """There is no out-of-tree transform registration, so an unknown type is a
-    typo. Passing it through used to produce a ``model_to_robot`` plan that
-    silently dropped the step's inverse while still claiming to be complete."""
+def test_transform_declaration_in_metadata_params_is_rejected():
+    """A model entry cannot reopen the removed per-run transform surface."""
     metadata = ModelMetadata(
         name="stub", action_horizon=1, requires_prompt=False,
         vector_normalization="mean_std",
-        params={"transforms": {"inputs": [{"type": "pad_dimensons"}]}},
+        params={"transforms": {"inputs": []}},
     )
-    with pytest.raises(KeyError, match="not registered"):
+    with pytest.raises(ValueError, match=r"params\['transforms'\]"):
         resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
 
 
@@ -347,11 +357,11 @@ def test_a_planned_inverse_is_always_buildable():
     the args it hands over — the plan is the only description of the reverse
     path now, so an inverse that cannot be built is a silently missing step in
     the deployed postprocessor."""
-    from vla_factory.assembly.transforms import (
+    from vla_factory.assembly.transform import (
         TransformContext, TransformRegistry, build_pipeline,
     )
-    from vla_factory.assembly.transforms.base import PlanContext, TransformStep
-    from vla_factory.assembly.resolver.types import (
+    from vla_factory.assembly.transform.base import PlanContext, TransformStep
+    from vla_factory.assembly.transform.plan import (
         TransformPipelinePlan, TransformStepCall,
     )
 
@@ -377,7 +387,7 @@ def test_a_planned_inverse_is_always_buildable():
         assert (name, inverse_args) == ("unpad_action", {"target_dim": 7})
         pipeline = build_pipeline(
             TransformPipelinePlan(
-                calls=(TransformStepCall(type=name, args=inverse_args),), resolved=True,
+                calls=(TransformStepCall(type=name, args=inverse_args),),
             ),
             TransformContext(),
         )
@@ -386,22 +396,17 @@ def test_a_planned_inverse_is_always_buildable():
         del TransformRegistry._steps["_probe_inverse"]
 
 
-def test_each_pad_call_is_planned_from_its_own_config():
-    """Two pad steps with different ``fields`` must not both take the first
-    one's config — the planner reads the step it is given, never looks one up."""
+def test_unequal_vector_targets_produce_independent_pad_calls():
+    """State and action targets are grouped only when their widths agree."""
     metadata = ModelMetadata(
-        name="stub", action_dim=32, action_horizon=50,
+        name="stub", action_dim=16, action_horizon=50,
         dim_policy="padded_to_max", dim_policy_max=32,
-        vector_normalization="mean_std", requires_prompt=False,
-        params={"transforms": {"inputs": [
-            {"type": "pad_dimensions", "fields": ["state"]},
-            {"type": "pad_dimensions", "fields": ["actions"]},
-        ]}},
+        requires_prompt=False,
     )
     a = resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
     assert _calls(a.data_to_model) == [
         ("pad_dimensions", {"target_dim": 32, "fields": ["state"]}),
-        ("pad_dimensions", {"target_dim": 32, "fields": ["actions"]}),
+        ("pad_dimensions", {"target_dim": 16, "fields": ["actions"]}),
     ]
     # Only the actions half has an inverse on the model_to_robot path.
     assert _calls(a.model_to_robot) == [("unpad_action", {"target_dim": 6})]
@@ -415,11 +420,19 @@ def test_a_capping_dim_policy_without_a_cap_fails():
         name="stub", action_horizon=50, requires_prompt=False,
         dim_policy="padded_to_max",          # ... but no dim_policy_max
         vector_normalization="mean_std",
-        params={"transforms": {"inputs": [
-            {"type": "normalize_vector", "fields": ["state", "actions"]},
-        ]}},
     )
-    with pytest.raises(ValueError, match="no dim_policy_max"):
+    with pytest.raises(ValueError, match="positive dim_policy_max"):
+        resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
+
+
+@pytest.mark.parametrize("dim_policy", ["fixed", "padded_to_max"])
+@pytest.mark.parametrize("limit", [0, -1])
+def test_bounded_dim_policy_requires_a_positive_limit(dim_policy, limit):
+    metadata = ModelMetadata(
+        name="stub", dim_policy=dim_policy, dim_policy_max=limit,
+        action_horizon=1, requires_prompt=False,
+    )
+    with pytest.raises(ValueError, match="positive dim_policy_max"):
         resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
 
 
@@ -435,7 +448,6 @@ def test_per_slot_image_sizes_survive_when_the_dataset_already_matches():
             VisionSlot(name="wrist", semantic_accepts=("wrist",),
                        resolution=(256, 256)),
         ),
-        params={"transforms": {"inputs": [{"type": "image_to_float"}]}},
     )
     schema = make_schema(
         state_dim=6, action_dim=6, cameras=("front", "wrist"),
@@ -443,7 +455,9 @@ def test_per_slot_image_sizes_survive_when_the_dataset_already_matches():
     )
     assembly = resolve_assembly(
         schema, _usable_stats(), metadata,
-        overrides={"camera_mapping": {"head": "front", "wrist": "wrist"}},
+        overrides=AssemblyOverrides(
+            camera_mapping={"head": "front", "wrist": "wrist"},
+        ),
     )
     assert assembly.model_io_spec.camera_shapes == {
         "front": (224, 224), "wrist": (256, 256),
@@ -451,27 +465,32 @@ def test_per_slot_image_sizes_survive_when_the_dataset_already_matches():
     assert "resize_images" not in [c.type for c in assembly.data_to_model.calls]
 
 
-def test_planner_names_only_the_two_reconciliation_steps():
-    """Adding a transform must not mean editing the resolver.
-
-    The planner is allowed to name exactly the two steps it reconciles
-    interfaces with — padding (auto-appended, because zero-fill has no options)
-    and resizing (required to be declared, because a target size cannot choose
-    stretch vs letterbox). A third name means a step's own rule has been copied
-    into the planner, which is how the two used to drift apart.
-    """
-    from vla_factory.assembly.resolver import pipeline_planner
-    from vla_factory.assembly.transforms import TransformRegistry
-
-    source = Path(pipeline_planner.__file__).read_text(encoding="utf-8")
-    code = "\n".join(
-        line.split("#")[0] for line in source.split("\n")
-        if not line.strip().startswith("#")
+def test_planner_derives_operations_from_interface_facts():
+    metadata = ModelMetadata(
+        name="stub", action_horizon=1, requires_prompt=False,
+        image_input_range=(0.0, 1.0), image_layout="CHW",
+        vector_normalization="mean_std",
     )
-    named = {name for name in TransformRegistry.names() if f'"{name}"' in code}
-    assert named <= {"pad_dimensions", "resize_images"}, (
-        f"planner names transform steps beyond the reconciliation pair: {named}"
+    assembly = resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
+    assert [call.type for call in assembly.data_to_model.calls] == [
+        "image_to_float", "image_layout", "normalize_vector",
+    ]
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("image_layout", "NHWC", "unsupported image_layout"),
+        ("image_resize_mode", "crop", "unsupported image_resize_mode"),
+    ],
+)
+def test_invalid_pipeline_fact_fails_during_resolution(field, value, message):
+    metadata = ModelMetadata(
+        name="stub", action_horizon=1, requires_prompt=False,
+        **{field: value},
     )
+    with pytest.raises(ValueError, match=message):
+        resolve_assembly(_schema_with_cameras(), _usable_stats(), metadata)
 
 
 def test_model_input_size_rejects_non_positive_dimensions():
@@ -482,7 +501,6 @@ def test_model_input_size_rejects_non_positive_dimensions():
         params={
             "action_horizon": 50,
             "input_image_size": [0, 224],
-            "transforms": {"inputs": [{"type": "resize_images"}]},
         },
     )
     with pytest.raises(ValueError, match="must be positive"):
@@ -495,13 +513,12 @@ def test_model_image_size_without_resize_policy_fails():
         name="stub", action_horizon=1, requires_prompt=False,
         image_input_range=(0.0, 1.0),
         vision_slots=(VisionSlot(name="front", resolution=(224, 224)),),
-        params={"transforms": {"inputs": [{"type": "image_to_float"}]}},
     )
     schema = make_schema(
         state_dim=6, action_dim=6, cameras=("front",),
         image_sizes={"front": (480, 640)},
     )
-    with pytest.raises(ValueError, match="no resize_images policy"):
+    with pytest.raises(ValueError, match="image_resize_mode"):
         resolve_assembly(schema, _usable_stats(), metadata)
 
 
@@ -511,41 +528,9 @@ def test_unimplementable_normalization_fails_with_a_message_not_a_keyerror():
     metadata = ModelMetadata(
         name="stub", action_horizon=1, requires_prompt=False,
         vector_normalization="min_max",
-        params={"transforms": {"inputs": [
-            {"type": "normalize_vector", "fields": ["state"]},
-        ]}},
     )
     stats = FeatureStats(min=[0.0] * 6, max=[1.0] * 6)
     with pytest.raises(ValueError, match="no NormalizeVector method"):
         resolve_assembly(
             _schema_with_cameras(), NormStats(state=stats, action=stats), metadata,
         )
-
-
-def test_joint_mapping_embeds_action_names_into_the_robot():
-    """Needs a schema whose action dims carry real joint names — the shipped
-    fixture names its action dims ``dim_0``..``dim_7`` (phase-2 finding), so a
-    constructed schema is the only way to reach this branch."""
-    from vla_factory.robot import get_robot_profile
-
-    robot = get_robot_profile("lekiwi")
-    names = ["shoulder_pan", "shoulder_lift", "elbow_flex"]
-    schema = DataSchema(
-        source_format="test",
-        action_dims=tuple(
-            ActionDim(name=f"{n}.pos", source_field="action", mode="joint_pos")
-            for n in names
-        ),
-    )
-    stats = FeatureStats(mean=[0.0] * 3, std=[1.0] * 3)
-    assembly = resolve_assembly(
-        schema, NormStats(state=stats, action=stats),
-        ModelMetadata(name="stub", action_horizon=50, requires_prompt=False,
-                      vector_normalization="mean_std"),
-        robot_profile=robot,
-    )
-    assert assembly.joint_mapping.resolved is True
-    assert assembly.joint_mapping.entries == tuple(
-        {"canonical_index": i, "data_name": f"{n}.pos", "robot_joint_name": n}
-        for i, n in enumerate(names)
-    )

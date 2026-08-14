@@ -12,10 +12,11 @@ claim a composition the resolver would never produce.
 
 from __future__ import annotations
 
-from vla_factory.assembly.resolver import ResolvedAssembly, resolve_assembly
-from vla_factory.data.manifest import (
+from vla_factory.assembly import ResolvedAssembly, resolve_from_facts as resolve_assembly
+from vla_factory.data.data_schema import (
     ActionDim, CameraEntry, DataSchema, FeatureStats, NormStats, StateDim,
 )
+from vla_factory.recipe import AssemblyOverrides
 
 
 def make_schema(
@@ -91,13 +92,13 @@ def make_assembly(
     *,
     recipe=None,
     norm_stats: NormStats | None = None,
-    overrides: dict | None = None,
+    overrides: AssemblyOverrides | None = None,
 ) -> ResolvedAssembly:
     """Resolve a real assembly for a registered model against *schema*.
 
     The model's declared tunables are taken from the recipe when one is given
-    (so a per-run override of transforms / action_horizon is honoured), else
-    from the declaration itself.
+    (so a per-run action_horizon override is honoured), else from the
+    declaration itself. Transform operations always come from model facts.
     """
     from vla_factory.model.registry import list_entries
 
@@ -111,6 +112,6 @@ def make_assembly(
         norm_stats=norm_stats,
         metadata=metadata,
         overrides=overrides or None,
-        model_config=getattr(recipe, "model_config", None),
-        model_path=getattr(recipe, "model_path", None),
+        model_config=recipe.model.config if recipe is not None else None,
+        model_path=recipe.model.path if recipe is not None else None,
     )

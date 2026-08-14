@@ -6,8 +6,8 @@ guards keep the boundary honest, and each has a real bug behind it:
 
 * an undeclared ``model.config`` key is a typo or a stale knob — pi0 used to drop
   it silently because its factory reads keys one by one;
-* a declared key nothing reads is a silent no-op — both ``num_inference_steps``
-  and ``tokenizer_max_length`` shipped that way;
+* a declared key nothing reads is a silent no-op — ``num_inference_steps`` once
+  shipped that way;
 * a fact set per run wins silently and corrupts the run — a recipe could put pi0's
   images in ``[0, 1]`` while SigLIP expects ``[-1, 1]``.
 
@@ -25,13 +25,13 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from vla_factory.assembly.transforms.images import ImageNormalize, ImageToFloat
-from vla_factory.assembly.transforms.normalize import NormalizeVector
-from vla_factory.assembly.transforms.pad_dimensions import PadDimensions
-from vla_factory.assembly.transforms.base import PlanContext
-from vla_factory.data.manifest import FeatureStats, NormStats
-from vla_factory.model.interfaces.model import ModelMetadata
-from vla_factory.recipe.defaults import model_params, resolve_recipe
+from vla_factory.assembly.transform.images import ImageNormalize, ImageToFloat
+from vla_factory.assembly.transform.normalize import NormalizeVector
+from vla_factory.assembly.transform.pad_dimensions import PadDimensions
+from vla_factory.assembly.transform.base import PlanContext
+from vla_factory.data.data_schema import FeatureStats, NormStats
+from vla_factory.model.model_interface import ModelMetadata
+from vla_factory.recipe.model_config import merge_model_config, model_params
 from vla_factory.recipe.parser import parse_recipe_from_string
 from vla_factory.utils.tracked_config import TrackedConfig
 
@@ -45,17 +45,17 @@ class TestDeclaredKeyAllowList(unittest.TestCase):
         recipe = parse_recipe_from_string(
             "model:\n  name: act\n  config:\n    dim_model: 1024\n"
         )
-        resolved = resolve_recipe(recipe)
-        self.assertEqual(resolved.model_config["dim_model"], 1024)
+        resolved = merge_model_config(recipe)
+        self.assertEqual(resolved.model.config["dim_model"], 1024)
         # Untouched declarations still come through.
-        self.assertEqual(resolved.model_config["n_decoder_layers"], 1)
+        self.assertEqual(resolved.model.config["n_decoder_layers"], 1)
 
     def test_undeclared_key_is_rejected_with_candidates(self):
         recipe = parse_recipe_from_string(
             "model:\n  name: act\n  config:\n    dim_modell: 1024\n"
         )
         with self.assertRaises(ValueError) as ctx:
-            resolve_recipe(recipe)
+            merge_model_config(recipe)
         message = str(ctx.exception)
         self.assertIn("dim_modell", message)
         # The near-miss is offered rather than leaving the user to guess.
@@ -66,7 +66,7 @@ class TestDeclaredKeyAllowList(unittest.TestCase):
         recipe = parse_recipe_from_string(
             "model:\n  name: not_a_registered_model\n  config:\n    whatever: 1\n"
         )
-        self.assertEqual(resolve_recipe(recipe).model_config["whatever"], 1)
+        self.assertEqual(merge_model_config(recipe).model.config["whatever"], 1)
 
 
 # ── Gate 2: a declared key nothing reads is an error ──────────────────
@@ -105,7 +105,7 @@ class TestUnreadKeyGuard(unittest.TestCase):
 
     def test_framework_consumed_keys_are_not_false_alarms(self):
         """Keys read outside the factory (engine, loader) are pre-marked."""
-        cfg = TrackedConfig({"transforms": {}, "num_inference_steps": 10})
+        cfg = TrackedConfig({"num_inference_steps": 10})
         cfg.assert_all_consumed("stub")  # does not raise
 
     def test_pop_counts_as_a_read(self):
@@ -182,15 +182,15 @@ class TestFactOverrideRejected(unittest.TestCase):
 class TestInferenceStepsPriority(unittest.TestCase):
 
     def test_declaration_supplies_the_default(self):
-        recipe = resolve_recipe(parse_recipe_from_string("model:\n  name: pi0\n"))
-        self.assertEqual(recipe.model_config["num_inference_steps"], 10)
+        recipe = merge_model_config(parse_recipe_from_string("model:\n  name: pi0\n"))
+        self.assertEqual(recipe.model.config["num_inference_steps"], 10)
         self.assertEqual(model_params("act")["num_inference_steps"], 1)
 
     def test_recipe_overrides_the_default(self):
-        recipe = resolve_recipe(parse_recipe_from_string(
+        recipe = merge_model_config(parse_recipe_from_string(
             "model:\n  name: pi0\n  config:\n    num_inference_steps: 2\n"
         ))
-        self.assertEqual(recipe.model_config["num_inference_steps"], 2)
+        self.assertEqual(recipe.model.config["num_inference_steps"], 2)
 
 
 # ── Visibility: "what may I change, and did it take effect" ──────────
@@ -199,7 +199,7 @@ class TestInferenceStepsPriority(unittest.TestCase):
 class TestTunablesView(unittest.TestCase):
 
     def test_source_column_separates_recipe_from_declaration(self):
-        from vla_factory.recipe.cli import _tunables_view
+        from vla_factory.cli import _tunables_view
 
         view = _tunables_view(
             {"dim_model": 512, "dropout": 0.1},
@@ -208,16 +208,12 @@ class TestTunablesView(unittest.TestCase):
         self.assertEqual(view["dim_model"], {"value": 1024, "source": "recipe"})
         self.assertEqual(view["dropout"], {"value": 0.1, "source": "model default"})
 
-    def test_transforms_are_summarised_by_step_type(self):
-        from vla_factory.recipe.cli import _tunables_view
-
-        view = _tunables_view(
-            {"transforms": {"inputs": [{"type": "image_to_float"},
-                                       {"type": "normalize_vector"}]}},
-            None,
+    def test_transforms_are_not_model_tunables(self):
+        recipe = parse_recipe_from_string(
+            "model:\n  name: act\n  config:\n    transforms:\n      inputs: []\n"
         )
-        self.assertEqual(view["transforms"]["value"],
-                         ["image_to_float", "normalize_vector"])
+        with self.assertRaisesRegex(ValueError, "cannot be overridden"):
+            merge_model_config(recipe)
 
 
 if __name__ == "__main__":

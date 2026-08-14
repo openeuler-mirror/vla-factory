@@ -13,7 +13,7 @@ from vla_factory.utils.vocabulary import (
     is_action_head,
     is_control_mode,
 )
-from vla_factory.robot.profile import RobotProfile, JointGroup
+from vla_factory.robot import JointGroup, RobotProfile
 
 
 def test_control_modes_joint_space_only():

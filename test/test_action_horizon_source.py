@@ -21,14 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import make_norm_stats, make_schema
 
-from vla_factory.assembly.resolver import resolve_assembly
-from vla_factory.model.interfaces.model import ModelMetadata
-from vla_factory.recipe.defaults import resolve_recipe
+from vla_factory.assembly import resolve_from_facts as resolve_assembly
+from vla_factory.model.model_interface import ModelMetadata
+from vla_factory.recipe.model_config import merge_model_config
 from vla_factory.recipe.parser import parse_recipe_from_string
 
 
 def _resolve(metadata: ModelMetadata, model_config: dict | None = None):
     schema = make_schema(state_dim=6, action_dim=6, cameras=("front",))
+    if model_config is not None:
+        model_config = {**metadata.params, **model_config}
     return resolve_assembly(
         schema,
         make_norm_stats(state_dim=6, action_dim=6),
@@ -38,16 +40,20 @@ def _resolve(metadata: ModelMetadata, model_config: dict | None = None):
 
 
 def _finetune(**kwargs) -> ModelMetadata:
+    params = kwargs.pop("params", {})
     return ModelMetadata(
         name="stub", training_paradigm="pretrained_finetune",
-        requires_prompt=False, vector_normalization="mean_std", **kwargs,
+        requires_prompt=False, vector_normalization="mean_std", params=params,
+        **kwargs,
     )
 
 
 def _from_scratch(**kwargs) -> ModelMetadata:
+    params = kwargs.pop("params", {})
     return ModelMetadata(
         name="stub", training_paradigm="from_scratch",
-        requires_prompt=False, vector_normalization="mean_std", **kwargs,
+        requires_prompt=False, vector_normalization="mean_std", params=params,
+        **kwargs,
     )
 
 
@@ -90,8 +96,8 @@ def test_a_recipe_that_says_nothing_gets_the_model_default():
     """A recipe that names no chunk length gets the model's own declared one —
     there is no framework-wide default, because a chunk length belongs to a
     model and not to the framework."""
-    resolved = resolve_recipe(parse_recipe_from_string("model:\n  name: act\n"))
-    assert resolved.model_config["action_horizon"] == 100
+    resolved = merge_model_config(parse_recipe_from_string("model:\n  name: act\n"))
+    assert resolved.model.config["action_horizon"] == 100
 
 
 # ── The other half of the temporal contract ───────────────────────

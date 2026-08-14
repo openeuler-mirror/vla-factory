@@ -7,6 +7,11 @@
 > **后续决策（2026-08-11）：** 本计划中从 BaseContract/Materialize 读取精化
 > 维度的方案已撤销。Check Pairs 现直接读取 ModelMetadata；checkpoint 只能
 > 可选校验，不能改变解析结果。下文相关内容仅保留为历史实施记录。
+> **后续决策（2026-08-13）：** RobotProfile 与 DataSchema 的相机名/关节名不再
+> 通过字符串启发式做硬兼容检查。Platform Adapter 负责输出 DataSchema 接口；
+> RobotProfile 本阶段只校验自身结构。本文关于 robot camera candidates、关节名称
+> 子集嵌入和对应错误码的内容是历史实现记录，后续方案见
+> `runtime-pipeline-convergence.cn.md`。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段2、
 > §4.2.2（兼容性检查矩阵）、§4.2.5（解析失败处理）。
 >

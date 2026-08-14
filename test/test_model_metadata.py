@@ -2,8 +2,31 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
+from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.model.registry import list_entries
 from vla_factory.utils.vocabulary import CONTROL_MODES
+
+
+def test_every_model_metadata_field_is_classified():
+    """A new field must deliberately enter or stay out of interface checks."""
+    non_interface_fields = {
+        "backend",
+        "action_head_type",
+        "training_paradigm",
+        "components",
+        "support_lora",
+        "support_full",
+        "support_freeze",
+        "install_hint",
+        "params",
+    }
+    interface_fields = set(ModelMetadata.INTERFACE_FIELDS)
+    declared_fields = {item.name for item in fields(ModelMetadata)}
+
+    assert interface_fields.isdisjoint(non_interface_fields)
+    assert interface_fields | non_interface_fields == declared_fields
 
 
 def test_three_models_registered():

@@ -91,9 +91,9 @@ Include or map:
 * checkpoint path or identifier;
 * input image/state configuration;
 * action configuration;
-* preprocessing configuration;
-* normalization configuration;
-* tokenizer or language-processing configuration;
+* preprocessing requirements;
+* normalization requirements;
+* tokenizer or language-processing requirements;
 * backend-specific runtime options.
 
 If the model needs a preprocessing or configuration concept not supported by the
@@ -112,11 +112,24 @@ the training paradigm: a pretrained model declares the named
 `params["action_horizon"]`; the resolver rejects an entry that declares both or
 neither.
 
+The runtime boundary is fixed as well: a platform adapter must emit
+observations using the checkpoint's `DataSchema` keys and vector order. The
+assembly exposes three semantic entries but only two actual plans:
+`robot_to_model == data_to_model`, while `model_to_robot` restores model output
+to the DataSchema action interface. Do not add model-specific robot camera or
+joint-name matching, and do not consume a guessed robot mapping in an adapter.
+At inference, validate raw network output with `model_output_dim` and the
+postprocessed action with `execution_action_dim`.
+
 Declare fixed image resolutions on `VisionSlot.resolution`. If a from-scratch
 family genuinely lets each run choose its model input size, expose one explicit
 model tunable (ACT uses `input_image_size`). Do not put `height`/`width` facts in
 `resize_images`, and do not add transform-side shape-reporting hooks:
 `ModelIOSpec` is resolved before the transform plan, which consumes its targets.
+Declare image range/layout/resize policy, normalization, and tokenizer behavior
+as named `ModelMetadata` facts. Do not add `model.config.transforms` or a model
+step list: the assembly resolver derives and orders pipeline calls, and recipes
+cannot override them.
 
 Output for this layer:
 

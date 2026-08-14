@@ -17,7 +17,7 @@
 #   (discrete state input, max token len 200).
 #
 # ── Variant B: full finetune instead of LoRA ──────────────────────────────
-#   Set finetuning.strategy: full and drop the finetuning.lora block; lower
+#   Set finetuning.strategy: full and drop finetuning.config; lower
 #   training.lr to ~2.5e-5. Full FT needs ~13 GB VRAM for batch_size 1, so on a
 #   12 GB card keep the LoRA config below.
 #
@@ -34,7 +34,7 @@ model:
   path: lerobot/pi0_base          # pytorch safetensors (openpi weights, ported by lerobot)
 
 # 三者之间的关系归组合调整区（架构 §3.1），不是模型超参。
-assembly:
+overrides:
   camera_mapping:
     base_0_rgb: front
     left_wrist_0_rgb: wrist
@@ -49,9 +49,9 @@ data:
 
 finetuning:
   strategy: lora
-  lora:
-    r: 16                         # peft-aligned (rank alias also accepted)
-    lora_alpha: 16                # peft-aligned (alpha alias also accepted)
+  config:
+    r: 16                         # peft-aligned
+    lora_alpha: 16                # peft-aligned
     lora_dropout: 0.0             # forwarded to peft
     init_lora_weights: gaussian   # forwarded to peft (gaussian matches RLinf's openpi LoRA)
     target_components: ["llm"]    # vla abstraction: LoRA on the PaliGemma VLM subtree

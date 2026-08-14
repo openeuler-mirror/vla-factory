@@ -1,6 +1,6 @@
 """A padded model's two action widths, end to end through ``InferenceEngine``.
 
-pi0 emits 32 dims and the robot takes 8: the model's internal width and the
+pi0 emits 32 dims and the DataSchema action has 8: the model's internal width and the
 width that leaves the engine are different numbers, and checking both ends
 against one of them made every prediction of every padded model fail its own
 contract check — while the LeRobot action adapter refused to start at all
@@ -27,11 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers import make_norm_stats, make_schema
 
-from vla_factory.assembly.artifact import save_assembly_artifact
-from vla_factory.assembly.resolver import resolve_assembly
-from vla_factory.model.interfaces.model import ModelMetadata, VisionSlot
-from vla_factory.model.registry import registry as registry_mod
-from vla_factory.model.registry.registry import ModelEntry
+from vla_factory.assembly import resolve_from_facts as resolve_assembly
+from vla_factory.model.model_interface import ModelMetadata, VisionSlot
+from vla_factory.model.registry import ModelEntry, ModelRegistry
 from vla_factory.utils.constants import (
     ASSEMBLY_FILE, FINAL_DIR, INFERENCE_META_DIR, MODEL_WEIGHTS_FILE, RECIPE_FILE,
 )
@@ -49,17 +47,13 @@ _PADDED_METADATA = ModelMetadata(
     dim_policy_max=MODEL_ACTION_DIM,
     vector_normalization="mean_std",
     image_input_range=(-1.0, 1.0),
+    image_layout="CHW",
+    image_resize_mode="pad",
     requires_prompt=False,
     vision_slots=(
         VisionSlot(name="base_0_rgb", semantic_accepts=("third_person",),
                    resolution=(224, 224)),
     ),
-    params={"transforms": {"inputs": [
-        {"type": "image_to_float"},
-        {"type": "image_layout", "to": "CHW"},
-        {"type": "normalize_vector", "fields": ["state", "actions"]},
-        {"type": "pad_dimensions", "fields": ["state", "actions"]},
-    ]}},
 )
 
 
@@ -81,8 +75,10 @@ def padded_checkpoint(tmp_path):
         metadata=_PADDED_METADATA,
         factory=lambda recipe, assembly: _PaddedStubModel(),
     )
-    registry_mod._REGISTRY[_PADDED_METADATA.name] = entry
-    registry_mod._ENTRIES_LOADED = True
+    previous_entry = ModelRegistry._entries.get(_PADDED_METADATA.name)
+    previous_loaded = ModelRegistry._builtins_loaded
+    ModelRegistry._entries[_PADDED_METADATA.name] = entry
+    ModelRegistry._builtins_loaded = True
     try:
         schema = make_schema(
             state_dim=STATE_DIM, action_dim=DATA_ACTION_DIM, cameras=("front",),
@@ -95,7 +91,7 @@ def padded_checkpoint(tmp_path):
         )
         meta_dir = tmp_path / INFERENCE_META_DIR
         meta_dir.mkdir(parents=True)
-        save_assembly_artifact(meta_dir / ASSEMBLY_FILE, assembly)
+        assembly.save(meta_dir / ASSEMBLY_FILE)
         (meta_dir / RECIPE_FILE).write_text(
             f"model:\n  name: {_PADDED_METADATA.name}\n  config: {{}}\n"
         )
@@ -104,7 +100,11 @@ def padded_checkpoint(tmp_path):
         torch.save(_PaddedStubModel().state_dict(), final_dir / MODEL_WEIGHTS_FILE)
         yield tmp_path, assembly
     finally:
-        registry_mod._REGISTRY.pop(_PADDED_METADATA.name, None)
+        if previous_entry is None:
+            ModelRegistry._entries.pop(_PADDED_METADATA.name, None)
+        else:
+            ModelRegistry._entries[_PADDED_METADATA.name] = previous_entry
+        ModelRegistry._builtins_loaded = previous_loaded
 
 
 def test_the_plan_pads_forward_and_unpads_back(padded_checkpoint):
@@ -116,7 +116,7 @@ def test_the_plan_pads_forward_and_unpads_back(padded_checkpoint):
 
 
 def test_engine_serves_the_command_width_not_the_model_width(padded_checkpoint):
-    from vla_factory.inference.infer import InferenceEngine, ObsDict
+    from vla_factory.inference.inference_engine import InferenceEngine, ObsDict
 
     checkpoint, _ = padded_checkpoint
     engine = InferenceEngine(checkpoint_path=checkpoint, device="cpu")
@@ -136,7 +136,7 @@ def test_engine_serves_the_command_width_not_the_model_width(padded_checkpoint):
 def test_a_model_that_stops_matching_its_io_spec_is_caught(padded_checkpoint):
     """The raw output is checked before the reverse pipeline touches it, so the
     error names the real problem instead of a post-unpad mismatch."""
-    from vla_factory.inference.infer import InferenceEngine, ObsDict
+    from vla_factory.inference.inference_engine import InferenceEngine, ObsDict
 
     checkpoint, _ = padded_checkpoint
     engine = InferenceEngine(checkpoint_path=checkpoint, device="cpu")

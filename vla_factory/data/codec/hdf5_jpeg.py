@@ -22,7 +22,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from ..formats.base import VideoRef
+from ..data_schema import VideoRef
+from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def _load_h5py() -> Any:
     return h5py
 
 
+@CodecRegistry.register("hdf5_jpeg")
 class Hdf5JpegCodec:
     """Decode JPEG frames stored inside RoboTwin episode hdf5 files.
 

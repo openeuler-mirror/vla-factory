@@ -4,6 +4,18 @@
 > 当时实现过程，不是当前架构。现实现先从 ModelMetadata、model tunables 与 DataSchema
 > 直接建立 `ModelIOSpec`，再由 pipeline 消费目标接口；`output_widths`、
 > `output_image_sizes`、`fold_widths` 均已删除。当前规则见阶段 4/5 计划 §2.8。
+> 独立 `schema.json` / `norm_stats.json` 也已在后续收敛中删除；DataSchema 与
+> NormStats 只保存在 `assembly.json`。正文中的旧文件名仅记录阶段 3 当时的状态。
+>
+> **后续设计更正（2026-08-13）**：不再为 `robot_to_model` 预设关节重排、相机改名和
+> 夹爪翻转 step。Platform Adapter 先产出 DataSchema，因此 `robot_to_model` 直接复用
+> `data_to_model`；基于名称猜测的 JointMapping 不作为执行关系。本文相关“明确推迟”内容
+> 仅保留为历史决策，后续实施见 `runtime-pipeline-convergence.cn.md`。
+>
+> **后续设计更正（2026-08-13）**：`model.config.transforms.inputs` 配置面已删除。
+> 图像 range/layout/resize、归一化、tokenizer 与维度策略改为不可覆盖的
+> `ModelMetadata` 具名事实，resolver 据此选择并排序 call。本文关于“保留/覆盖步骤列表”
+> 的内容仅记录阶段 3 当时的迁移路径，不是当前扩展方式。
 
 > 状态：**WP0–WP6 已执行完毕**（工作树，未提交），`pytest` 303 passed / 3 skipped。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段3、
@@ -14,7 +26,7 @@
 > 1. **相机 override 是「完整声明」，不是「在推断结果上打补丁」**——实测
 >    `examples/pi0_lora.yaml` 只映射 3 个槽位中的 2 个，若对剩下的
 >    `right_wrist_0_rgb` 继续自动推断，数据集里唯一的 `wrist` 相机会同时喂给
->    左右两个腕部槽位；而 `entries/pi0.py` 运行时对未列出的角色发的是 -1 占位图
+>    左右两个腕部槽位；而 `adapters/pi0.py` 运行时对未列出的角色发的是 -1 占位图
 >    + zero mask（recipe 注释也写明「intentionally unmapped」）。推断会让具身组合
 >    声称一个模型根本收不到的相机，因此：**只要给了 camera_mapping，数据侧的槽位
 >    推断与歧义检查整体让位于它**。
@@ -72,7 +84,7 @@
 延续阶段 2 的两条判据：**架构没点名的不做**；**没有真实数据能验证的不做**（写出来
 就是死代码）。据此，架构阶段 3 原文里点到的两项**本轮不做**，理由见下节。
 
-### 不做「关节重排」与「夹爪 flip」两个 T1 step
+### 当时不做「关节重排」与「夹爪 flip」两个 T1 step（历史记录）
 
 架构原文举例是「normalize、padding、**关节重排**和**夹爪 flip** 等 T1 step」。前两项
 的 step 都已存在（`normalize_vector` / `pad_dimensions`），后两项**在
@@ -173,15 +185,15 @@ plan，推理侧就只照着执行，不再独立推导第二遍。消灭「同�
 与 Mapping 生成共用同一结果。逐类：
 
 - **Camera**：逐模型槽位一条 entry，`{model_slot, data_source, source}`；唯一命中
-  → `source=inferred`；无命中 → `data_source=None, source=padding`（与
-  `entries/pi0.py` 现网的 -1 图 + zero mask 行为一致，plan 只是把它写成声明）。
+  → `source=inferred`；无命中 → `data_source=None, source=inferred`（占位由空 `data_source` 表达；与
+  `adapters/pi0.py` 现网的 -1 图 + zero mask 行为一致，plan 只是把它写成声明）。
   消费 `assembly.camera_mapping` override：**给了 override 就以它为完整声明**，
   数据侧的推断与歧义检查整体让位（架构 §4.2.3「受控 override 直接产生最终
   Mapping」；实测理由见文首修正 1）；机器人侧的检查照跑，因为 override 名字是按
   `schema.cameras` 校验的，只约束数据侧。override 指向不存在的相机/槽位 → 新错误码
   `CAMERA_MAPPING_INVALID`（不加这条，写错的 override 会静默退化成 padding）。
 - 模型没有声明 `vision_slots` 时（ACT）：模型的视觉输入**就是**数据集相机本身
-  （`entries/act.py` 按 `schema.cameras` 建 input_features），逐相机一条恒等 entry。
+  （`adapters/act.py` 按 `schema.cameras` 建 input_features），逐相机一条恒等 entry。
 - **State / Action**：逐模型槽位一条 entry，`{model_index, data_dim_index,
   data_name, padded}`（action 另带 `mode`）。今天 state/action 向量就是数据逐维顺序
   拼接，所以是恒等对应 + 超出部分 `padded=True`。不在这两类里重复机器人关节信息——
@@ -220,7 +232,7 @@ plan，推理侧就只照着执行，不再独立推导第二遍。消灭「同�
   再说）。
 - **Golden**：沿用阶段 2 的真实 fixture + 真实 registry entry，固化 3 份具身组合：
   ACT、pi0（带 camera override）、pi05（quantile 路径）。
-- **等价性测试**（本阶段最关键的一条）：对 act / pi0，把现网 `create_dataloaders`
+- **等价性测试**（本阶段最关键的一条）：对 act / pi0，把现网 `create_dataloader`
   构建出的 `TransformPipeline` 实例与规划出的 `data_to_model` plan 逐步骤比对
   （type 顺序 + `target_dim`/`method`/`height`/`width`/`max_length`）。比对的是**已
   构建实例的属性**，不是重跑 `from_config`。没有这条，规划出的 plan 就是一份没人执行、
@@ -231,13 +243,13 @@ plan，推理侧就只照着执行，不再独立推导第二遍。消灭「同�
 
 ---
 
-## 明确推迟（供下次启动参考）
+## 当时明确推迟（后续方向以新计划为准）
 
 | 项 | 现状 | 恢复时需要的前置工作 |
 |---|---|---|
-| 关节重排 step | `TransformRegistry` 无此实现；无 recipe 声明 robot | 先实现 `reorder_dims` step，再由 JointMapping 驱动规划 |
-| 夹爪 flip step | 同上，且模型侧/数据侧 convention 事实都不存在 | `ModelMetadata.gripper_convention` + 数据侧 convention（`robot-module.cn.md §4.3`）+ step 实现 |
-| `robot_to_model` | 依赖上面两项 | 两项落地后即可规划 |
+| 关节重排 step | **后续决定不做**；Platform Adapter 输出 DataSchema | 出现真实跨接口需求后，优先设计显式 binding |
+| 夹爪 flip step | **后续决定不做**；当前录制/执行接口按同一语义处理 | 有真实不一致案例且多个平台重复需要时再设计 |
+| `robot_to_model` | 后续决定直接复用 `data_to_model` | 见 `runtime-pipeline-convergence.cn.md` |
 | Mapping entry 类型化 | 裸 dict 是阶段 0 定的协议 | 等阶段 4 下游真正按字段读时，按实际读法一次收窄 |
 | `TransformPipelinePlan.risk` / `.reversible` | WP0 已删（零消费者）；架构 §4.2.4 仍写着目标态 | 等真有消费者要按风险/可逆性分支时，按那时的读法重新加字段 |
 | `resolved` 的强语义（「可直接实例化」） | 现在只承诺「解析器规划过这条路径」，已写进 `types.py` docstring | 有实例化侧（阶段 4 的下游接入）才可校验；届时可拆成两个布尔或一个枚举 |
@@ -368,7 +380,7 @@ canonical、mapping、pipeline 输出从此是同一个数。**模型声明不�
 
 ## WP6：`CanonicalInterface` → `ModelIOSpec`（**已完成**）
 
-旧名两处不准：`Interface` 在本仓已被 `model/interfaces/` 的 `VLAModel` 协议占用，
+旧名两处不准：`Interface` 在本仓已被 `model_interface.py` 的 `VLAModel` 协议占用，
 而这个类是五个标量、零个方法；`Canonical` 也没回答「相对谁而言规范」。
 
 新名按字段的实际含义取：输入侧是相机 key、状态宽度、是否需要 prompt，输出侧是动作宽度

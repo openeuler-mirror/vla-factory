@@ -7,8 +7,8 @@ import logging
 import yaml
 
 from helpers import make_schema
-from vla_factory.recipe import cli as cli_module
-from vla_factory.recipe.recipe import TrainRecipe
+from vla_factory import cli as cli_module
+from vla_factory.recipe import ModelConfig, TrainRecipe
 
 DATA_PATH = "test/data/lerobot_train_data_3_episodes"
 
@@ -69,11 +69,11 @@ def test_model_report_uses_resolver_camera_validation_for_dynamic_slots():
     """A model with no declared slots (ACT) has no slot vocabulary to check the
     override against, so only the camera half is validated — the report must not
     invent an error for a slot name it cannot know."""
-    from vla_factory.recipe.recipe import AssemblyConfig
+    from vla_factory.recipe import AssemblyOverrides
 
     recipe = TrainRecipe(
-        model_name="act",
-        assembly=AssemblyConfig(camera_mapping={"dynamic_slot": "front"}),
+        model=ModelConfig(name="act"),
+        overrides=AssemblyOverrides(camera_mapping={"dynamic_slot": "front"}),
     )
     report = cli_module._describe_model_config(
         recipe, make_schema(cameras=("front", "wrist")),

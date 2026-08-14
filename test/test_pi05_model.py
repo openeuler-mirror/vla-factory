@@ -1,6 +1,6 @@
 """Tests for the pi05 adapter and its data-side differences from pi0.
 
-Patches the shared openpi handle (entries/pi0._try_import_openpi) so tests run
+Patches the shared OpenPI handle (adapters/openpi.try_import_openpi) so tests run
 without openpi/jax installed. Runnable both via pytest and directly:
 `python test/test_pi05_model.py`.
 """
@@ -18,15 +18,15 @@ import torch.nn as nn
 
 from helpers import make_assembly, make_schema
 
-import vla_factory.model.registry.entries.pi0 as pi0_mod
+import vla_factory.model.adapters.openpi as pi0_mod
 from vla_factory.recipe.parser import parse_recipe_from_string
-from vla_factory.recipe.defaults import resolve_recipe
-from vla_factory.data.manifest import FeatureStats, NormStats
-from vla_factory.assembly.transforms.normalize import (
+from vla_factory.recipe.model_config import merge_model_config
+from vla_factory.data.data_schema import FeatureStats, NormStats
+from vla_factory.assembly.transform.normalize import (
     NormalizeVector,
     UnnormalizeActionQuantileStep,
 )
-from vla_factory.assembly.transforms.task_tokenize import TaskTokenize, build_prompt
+from vla_factory.assembly.transform.task_tokenize import TaskTokenize, build_prompt
 from vla_factory.model.registry import get_entry
 
 
@@ -36,7 +36,7 @@ def _assembly_for(recipe, model_name: str):
         state_dim=9, action_dim=9, cameras=("front",),
         image_sizes={"front": (224, 224)}, has_language=True,
     )
-    return make_assembly(schema, model_name, recipe=resolve_recipe(recipe))
+    return make_assembly(schema, model_name, recipe=merge_model_config(recipe))
 
 
 # ── Fakes: record the Pi0Config kwargs the factory passes upstream ──
@@ -63,14 +63,14 @@ class _FakePI0Pytorch(nn.Module):
 
 @pytest.fixture(autouse=True)
 def _fake_openpi():
-    original = getattr(pi0_mod._try_import_openpi, "_cached", None)
-    pi0_mod._try_import_openpi._cached = (
+    original = getattr(pi0_mod.try_import_openpi, "_cached", None)
+    pi0_mod.try_import_openpi._cached = (
         _FakePI0Pytorch,
         _FakePi0Config,
         types.SimpleNamespace,
     )
     yield
-    pi0_mod._try_import_openpi._cached = original
+    pi0_mod.try_import_openpi._cached = original
 
 
 def test_metadata():
@@ -89,7 +89,7 @@ def test_factory_builds_pi05_variant():
         """
 model:
   name: pi05
-assembly:
+overrides:
   camera_mapping:
     base_0_rgb: front
 """
@@ -108,7 +108,7 @@ def test_pi0_factory_stays_on_pi0_variant():
         """
 model:
   name: pi0
-assembly:
+overrides:
   camera_mapping:
     base_0_rgb: front
 """
@@ -209,8 +209,8 @@ def test_normalize_vector_quantile():
 
 
 def test_quantile_unnormalize_roundtrip():
-    from vla_factory.assembly.transforms import TransformContext, TransformRegistry
-    from vla_factory.assembly.transforms.base import PlanContext
+    from vla_factory.assembly.transform import TransformContext, TransformRegistry
+    from vla_factory.assembly.transform.base import PlanContext
 
     stats = _quantile_stats()
     args = {"fields": ["actions"], "method": "quantile", "stats_ref": "norm_stats"}

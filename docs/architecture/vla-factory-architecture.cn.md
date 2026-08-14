@@ -63,7 +63,7 @@ VLA Factory 是一个 recipe 驱动的机器人视觉-语言-动作（Vision-Lan
 
 一次训练应由 recipe 完整描述。模型选择、数据路径、机器人选择、采样窗口、动作空间、微调策略、训练步数、输出目录等都来自配置，而不是散落在脚本里。
 
-recipe 是用户最高优先级的配置入口。recipe 的顶层字段表达实验意图（模型/数据/机器人选择、微调策略、训练参数、输出）；模型自身的能力与默认值由模型声明（ModelMetadata）承载，不在 recipe 里；需要调整数据/模型/机器人三者之间的关系时，写在 `assembly` 区。这样实验配置是可审计的，用户能在一份文件里看到本次实验主动覆盖了什么，而不是到脚本和隐式默认值里追踪行为来源。
+recipe 是用户最高优先级的配置入口。recipe 的顶层字段表达实验意图（模型/数据/机器人选择、微调策略、训练参数、输出）；模型自身的能力与默认值由模型声明（ModelMetadata）承载，不在 recipe 里；需要调整数据/模型/机器人三者之间的关系时，写在 `overrides` 区。这样实验配置是可审计的，用户能在一份文件里看到本次实验主动覆盖了什么，而不是到脚本和隐式默认值里追踪行为来源。
 
 模型相关的**事实**（默认预处理语义、图像值域、相机槽位布局、维度策略等）随模型声明 `ModelMetadata` 发布，用户不可在 recipe 中修改；模型的**可调超参**（层数、推理步数、compile 模式等）同样随声明发布默认值，但可以在 recipe 的 `model.config` 中逐 run 覆盖。recipe 只承载用户的组合选择、组合调整、模型超参覆盖与训练参数。
 
@@ -142,21 +142,29 @@ vla_factory/
 ├── recipe/          # 用户表达层：recipe 解析、CLI/API 入口与运行时配置
 │   └── ...
 ├── data/            # 数据 reader 与中间表示
-│   ├── formats/     # FormatReader 接口与各外部格式实现（LeRobot / HDF5 / RLDS / Zarr）
-│   └── ...          # DataSchema / Episode / Frame / NormStats 中间表示（只读，不构建样本）
-├── assembly/     # 数据集 × 机器人 × VLA 模型的组合解析
-│   ├── resolver/    # 具身组合解析器（Resolver / ResolvedAssembly）
-│   ├── transforms/  # TransformStep / TransformPipeline / TransformRegistry 及各 step 实现
+│   ├── data_schema.py # 数据层统一表示及 describe_dataset 入口
+│   ├── reader/      # FormatReader、ReaderRegistry 与外部格式实现
+│   └── codec/       # VideoCodec、CodecRegistry 与解码实现
+├── assembly/        # 数据集 × 机器人 × VLA 模型的组合解析
+│   ├── resolve_assembly.py # 公开编排入口、ResolvedAssembly 与持久化
+│   ├── resolve/     # 纯 resolve_from_facts 及解析规则
+│   ├── transform/   # TransformStep / TransformPipeline / TransformRegistry 及各 step 实现
 │   └── ...
 ├── model/           # 模型抽象与上游 adapter
-│   ├── interfaces/  # VLAModel 接口（compute_loss / predict_actions）与 Observation 规范类型
-│   ├── registry/    # 模型注册表（@register_vla）
-│   └── ...          # ModelMetadata、checkpoint 可选校验与各上游模型 adapter
+│   ├── model_interface.py # ModelMetadata、Observation 与 VLAModel 统一接口
+│   ├── registry.py  # ModelRegistry、@register_vla 与外部插件发现
+│   ├── adapters/    # ACT / PI0 / PI05 等上游模型薄适配
+│   └── checkpoint_validation.py # checkpoint 冗余事实的可选一致性检查
 ├── robot/           # 机器人本体描述（RobotProfile）注册与校验
 ├── training/        # 训练编排：Observation 样本构建、dataloader、Trainer 与微调策略
 │   ├── strategies/
 │   └── ...
 ├── inference/       # 推理引擎、平台 adapter、transport 和动作执行策略
+│   ├── inference_engine.py # checkpoint → ActionChunk 的推理核心
+│   ├── execution.py # action chunk 执行策略与 PolicyExecutor
+│   ├── checkpoint.py # 推理 metadata 与模型权重加载
+│   ├── evaluate_dataset.py # 单样本推理与数据集评估
+│   ├── deploy.py    # 部署编排公开入口
 │   ├── connectors/  # 远程机器人环境导入的轻量 connector 及其启动配置
 │   ├── platforms/   # 平台原生 observation/action 与统一推理接口的适配
 │   ├── transports/  # ZMQ、length-prefixed JSON RPC 等线协议与序列化
@@ -166,7 +174,7 @@ vla_factory/
 └── test/            # 单元测试、标准测试和集成 smoke test
 ```
 
-**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation` 和 `ModelMetadata`，三者都不反向依赖上层。`assembly/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/interfaces/`，被 `assembly/`、`training/`、`inference/` 共同依赖，而 `model/` 不反向依赖它们——整体无环。
+**依赖方向（自上而下，禁止反向）：**`data/`、`model/`、`robot/` 是叶子层——`data/` 只产 `DataSchema` / `Episode` / `Frame` / `NormStats` 等 IR，`model/` 持有 VLAModel 接口、`Observation` 和 `ModelMetadata`，三者都不反向依赖上层。`assembly/` 读取三者的描述产出具身组合；`training/`、`inference/` 消费具身组合，并各自把 IR / 平台观测经 TransformPipeline 组装成 `Observation` 样本（`data/` 不构建样本）。`Observation` 归 `model/model_interface.py`，被 `assembly/`、`training/`、`inference/` 共同依赖，而模型接口不反向依赖它们——整体无环。
 
 ---
 
@@ -193,10 +201,14 @@ robot:
   name: aloha_vx300s_bimanual   # 机器人本体声明
 ```
 
+模型也可简写为 `model: act`。当标量含 `/` 时，完整字符串作为 checkpoint 路径，
+最后一段作为默认模型名：`model: lerobot/pi0` 等价于
+`model: {name: pi0, path: lerobot/pi0}`；特殊情况使用显式 mapping。
+
 **② 组合调整区（可选）**——默认情况下，三者之间的对应关系由组合解析层（4.2 节）从三者描述自动推导；只有解析器无法唯一确定、或用户想用非默认策略时，才在这里显式写出（4.2 节称之为「受控 override」）：
 
 ```yaml
-assembly:                    # 可选，默认留空
+overrides:                   # 可选，默认留空
   camera_mapping:               # 模型视觉槽位 -> 数据/机器人相机（歧义时指定）
     base_0_rgb: front
     left_wrist_0_rgb: wrist
@@ -210,7 +222,7 @@ assembly:                    # 可选，默认留空
 ```yaml
 finetuning:
   strategy: lora                # full | lora | freeze | selective
-  lora:
+  config:                       # 由选中的策略严格解析
     r: 16
     target_components: [llm]    # 引用 ModelMetadata.components 的 key
 training:
@@ -227,19 +239,19 @@ output:
 
 ### 3.2 字段概览
 
-下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/recipe/recipe.py`）：
+下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/recipe/train_recipe.py`）：
 
 | 区 | 块 | 主要字段 | 说明 |
 |---|---|---|---|
 | 组合选择 | `model` | `name`、`path` | 模型选择；`path` 微调时必填，从零训练可省 |
 | 组合选择 | `data` | `path`、`format`、`video_codec` | 数据集路径与格式，`format: auto` 自动识别 |
 | 组合选择 | `robot` | `name` | 机器人本体声明 |
-| 组合调整（可选） | `assembly` | `camera_mapping`、`default_task` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。只保留有消费者的 override，其余随对应检查一起推迟 |
-| 训练参数 | `finetuning` | `strategy`、`lora`、`freeze_components`、`trainable_components` | 微调策略与组件选择 |
+| 组合调整（可选） | `overrides` | `camera_mapping`、`default_task` | 解析器无法唯一确定时显式指定三者关系；不能改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。只保留有消费者的 override，其余随对应检查一起推迟 |
+| 训练参数 | `finetuning` | `strategy`、`config` | 注册的微调策略及其严格校验的专属配置 |
 | 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`num_workers` | 优化器、调度、显存与数据加载 |
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
 
-`vla_factory/recipe/recipe.py` 中的 `TrainRecipe` 及子 dataclass（`DataConfig`、`SamplerConfig`、`SplitConfig`、`LoraConfig`、`OutputConfig`、`AugmentationConfig` 等）是这些字段的结构化定义，`parser.py` 负责从 YAML 构造它们。用户不必写满所有字段，只在需要覆盖默认值时写对应字段。
+`vla_factory/recipe/train_recipe.py` 中的 `TrainRecipe` 及子 dataclass 是公共 YAML 结构；`finetuning.config` 保持为字典，由选中的 `FinetuningStrategy` 解析成该策略自己的严格 config dataclass。新增策略不需要继续扩张 `TrainRecipe`。
 
 ### 3.3 配置来源与优先级
 
@@ -265,7 +277,7 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
 | 模型静态能力 | ModelMetadata |
 | checkpoint 实例 | recipe `model.path` 选择；可选与 ModelMetadata 做一致性检查，不提供接口事实 |
 | 机器人事实 | RobotProfile / URDF |
-| 三者关系 | 解析器生成；歧义时由 recipe 的 `assembly` 区显式指定 |
+| 三者关系 | 解析器生成；歧义时由 recipe 的 `overrides` 区显式指定 |
 
 具身组合（4.2）必须记录每个最终字段的来源。普通用户不需要先阅读 DataSchema 或 RobotProfile 字段参考——首次使用流程是：
 
@@ -352,24 +364,24 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 `NormStats` 是与具体数据内容绑定的归一化统计量（mean/std、min/max 或 quantile）。它与 DataSchema 一起由 reader 读取或由框架计算，但保持独立结构。
 
-数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用；它同时为推理侧保存并复用 schema、norm stats 和 recipe，保证训练与推理使用同一套数据标准。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明外部数据解析层与数据中间表示层的职责边界、`FormatReader` / `Episode` / `Frame` / `VideoRef` / `DatasetManifest` 等核心对象，以及新增数据格式、视频解码策略和 transform step 的扩展方式。
+数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用；它同时为推理侧保存并复用 schema、norm stats 和 recipe，保证训练与推理使用同一套数据标准。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明外部数据解析层与数据中间表示层的职责边界、`FormatReader` / `Episode` / `Frame` / `VideoRef` 等数据对象、训练侧的 `SampleWindow`，以及新增数据格式、视频解码策略和 transform step 的扩展方式。
 
 数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。字段准入与推断规则见[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)（目标设计）。
 
 #### 4.1.2 VLA 模型：ModelMetadata
 
-模型维度的描述集中在**一份随模型发布的声明** `ModelMetadata` 里（一个模型一个 entry 文件），它分成两半，**容器即属性**：
+模型维度的描述集中在**一份随模型发布的声明** `ModelMetadata` 里（一个模型族一个 adapter 声明文件），它分成两半，**容器即属性**：
 
 - **具名字段 = 事实**——接口能力、相机槽位布局、输入尺寸与图像值域、维度策略、归一化方法等组合解析器要读的内容。它们不进 recipe，用户不可逐 run 修改；改了会让具身组合与实际运行的模型不一致。
-- **`params` = 可调超参**——该模型自己的上游超参（层数、宽度、dropout、推理步数、compile 模式等）与默认 transform 步骤列表，每项带默认值，可被 recipe 的 `model.config` 覆盖。
+- **`params` = 可调超参**——只包含该模型自己的上游超参（层数、宽度、dropout、推理步数、compile 模式等），每项带默认值，可被 recipe 的 `model.config` 覆盖。Transform 操作由具名事实推导，不进入 recipe。
 
 模型作者因此没有分类负担：框架级事实有具名字段和类型，其余一律丢进 `params`。`params` 的键集合同时充当两道校验的依据——recipe 写了未声明的键即报错（并提示最接近的候选），声明了却无人消费的键在构造模型时报错（避免「改了不生效」的静默失效）。
 
-若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `assembly` 区表达（见第 3 章），而不是改模型声明。详细设计见 [模型抽象模块设计](../modules/model-module.cn.md)。
+若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `overrides` 区表达（见第 3 章），而不是改模型声明。详细设计见 [模型抽象模块设计](../modules/model-module.cn.md)。
 
 ##### ModelMetadata
 
-`ModelMetadata` 是模型的静态能力描述，复用并扩展现有的模型元数据，描述一个模型族相对稳定的接口能力和约束。它同时承载两类信息：组合解析所需的接口事实，以及 backend、可训练组件、微调能力等模型自身能力（解析器只读取前者参与组合解析，后者随模型描述保留在具身组合中供训练模块访问）。具体字段包括：模型名称、backend 类型、action dim / horizon、action head 类型、architecture 类型、training paradigm、可训练组件映射、是否需要 prompt、image size、支持的微调方式、默认 transform 列表、安装提示。组合解析依赖的关键信息类别：
+`ModelMetadata` 是模型的静态能力描述，复用并扩展现有的模型元数据，描述一个模型族相对稳定的接口能力和约束。它同时承载两类信息：组合解析所需的接口事实，以及 backend、可训练组件、微调能力等模型自身能力（解析器只读取前者参与组合解析，后者随模型描述保留在具身组合中供训练模块访问）。具体字段包括：模型名称、backend 类型、action dim / horizon、action head 类型、architecture 类型、training paradigm、可训练组件映射、是否需要 prompt、图像尺寸/值域/layout/resize 策略、tokenizer 要求、支持的微调方式与安装提示。组合解析依赖的关键信息类别：
 
 - 视觉槽位、名称和输入形状；
 - state/action 维度策略：fixed、flexible、padded；
@@ -407,15 +419,15 @@ PyTorch 模型额外实现 `parameters()`、`named_parameters()`、`train()`、`
 
 ```python
 @register_vla(ModelMetadata(name="act", ...))
-def load_act(recipe, schema):
+def load_act(recipe, assembly):
     ...
 ```
 
-`get_entry(name)` 在首次访问时 lazy import `model/registry/entries/*`，触发各 entry 的注册。registry loader 会把 entry 导入失败视为真实错误抛出，避免把语法错误或硬依赖缺失伪装成「模型未注册」。可选依赖的缺失应在 factory 调用时给出清晰错误。例如 ACT 的 entry 可以被注册和列出，但真正创建 ACT 模型时，如果未安装 lerobot，应提示用户安装 `[act]` extra。
+`get_entry(name)` 在首次访问时 lazy import `model/adapters/*`，触发内置 adapter 的注册；外部包通过 `vla_factory.models` Python entry point 发布模型。registry loader 会把 adapter 或插件导入失败视为真实错误抛出，避免把语法错误或硬依赖缺失伪装成「模型未注册」。可选依赖的缺失应在 factory 调用时给出清晰错误。例如 ACT 可以被注册和列出，但真正创建 ACT 模型时，如果未安装 lerobot，应提示用户安装 `[act]` extra。
 
 ##### Thin Adapter
 
-每个模型 entry 应作为薄适配器存在。以 ACT 为例：
+每个模型 adapter 应保持轻薄。以 ACT 为例：
 
 - 上游 `lerobot` 持有 ACTPolicy 和网络结构。
 - VLA Factory 的 wrapper 只负责把 `Observation` 转成 lerobot batch dict。
@@ -476,19 +488,18 @@ def load_act(recipe, schema):
 ├─ 字段映射
 │   ├─ CameraMapping  ：相机 → 模型视觉槽位
 │   ├─ StateMapping   ：状态字段 → 模型状态向量
-│   ├─ ActionMapping  ：数据动作 / 模型输出 / 机器人命令之间的维度与语义关系
-│   ├─ LanguageMapping：任务文本字段 → 模型 prompt
-│   └─ JointMapping   ：规范关节顺序 → 机器人原生关节名
+│   ├─ ActionMapping  ：数据动作 → 模型动作向量
+│   └─ LanguageMapping：任务文本字段 → 模型 prompt
 └─ 三条 Transform Pipeline 的声明式描述（TransformPipelinePlan）
     ├─ data_to_model   ：数据样本 → 模型训练接口
     ├─ robot_to_model  ：机器人实时观测 → 模型输入
-    └─ model_to_robot  ：模型动作输出 → 机器人规范命令
+    └─ model_to_robot  ：模型动作输出 → DataSchema action
 ```
 
 - **三者描述的规范化引用**：让下游不必再去查询各自的 registry，所有事实都在一个对象里。从下游视角看，它们是具身组合的组成部分，而不是需要再次独立查询的外部输入。
 - **模型输入输出规格（`ModelIOSpec`）**：三者协商之后，模型实际接收和输出的形状与语义——输入侧是相机 key、逐相机尺寸、状态宽度、是否需要 prompt，输出侧是动作宽度与 horizon。它是组合之后的「事实标准」，下游按它构造模型、按它读写 observation / action。
   注意 `cameras` 是**框架 observation 使用的规范相机 key（数据侧命名）**，不是模型自己的视觉槽位：pi0 的数据侧是 `front`/`wrist`，模型侧是三个 openpi 角色，连接两者的是 `CameraMapping`。`ModelIOSpec` 在 pipeline 之前从模型事实与数据的 flexible/native 事实直接解析：pi0 的 `camera_shapes` 来自 `VisionSlot.resolution`，ACT 可用显式 `model.config.input_image_size` 选择输入尺寸，未设置则采用 `DataSchema` 原生尺寸。transform plan 消费这份目标接口来生成 resize/pad call，不能再通过 step 参数或 shape hook 反向定义接口。
-  `action_dim` 描述的是**模型自身的输出宽度**（pi0 = 32）；推理引擎分别暴露 `model_output_dim` 与 `execution_action_dim`。后者今天是 `model_to_robot` 的目标数据动作空间（pi0 = 8），未来接入机器人侧 IO 后再由机器人命令接口提供。
+  `action_dim` 描述的是**模型自身的输出宽度**（pi0 = 32）；推理引擎分别暴露 `model_output_dim` 与 `execution_action_dim`。后者是 `model_to_robot` 还原后的 DataSchema action 宽度（pi0 = 8）。
 - **字段映射**：只描述真实字段和语义的对应关系，本身不执行任何张量计算。尤其
   `StateMapping` / `ActionMapping` 不为 padding 生成无来源的占位 entry；模型目标宽度在
   `ModelIOSpec`，padding 数量是目标宽度减去真实 mapping 数量，执行动作在 PipelinePlan。
@@ -550,8 +561,8 @@ def load_act(recipe, schema):
 ```text
 1. Load            加载 DataSchema、NormStats、ModelMetadata、RobotProfile
 2. Validate        分别校验各描述的内部结构和来源
-3. Check Pairs     检查 数据集×模型、模型×机器人、数据集×机器人 两两关系
-4. Resolve Mappings 生成 Camera、State、Action、Language、Joint Mapping；只记录真实对应关系
+3. Check Pairs     检查有显式共享词表的兼容关系
+4. Resolve Mappings 生成 Camera、State、Action、Language Mapping；只记录 DataSchema → model 真实对应关系
 5. Build IO Spec   从 ModelMetadata、model tunables、DataSchema 与 CameraMapping 直接解析模型接口
 6. Plan Pipeline   以 ModelIOSpec 为目标生成声明式 TransformPipelinePlan
 7. Emit            成功输出具身组合，失败抛出结构化 ResolutionError
@@ -566,20 +577,14 @@ def load_act(recipe, schema):
 | 检查项 | 比较对象 | 不一致时的处理 |
 |---|---|---|
 | 状态维度 | 数据 vs 模型 | flexible/padded 可转换；fixed 报错 |
-| 动作维度 | 数据 vs 模型 vs 机器人 | 可 padding 则规划 transform，否则报错 |
-| 相机槽位 | 数据/机器人相机 vs 模型槽位 | 唯一匹配则 Mapping；未映射槽位 padding；歧义报错 |
-| 语言输入 | 数据 language vs 模型要求 | 有受控默认值则 warning，否则报错 |
-| 控制模式 | 数据/模型/机器人 | 按转换等级处理 |
-| 夹爪约定 | 数据/模型/机器人 | 可确定 flip 时规划 transform |
-| 旋转表示 | 数据/模型/机器人 | 条件完整时规划 transform |
+| 动作维度 | 数据 vs 模型 | 可 padding 则规划 transform，否则报错 |
+| 相机槽位 | DataSchema 相机 vs 模型槽位 | 唯一匹配则 Mapping；未映射槽位按模型策略处理；歧义报错 |
+| 控制模式 | 数据/模型/机器人显式受控词表 | 明确冲突时报错 |
 | 归一化统计 | 数据 stats vs 模型方法 | 统计量满足则通过，否则报错 |
-| 频率 | 数据 fps vs 模型/机器人 | 默认 warning；不隐式重采样 |
-| 关节顺序 | 数据 keys vs 机器人关节 | 唯一可重排则 Mapping，否则报错 |
-| 安全范围 | 模型输出 vs 机器人限位 | 记录约束，不掩盖严重错配 |
 
 相机兼容性按模型槽位逐项检查，不比较相机总数。存在唯一真实视角时建立 Mapping；没有真实视角时保留空映射并规划 padding；存在多个候选且无法唯一决定时才失败。
 
-最终成功条件不是三个两两检查简单相加，而是三者能在同一份模型输入输出规格下形成一致结果。
+这里不比较 RobotProfile 相机/关节名与 DataSchema 名称，也不用 robot joint 数推断 action 宽度。无显式 binding 时，名称对不上只表示没有证据，不是不兼容。
 
 ##### 转换等级
 
@@ -614,22 +619,19 @@ def load_act(recipe, schema):
 
 #### 4.2.3 字段映射（Mapping）
 
-Mapping 只表达稳定的语义对应关系，不执行任何张量操作。以相机为例，每条关系围绕一个模型视觉槽位，同时描述训练与实时运行的来源：
+Mapping 只表达 DataSchema 到模型的稳定语义对应，不执行张量操作。以相机为例：
 
 ```text
-模型视觉槽位
-├─ 训练来源：DataSchema 中的相机，或空映射
-└─ 实时来源：RobotProfile 中的相机，或空映射
+模型视觉槽位 ← DataSchema 相机，或显式空映射
 ```
 
-例如，同一个模型头部视觉槽位可以在训练时来自数据中的顶部相机，在实时运行时来自机器人头部相机。来源为空不代表模型槽位消失；解析器仍保留该槽位并在对应路径规划 padding，具体占位值和 mask 形式由模型输入适配器实现。
+运行时 Adapter 先把平台原生相机名转成同一 DataSchema key，因此不需要第二份 robot camera mapping。显式空映射的模型槽位仍由模型适配器产生 placeholder/mask。
 
 Mapping 必须满足：
 
 - 每个模型槽位都有明确的来源关系或空映射；
-- 非空来源必须能在对应的 DataSchema 或 RobotProfile 中找到；
+- 非空来源必须能在 DataSchema 中找到；
 - 空映射必须在对应路径规划相机槽位 padding；
-- 一条相机关系同时说明「数据 → 模型」和「机器人 → 模型」两条关系；
 - 自动映射只能使用确定性规则；
 - 受控 override 直接产生最终 Mapping；
 - 不依赖字典顺序或字符串排序猜测语义。
@@ -650,13 +652,13 @@ Mapping 必须满足：
 
 ##### 三条语义 Pipeline
 
-具身组合分别描述三条可能不同的语义适配路径：
+具身组合暴露三个语义入口，但只有两份实际计划：
 
 **data_to_model**：把数据样本转换为模型训练接口，包括数据相机和 state 字段到模型输入槽位、图像 dtype/layout/resize/normalization、state/action normalization、action padding、task/language 字段映射。
 
-**robot_to_model**：把机器人实时观测的**规范化语义对象**转换为模型输入，包括机器人相机语义到模型视觉槽位、state key 和 joint order 重排、单位/坐标表示/normalization、模型需要的 padding 和输入格式转换。它不处理 ROS message、HTTP JSON、共享内存或厂商 SDK 对象——推理模块应先通过 PlatformAdapter 把平台 payload 转成机器人规范 observation，然后才执行这条 pipeline。即使训练数据来自同一机器人，`robot_to_model` 也不能默认等于 `data_to_model`：数据字段名、采集编码和实时 observation contract 可能不同。
+**robot_to_model**：Platform Adapter 先把机器人原生 payload 转成 checkpoint DataSchema 接口，再执行这个语义入口。它的 calls 和 `resolved` 与 `data_to_model` 值相等，不包含相机改名或关节重排。
 
-**model_to_robot**：把模型内部 action 输出转换为机器人的规范命令语义，包括 action unpadding、denormalization、joint/action key 重排、单位和动作表示转换、明确且受支持的控制空间转换。它只产生符合 RobotProfile 的规范 action，不负责发送命令、执行安全急停或选择 transport。
+**model_to_robot**：把模型 action 输出 unpad/denormalize 回 DataSchema action。Platform Adapter 负责把这个有序向量转成平台命令并发送；Assembly 当前不做跨接口单位、关节或控制空间转换。
 
 ##### 正向与逆向不能靠列表反转
 
@@ -668,7 +670,7 @@ Mapping 必须满足：
 - safety clamp 不可逆；
 - temporal resampling 可能有损。
 
-解析器规划三条明确的 TransformPipelinePlan。下游模块根据目标路径实例化相应 pipeline，不能把 `data_to_model` 简单倒序后同时当作 `robot_to_model` 或 `model_to_robot`。
+解析器规划 `data_to_model` 与 `model_to_robot`，然后令 `robot_to_model = data_to_model`。`model_to_robot` 仍必须由每个 step 声明的 inverse 生成，不能只倒序 calls。
 
 ##### 规则来源
 
@@ -692,27 +694,26 @@ Mapping 必须满足：
 
 **训练模块**可以读取：具身组合中保留的 DataSchema 和 NormStats、ModelMetadata 及其 backend/训练组件/微调能力、模型输入输出规格、数据 × 模型 Mapping 和 `data_to_model` TransformPipelinePlan。训练模块自己负责训练模式、目标函数、微调策略、backend、Trainer、sampler、DataLoader、batch 构建、优化器、调度器、分布式执行以及 checkpoint 与训练产物。训练模块不得根据模型名重新推导相机映射、不得根据数组 shape 猜测动作语义、不得绕过具身组合独立查询 registry、不得覆盖解析器已确定的关节顺序、不得静默忽略组合错误。
 
-**推理模块**可以读取：具身组合中保留的 RobotProfile 和本体能力与静态安全约束、ModelMetadata 和模型运行能力、模型输入输出规格、机器人 × 模型 Mapping、`robot_to_model` 和 `model_to_robot` TransformPipelinePlan。推理模块自己负责平台 adapter 和 connector、transport、client/server 拓扑、session config、平台 wire format、action chunk 执行策略、连接重试超时和生命周期、运行时安全执行。推理模块不得绕过具身组合独立查询 registry，也不得使用平台信息重新推导三者语义关系；它可以在不改变组合事实的前提下解析平台运行参数。
+**推理模块**读取 ModelIOSpec、四类 data → model Mapping、`robot_to_model` 和 `model_to_robot` TransformPipelinePlan。它负责平台 adapter/connector、transport、action chunk 执行与运行时安全。Platform Adapter 必须把原生 observation/action 明确转成/从 checkpoint DataSchema 转出；推理模块不得根据 RobotProfile 名称重新猜测 mapping。
 
 ### 4.3 微调层
 
-微调层由 `training/` 模块实现，入口是 `vla_factory/training/train.py` 的 `train()`。详细设计见 [微调层模块设计](../modules/training-module.cn.md)（TODO）。训练流程：
+微调层由 `training/` 模块实现，入口是 `vla_factory/training/train.py` 的 `train()`。详细设计见 [微调层模块设计](../modules/training-module.cn.md)。训练流程：
 
 ```text
 parse recipe
-    -> prepare output_dir
-    -> read schema / norm_stats
-    -> resolve state/action vector keys
-    -> save inference_metadata
+    -> resolve recipe + assembly
+    -> resolve strategy + strict config
+    -> prepare output_dir + save training contract
     -> create model from registry
-    -> apply fine-tuning strategy
-    -> create dataloaders
-    -> build TrainingArguments
+    -> strategy.prepare_model
+    -> create one all-episode training dataloader
     -> VLATrainer.train()
+    -> strategy.finalize_model / state_dict
     -> save final/model.pt
 ```
 
-随着 4.2 节组合解析能力落地，训练入口会先调用 `resolve_assembly()` 得到具身组合，再从具身组合中读取数据描述、模型描述和 Mapping，替代当前散落在 train() 里的手工字段解析。
+训练入口先调用 `resolve_assembly()` 得到具身组合；输出目录、模型和 DataLoader 都在解析成功之后创建。训练层从具身组合读取描述、Mapping、IO spec 与 PipelinePlan，不自行重推关系。
 
 微调层负责把数据层产出的 Canonical IR（`Episode` / `Frame`）按具身组合中解析得到的 `data_to_model` TransformPipeline 组装成 `Observation` 样本，再做窗口采样与批处理，交给 `VLATrainer`。
 
@@ -726,6 +727,11 @@ parse recipe
 - `lora`：面向支持 LoRA 的模型扩展。
 
 ACT 从零训练通常使用 `full`；预训练 VLA 模型可使用 full、freeze、selective 或 LoRA。
+
+策略通过 `@register_strategy(name)` 注册，并严格解析自己的 `finetuning.config`。
+`prepare_model()` 负责冻结/包装，`finalize_model()` 与 `state_dict()` 负责保存前收口；
+训练入口和 checkpoint 层不按 `lora` 等策略名分支。改变 loss、采样或训练循环的方法不属于
+这个接口，未来应进入独立的 Training Method 层。
 
 #### 4.3.2 VLATrainer
 
@@ -749,7 +755,7 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 
 #### 4.3.3 Checkpoint 与 Final Model
 
-训练开始前，`training/train.py` 会把部署需要的元数据写入输出目录的 `inference_metadata/`。训练中间 checkpoint 由 HF Trainer 写入。训练结束后，框架额外写入：
+训练开始前，`training/checkpoint.py` 会把部署需要的元数据写入输出目录的 `inference_metadata/`。训练中间 checkpoint 由 HF Trainer 写入。训练结束后，框架额外写入：
 
 ```text
 <output_dir>/final/model.pt
@@ -759,7 +765,7 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 
 ### 4.4 推理层
 
-推理模块负责把训练产物转成平台可调用的实时策略服务：从 checkpoint 重建与训练一致的推理链路（模型 + preprocessor / postprocessor），把各仿真器 / 真机平台的原生 observation 翻译成统一 `ObsDict`，按 `robot_to_model` TransformPipeline 组装成 `Observation` 运行模型前向，再按执行策略把归一化 action chunk 经 `model_to_robot` 还原成平台可执行的动作命令。它以 checkpoint 中的 `inference_metadata`（recipe、schema、norm stats）为唯一事实来源，不重新扫描训练数据集，也不重新推导数据/模型/机器人三者之间的关系。
+推理模块负责把训练产物转成平台可调用的实时策略服务：从 checkpoint 重建与训练一致的推理链路（模型 + preprocessor / postprocessor），把各仿真器 / 真机平台的原生 observation 翻译成统一 `ObsDict`，按 `robot_to_model` TransformPipeline 组装成 `Observation` 运行模型前向，再按执行策略把归一化 action chunk 经 `model_to_robot` 还原成平台可执行的动作命令。它以 checkpoint 中的 `inference_metadata/{assembly.json,recipe.yaml}` 为唯一事实来源；schema、norm stats、IO spec 和 pipeline plans 均取自 assembly 快照，不重新扫描训练数据集，也不重新推导数据/模型/机器人三者之间的关系。
 
 详细设计见 [推理模块设计](../modules/deploy-module.cn.md)，其中展开说明：
 
@@ -827,7 +833,7 @@ vlafactory-cli train --config examples/pi0_lora.yaml
 
 ### 5.4 Adapter 依赖边界
 
-模型 entry 模块可以被导入，不代表上游模型依赖必须已经安装。推荐做法是：
+模型 adapter 模块可以被导入，不代表上游模型依赖必须已经安装。推荐做法是：
 
 - entry 顶层只导入 VLA Factory 内部稳定模块。
 - 上游模型库在 factory 内延迟导入。
@@ -872,7 +878,7 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra�
 数据测试关注：
 
 - reader 能读取 schema、norm stats 和 episode 信息。
-- manifest 样本数、split 和索引范围正确。
+- 全部 episode 的 `SampleWindow` 数量、顺序和时间范围正确。
 - transform pipeline 的 normalize、resize、padding 行为正确。
 - `VLADataset` 输出的 observation/action shape 符合模型预期。
 - `collate_fn` 能处理 batch 聚合。
@@ -881,7 +887,7 @@ VLA Factory 不维护 `vendor/` 模型实现。上游模型应来自 pip extra�
 
 模型测试关注：
 
-- registry 能发现模型 entry。
+- registry 能发现内置 adapter 和外部模型插件。
 - 重复注册会失败。
 - 缺少 optional dependency 时错误信息清楚。
 - wrapper 能实现 `compute_loss` 和 `predict_actions`。
@@ -973,9 +979,9 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 - **阶段 0：确定术语和数据结构**。扩展现有 DataSchema 和 ModelMetadata；引入 RobotProfile；引入组合解析器、具身组合和 ResolutionError；保持现有训练和部署行为不变；新增 resolve dry-run，不接管下游执行。
 - **阶段 1：抽取现有隐式事实**。把当前 `action_spec` 字段分别迁移到 DataSchema、ModelMetadata 和 RobotProfile；把 model config 中稳定的输入输出能力迁移到 ModelMetadata 接口部分；让 reader 补充可探测的数据语义；把 model adapter 中的关系假设提取为声明或解析规则；把 deploy adapter 中稳定的本体事实提取到 RobotProfile。
 - **阶段 2：解析诊断**。解析器先运行兼容性检查并生成 explain trace 或 ResolutionError；对维度、相机、统计量、控制模式和字段顺序提前报错；现有下游继续使用原有构建逻辑；用 golden tests 固化代表性 ResolutionError 和 explain trace。
-- **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**。生成 camera、state、action、language 和 joint mapping；规划包含 normalize、padding、关节重排和夹爪 flip 等 T1 step 的 pipeline；用 golden tests 固化代表性具身组合；先提供 dry-run 和 diff，不立即要求下游全面执行。（**已落地 data × model 一半**：五类 Mapping、`data_to_model`、`model_to_robot`。关节重排与夹爪 flip 两个 T1 step 在 `TransformRegistry` 中尚无实现，`robot_to_model` 随之推迟，理由与恢复路径见 `docs/plans/phase3-mapping-and-t1-pipeline.cn.md`。）
-- **阶段 4：下游接入**（**已落地 data × model 一半**）。训练模块消费「数据 × 模型」组合结果；模型工厂改为接收具身组合（`factory(recipe, assembly)`），adapter 中重复的关系推导全部删除；训练产物新增 `inference_metadata/assembly.json`——带 `format_version` 的**执行契约快照**，推理侧照它执行，并在加载时校验当前模型声明与快照的接口事实一致（图像范围、归一化方式、视觉槽位这类漂移不改变权重形状，`load_state_dict` 拦不住）。兼容承诺分两类：**外部基础 checkpoint**（经 `model.path`）继续支持并做可选一致性检查；**旧版训练产物**（无 `assembly.json`）明确不支持，缺失即保守失败，不在部署期重新解析——那会用当时安装的模型声明重解析出另一条 pipeline 并静默跑起来。「推理消费模型 × 机器人」只落地了 `model_to_robot`，`robot_to_model` 与 JointMapping 的消费随阶段 3 的关节重排一起推迟。
-- **阶段 5：Recipe 瘦身**（**已完成**）。凡是复述解析器可推导事实的字段，一律从 `TrainRecipe` 删除：整块 `action_spec`、整块 `data.sampler` 与 `data.split`、`training.inference_steps`，以及两条 legacy 组合入口（`model.config.camera_mapping` / `default_task`、`composition:` 旧块名）。剩下的只有「选择」——用哪个模型、哪份数据、哪台机器人、怎么训练、写到哪，加上 `assembly:` 里的受控 override。样本形状的两端现在都跟随模型的时序契约（`ModelMetadata.history_frames` → `ModelIOSpec.n_obs_steps`，以及 action horizon）；训练/验证划分改为框架固定策略——训练期从不评估（`eval_strategy="no"`），这个旋钮唯一的效果就是悄悄缩小训练集。**不提供兼容层**：仓库 0.1.0 早期、调用方全在仓内，旧 recipe 就是过期配置，未知键一律忽略，用 `resolve` 看解析器推出来的结果即可。
+- **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**（**已完成**）。生成 Camera / State / Action / Language 四类 data → model Mapping，规划 normalize、resize、padding 及显式 inverse。不生成基于名称猜测的 JointMapping。
+- **阶段 4：下游接入**（**已完成**）。训练和推理消费 `ResolvedAssembly`；训练产物直接保存其 JSON；推理用 `robot_to_model` 语义入口预处理，并用 `model_to_robot` 恢复 DataSchema action。Platform Adapter 负责平台原生接口 ↔ DataSchema，不兼容旧 checkpoint。
+- **阶段 5：Recipe 瘦身**（**已完成**）。凡是复述解析器可推导事实的字段，一律从 `TrainRecipe` 删除：整块 `action_spec`、整块 `data.sampler` 与 `data.split`、`training.inference_steps`，以及旧的组合入口。剩下的只有「选择」——用哪个模型、哪份数据、哪台机器人、怎么训练、写到哪，加上 `overrides:` 里的受控 override。样本形状的两端现在都跟随模型的时序契约。训练期尚未实现评估，因此不再固定扣留一份无消费者的 val split，全部 episode 都进入训练；真正加入评估循环时再恢复 episode-level split。**不提供兼容层**：仓库 0.1.0 早期、调用方全在仓内，旧 recipe 就是过期配置，未知键直接报错，用 `resolve` 看解析器推出来的结果即可。
 - **阶段 6：受控扩展 T2**。在真实用例和测试基础上增加 FK/IK、坐标系和频率转换；每项能力独立评审；默认保持保守失败；不把 T2 作为组合解析成立的前提。
 
 旧配置兼容路径：

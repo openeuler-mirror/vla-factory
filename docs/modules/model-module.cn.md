@@ -1,6 +1,7 @@
 # 模型抽象（model）模块设计
 
-> 文档状态：**TODO** —— 本文档待补充。完成后对齐**当前已实现**的行为（架构文档描述目标架构，可能超前于实现），供读者参照学习。
+> 文档状态：**已实现**。本文对齐当前 `model_interface.py`、`registry.py`
+> 与 `adapters/` 的代码边界。
 > 对应架构：见 [总体架构 § 4.1.2 VLA 模型](../architecture/vla-factory-architecture.cn.md) 与 [§ 2.2 目录结构 `model/`](../architecture/vla-factory-architecture.cn.md)。
 
 ## 0. 职责
@@ -9,26 +10,47 @@
 
 ## 1. 核心对象
 
-- `VLAModel` 协议（`model/interfaces/`）：`compute_loss(observation, actions, ...)` 与 `predict_actions(observation, ...)`；PyTorch 模型另实现 `parameters()` / `named_parameters()` / `train()` / `to()`。
+- `model_interface.py`：模型层公共阅读入口，集中 `ModelMetadata`、
+  `VisionSlot`、`Observation` 与 `VLAModel` backend 协议。
+- `VLAModel` 协议：`compute_loss(observation, actions, ...)` 与 `predict_actions(observation, ...)`；PyTorch 模型另实现 `parameters()` / `named_parameters()` / `train()` / `to()`。
 - `Observation`：跨维度共享的规范样本类型（归属本模块，被 composition / training / inference 共同消费）。
 - `ModelMetadata`：模型族静态能力描述（视觉槽位、维度策略、动作 horizon、normalization、可训练组件、微调方式、install_hint 等）。
 - checkpoint 可选一致性检查：读取外部 checkpoint 的 `config.json`，只验证其冗余形状信息是否与 `ModelMetadata` 相符，不参与事实解析。
-- 注册表：`@register_vla` 装饰器，`get_entry(name)` lazy import `model/registry/entries/*`。
+- 注册表：`ModelRegistry`、`@register_vla` 与 `get_entry(name)`；内置实现
+  lazy import `model/adapters/*`，外部包使用 `vla_factory.models` entry point。
 - Thin Adapter：把 `Observation` 与上游模型 batch 互转，不复制上游模型代码。
 
-## 2. 详细设计
+## 2. 目录与阅读入口
 
-TODO，后续补充：
+```text
+model/
+├── model_interface.py       # 统一声明、运行时输入与行为协议
+├── registry.py              # 内置发现、装饰器注册、外部插件发现
+├── checkpoint_validation.py # checkpoint 的可选冗余事实检查
+└── adapters/                # 上游模型薄适配与模型族声明
+    ├── act.py
+    ├── openpi.py            # PI0 / PI05 有意共享的上游胶水
+    ├── pi0.py
+    └── pi05.py
+```
 
-- `VLAModel` 协议的完整方法签名与 backend 扩展（PyTorch / Jax）。
-- `ModelMetadata` 字段全集与校验；checkpoint 格式适配与可选一致性检查。
-- registry 的 lazy import、导入失败显式报错、optional dependency 延迟导入边界。
-- checkpoint 加载策略（wrapper 与上游 key prefix 差异）。
-- 新增模型 entry 的脚手架与 contract test。
+理解模型层从 `model_interface.py` 开始；新增模型从最接近的 adapter 开始；
+checkpoint 检查保持独立，因为它涉及本地或外部仓库 I/O，而模型接口定义保持
+纯净。
 
 ## 3. 扩展方式
 
-TODO：新增上游模型 adapter 的标准步骤；不得根据数据集名/机器人名做隐藏分支。
+仓库内 adapter 在 `model/adapters/<name>.py` 用
+`@register_vla(ModelMetadata(...))` 注册。外部包通过标准 entry point 发布：
+
+```toml
+[project.entry-points."vla_factory.models"]
+my-vla = "my_package.model:load_my_vla"
+```
+
+entry-point 名必须与 `ModelMetadata.name` 相同。无论内置还是外部 adapter，
+optional dependency 都应延迟到 factory 调用时导入；adapter 不得根据数据集名
+或机器人名加入隐藏分支，也不得重新推导 `ResolvedAssembly` 已确定的关系。
 
 ## 4. 模型描述（目标设计）
 
@@ -47,9 +69,9 @@ TODO：新增上游模型 adapter 的标准步骤；不得根据数据集名/机
 | 载体 | 性质 | 谁能改 | 拥有的事实 |
 |---|---|---|---|
 | `ModelMetadata` **具名字段**（registry entry 静态声明） | 每**模型族**一份，随代码发布 | 只能改模型声明本身；recipe 不可覆盖 | 完整接口事实：视觉槽位与尺寸、维度策略、action horizon、归一化方法、图像值域、缺槽位策略、控制模式偏好、微调挂载点 |
-| `ModelMetadata.params`（同一份声明里的 dict） | 每模型族的运行**默认值** | recipe `model.config` 逐 run 覆盖 | 该模型自己的上游超参（层数、宽度、dropout、推理步数、compile 模式）与默认 transform 步骤清单 |
+| `ModelMetadata.params`（同一份声明里的 dict） | 每模型族的运行**默认值** | recipe `model.config` 逐 run 覆盖 | 该模型自己的上游超参（层数、宽度、dropout、推理步数、compile 模式）；不包含 transform 步骤清单 |
 
-**一个模型 = 一个 entry 文件。** 事实与默认值同处一份声明，模型作者不需要先判断「这个键算事实还是算默认值」再决定写进哪个文件——**容器即属性**：框架级事实有具名字段和类型，其余一律丢进 `params`。（早期版本把默认值放在独立的 `recipe/model/*.yaml`，那让扩展一个模型要写两个文件，还造成 model 叶子层反向依赖用户表达层，已取消。）
+**一个模型族 = 一个 adapter 声明文件。** 事实、默认值与 factory 同处一份声明，模型作者不需要先判断「这个键算事实还是算默认值」再决定写进哪个配置文件——**容器即属性**：框架级事实有具名字段和类型，其余一律放进 `params`。只有真正跨模型族共享的上游胶水才提取为独立模块，例如 `openpi.py` 被 PI0 与 PI05 共同使用。（早期版本把默认值放在独立的 `recipe/model/*.yaml`，那让扩展一个模型要写两个文件，还造成 model 叶子层反向依赖用户表达层，已取消。）
 
 不存在 metadata 与 checkpoint 的合并优先级：resolver、ModelIOSpec、Mapping
 和 TransformPipelinePlan 都只读 `ModelMetadata`。`checkpoint_validation.py`
@@ -87,7 +109,9 @@ transform 规划、训练/推理适配）才进第一版。声明侧字段"可�
 |---|---|---|
 | `slots[]` | 每槽位一条：`{name, semantic_accepts, required, resolution, channels}` | CameraMapping：数据侧 `cameras[].semantic` 与 `semantic_accepts` 求交做槽位匹配 |
 | `missing_slot_policy` | `zero_pad` / `drop` / `error`（模型训练时的约定） | 未映射槽位的 padding 规划（架构 §4.1.2） |
-| `image_input_range` / `image_normalize_mode` | 图像值域与归一化方式（已从 transform 步骤配置上提） | image_to_float / image_normalize 步骤读取；步骤配置里再写即报错 |
+| `image_input_range` / `image_normalize_mode` | 图像值域与归一化方式 | resolver 推导 image_to_float / image_normalize call |
+| `image_layout` | 模型输入采用 `CHW` 或 `HWC` | resolver 推导 image_layout call |
+| `image_resize_mode` | 尺寸不一致时采用 `stretch` 或 `pad` | resolver 结合 ModelIOSpec 推导 resize_images call |
 
 `semantic_accepts` 的取值域**就是**数据侧 `semantic` 受控词表（一处
 定义、两处引用），允许泛化值（`third_person` 接受任意第三人称视角）。
@@ -99,8 +123,12 @@ transform 规划、训练/推理适配）才进第一版。声明侧字段"可�
 | 字段 | 说明 | 消费方 |
 |---|---|---|
 | `language_template` | prompt 模板（如 `"{task}"`） | `build_prompt` / `task_tokenize` |
+| `tokenizer_repo` / `tokenizer_max_length` | tokenizer 来源与固定 token 长度 | resolver 推导 task_tokenize call |
+| `prompt_includes_state` | 是否在 padding 前把归一化 state 编入 prompt | resolver 决定 tokenize/pad 依赖顺序 |
 
-tokenizer 随模型权重走（上游对象自带），不设 `tokenizer_ref`。
+tokenizer 来源是模型族事实；若 family 未单独声明 repo，可由 recipe 的
+`model.path` 指向带 tokenizer 的 checkpoint 作为运行时地址回退，但不能在
+`model.config` 中逐 run 改写 tokenizer 语义。
 
 **proprio / action —— 维度与归一化契约**
 
@@ -177,14 +205,17 @@ resolver 先由这里的维度策略与 `DataSchema` 直接建立 `ModelIOSpec`�
 
 一个键放哪，按顺序问两个问题：
 
-1. **组合解析要读它吗？**（兼容性检查 / Mapping 生成 / Pipeline 规划）
-   → 是：`ModelMetadata` **具名字段**。例：`vision_slots[].semantic_accepts`、
-   `dim_policy` / `dim_policy_max`、`vector_normalization`、`image_input_range`、
-   `image_normalize_mode`、`control_mode_pref`、`missing_slot_policy`。
-2. **改了会改变模型对外的接口语义吗？**（槽位数量、pad 目标维度、动作表示）
-   → 是：具名字段；→ 否：**`params`**。例：`dim_model`、`n_heads`、`kl_weight`、
-   `dropout`、`paligemma_variant`、`pytorch_compile_mode`、`num_inference_steps`、
-   `transforms`。
+	1. **组合解析要读它吗？**（兼容性检查 / Mapping 生成 / Pipeline 规划）
+	   → 是：`ModelMetadata` **具名字段**。例：`vision_slots[].semantic_accepts`、
+	   `dim_policy` / `dim_policy_max`、`vector_normalization`、`image_input_range`、
+	   `image_normalize_mode`、`image_layout`、`image_resize_mode`、tokenizer 字段、
+	   `control_mode_pref`、`missing_slot_policy`。
+	2. **改了会改变模型对外的接口语义吗？**（槽位数量、pad 目标维度、动作表示）
+	   → 是：具名字段；→ 否：**`params`**。例：`dim_model`、`n_heads`、`kl_weight`、
+	   `dropout`、`paligemma_variant`、`pytorch_compile_mode`、`num_inference_steps`。
+
+	Transform step 列表不属于第三类配置：resolver 根据上述具名事实推导并排序
+	`TransformStepCall`，`model.config.transforms` 明确拒绝，不能逐 run 改写。
 
 checkpoint 能自述的同名字段只是可选校验输入，不构成第三类事实来源。
 
@@ -197,9 +228,9 @@ checkpoint 能自述的同名字段只是可选校验输入，不构成第三类
 
 | 闸 | 治什么 | 实现 |
 |---|---|---|
-| 1. 未声明的键即报错 | 键名拼错、写了早已删除的旧键。pi0 的 factory 逐个 `cfg.get()`，取不到的键凭空消失，从不报错 | `recipe/defaults.py:resolve_recipe()` 校验 `model.config` 的键 ⊆ `params` 的键（外加迁移期的 `camera_mapping` / `default_task`），报错时用 `difflib` 给候选 |
-| 2. 未被读取的键即报错 | 声明了却无人消费——改了不生效且无提示。`num_inference_steps` 与 `tokenizer_max_length` 都曾如此 | `utils/tracked_config.py:TrackedConfig` 记录读取，factory 末尾 `assert_all_consumed()`；框架在 factory 之外消费的键预先登记 |
-| 3. 事实键被覆盖即报错 | recipe 把 pi0 图像值域改成 `[0,1]`（SigLIP 要 `[-1,1]`），训练照跑、效果劣化、无任何提示 | `assembly/transforms/base.py:reject_fact_override()`，接入 `image_to_float` / `image_normalize` / `normalize_vector` / `pad_dimensions` |
+| 1. 未声明的键即报错 | 键名拼错、写了早已删除的旧键。pi0 的 factory 逐个 `cfg.get()`，取不到的键凭空消失，从不报错 | `recipe/model_config.py:merge_model_config()` 校验 `model.config` 的键 ⊆ `params` 的键；组合 override 只允许写入 `overrides`，报错时用 `difflib` 给候选 |
+| 2. 未被读取的键即报错 | 声明了却无人消费——改了不生效且无提示。`num_inference_steps` 曾如此 | `utils/tracked_config.py:TrackedConfig` 记录读取，factory 末尾 `assert_all_consumed()`；框架在 factory 之外消费的键预先登记 |
+| 3. Transform 配置面被移除 | recipe 改写 step、顺序或事实，导致训练/部署与模型契约漂移 | `merge_model_config()` 与 `resolve_from_facts()` 明确拒绝 `model.config.transforms`；pipeline 只由 resolver 从 `ModelMetadata` 事实推导 |
 
 闸 2 的实现细节值得记一笔：`TrackedConfig` 是 `MutableMapping` 而不是 `dict` 子类——
 CPython 对 `dict` 子类的 `**` 展开走的是具体类型快路径，不会调用被重写的

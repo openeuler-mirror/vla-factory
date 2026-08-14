@@ -25,15 +25,25 @@
 >    step 读它的 recipe / schema / model_config / split 字段。
 > 5. **`test_data_pipeline.py::TestEndToEnd` 从「永远 skip」变成真的在跑**——它原先指向
 >    一个不存在的 `vla_factory/examples/act_aloha.yaml`；改成 `examples/act_lekiwi.yaml`
->    + 真实 fixture 后，它正好覆盖 `resolve_from_recipe` → `create_dataloaders` 这条新链路。
+>    + 真实 fixture 后，它正好覆盖 `resolve_assembly` → `create_dataloader` 这条新链路。
 > 6. **`resolve` 的 CLI 输出对老 checkpoint 少了一行**：`(skipped checkpoint compatibility
->    check: ...)` 改成 `logger.info`，因为这行提示搬进了 `resolve_from_recipe`，而它同时
+>    check: ...)` 改成 `logger.info`，因为这行提示搬进了 `resolve_assembly`，而它同时
 >    服务 train / infer，print 到 stdout 会污染训练日志。
 > 7. **阶段 4 review 后的 shape fold 方案已再次重构**：Mapping 先统一解析，`ModelIOSpec` 在 pipeline
 >    之前从 `ModelMetadata` / model tunables / `DataSchema` 直接解析，pipeline 只消费目标
 >    接口。已删除 `output_widths`、`output_image_sizes`、`fold_widths`；ACT 使用显式
 >    `input_image_size`，pi0/pi05 的 224 只来自 `VisionSlot.resolution`。推理侧字段最终命名为
 >    `model_output_dim` / `execution_action_dim`。
+> 8. **2026-08-13 后续 Pipeline 决策**：机器人运行时先由 Platform Adapter 组装成
+>    DataSchema，`robot_to_model` 因此直接复用 `data_to_model`，不再等待关节重排/夹爪
+>    flip step；RobotProfile 与 DataSchema 不做基于名称启发式的硬匹配。详见
+>    `runtime-pipeline-convergence.cn.md`。
+> 9. **2026-08-13 Assembly 瘦身后的最终接口**：公开编排入口定名为
+>    `resolve_assembly(recipe)`，纯函数定名为 `resolve_from_facts(...)`；实现目录由
+>    `assembly/resolver/` 收敛为 `assembly/resolve/`。`ResolvedAssembly` 自己负责
+>    `save()` / `load()` / `check_model_compatibility()`，JSON 直接保存对象本体，不再有
+>    artifact service、外层 envelope 或格式版本。计划下文保留的是当时的实施记录，凡与
+>    本条冲突均以当前架构与代码为准。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段 4/5、§4.2.6（上下游边界）、
 > §3.1（recipe 三个区）、§4.2.1（具身组合是下游唯一入口）。
 >
@@ -87,8 +97,8 @@ from_scratch 模型的 horizon**——训练一旦改成消费 IO spec，ACT 会
 |---|---|---|
 | `assembly/action_facts.py`（整个模块，72 行） | action_dim / action_horizon 的三方路由 | `assembly.model_io_spec` |
 | `training/train.py:175`、`inference/infer.py:534-541` | 同上，各调一次 | 同上 |
-| `entries/act.py:436-447` | action_dim / horizon / state_dim / camera 列表 | `model_io_spec` + `camera_mapping` |
-| `entries/pi0.py:296-297,317-319` | `get_camera_mapping(recipe)`、horizon | `assembly.camera_mapping` + `model_io_spec` |
+| `adapters/act.py:436-447` | action_dim / horizon / state_dim / camera 列表 | `model_io_spec` + `camera_mapping` |
+| `adapters/pi0.py:296-297,317-319` | `get_camera_mapping(recipe)`、horizon | `assembly.camera_mapping` + `model_io_spec` |
 | `training/loader.py:63-72,119-131` | 从 recipe 取 `transforms.inputs`，再 `from_config` 重推事实 | `assembly.data_to_model` |
 | `inference/infer.py:560-578` | 同上，在**另一个进程**里第二次重推 | `assembly.data_to_model` + `model_to_robot` |
 | `training/loader.py:139-140` | 采样窗口长度取自 `recipe.data.sampler.action_horizon` | `model_io_spec.action_horizon` |
@@ -101,7 +111,7 @@ from_scratch 模型的 horizon**——训练一旦改成消费 IO spec，ACT 会
 `transforms/pipeline.py:69-88`（`TransformContext.plan()`）把 `recipe.model_path` 当作
 `tokenizer_repo` 兜底传给
 `task_tokenize`（`task_tokenize.py:_ensure_tokenizer` 没有它就报错），而
-`pipeline_planner.plan_context()` 显式把 `tokenizer_repo` 置 `None`。今天没暴露，是因为
+`pipelines.plan_context()` 显式把 `tokenizer_repo` 置 `None`。今天没暴露，是因为
 pi0/pi05 两份声明都写死了 `tokenizer_repo`；但只要运行时 context 按 WP6 缩成统计量载体，
 一个依赖外部 checkpoint 自带 tokenizer 的模型，落盘的 call 里就没有 tokenizer 地址，执行
 必炸。**兜底必须搬进解析入口，不能跟着 context 一起删**（WP1）。
@@ -124,11 +134,11 @@ pi0/pi05 两份声明都写死了 `tokenizer_repo`；但只要运行时 context 
 ### 2.1 WP 一览
 
 ```text
-WP1  统一解析入口          resolve_from_recipe()：registry → checkpoint 检查 → 描述 → resolve_assembly
+WP1  统一解析入口          resolve_assembly(recipe)：registry → checkpoint 检查 → 描述 → resolve_from_facts
 WP2  horizon 归位          from_scratch 模型的 horizon 有声明来源 + 按 paradigm 互斥校验
-WP3  训练接入              train() / create_dataloaders() 消费 ResolvedAssembly
+WP3  训练接入              train() / create_dataloader() 消费 ResolvedAssembly
 WP4  工厂接入              factory(recipe, assembly)；删 assembly/action_facts.py
-WP5  产物 + 推理接入        assembly.json（带 format_version）；缺失即失败；快照一致性校验
+WP5  产物 + 推理接入        ResolvedAssembly 直接 JSON；缺失即失败；快照一致性校验
 WP6  清理                  删掉运行时二次推导的四组代码
 WP7  文档同步              架构 §7.4 兼容层原文改写 + CLAUDE.md + skill
 ```
@@ -174,14 +184,19 @@ plan。不允许「一半读快照、一半读当前声明」——那正是组�
 那条，而**它会静默地跑起来**。一个静默用错归一化的推理服务，比一句「这个 checkpoint 太
 旧，请重训」危险得多。仓库版本 0.1.0、训练产物的唯一生产者就是本仓库，重训成本可控。
 
-据此删除原计划里的：重解析 fallback、`schema.json`/`norm_stats.json` 与快照混读、旧
-checkpoint 兼容测试、fallback 的 0.3.0 移除周期、以及风险 R2。`resolve_from_recipe()` 也
+据此删除原计划里的：重解析 fallback、独立 schema/stats 与快照混读、旧
+checkpoint 兼容测试、fallback 的 0.3.0 移除周期、以及风险 R2。`resolve_assembly()` 也
 因此不需要为部署接受外部传入的描述（WP1）。
 
-`schema.json` / `norm_stats.json` **继续写出**——它们是人可读的产物、`inspect` 与外部工具
-的输入；但**执行路径不读它们**（引擎只读 `recipe.yaml` + `assembly.json`）。
+后续进一步删除了独立的 `schema.json` / `norm_stats.json`：二者已完整包含在
+`assembly.json`，Schema 可通过 inspect 查看，不再维护重复产物。引擎只读
+`recipe.yaml` + `assembly.json`。
 
-### 2.4 明确不做（逐条理由）
+### 2.4 当时明确不做（历史记录）
+
+> 本节解释阶段 4 为什么没有实现 `robot_to_model`；它不是下一阶段的启动清单。
+> 2026-08-13 已决定让它直接复用 `data_to_model`，见
+> `runtime-pipeline-convergence.cn.md`。
 
 - **`robot_to_model` 与 JointMapping 的消费者**。阶段 3 已推迟规划侧（关节重排 / 夹爪
   flip 两个 T1 step 在 `TransformRegistry` 里没有实现），没有计划就没有可接入的东西。
@@ -198,16 +213,16 @@ checkpoint 兼容测试、fallback 的 0.3.0 移除周期、以及风险 R2。`r
 - **LoRA / 训练策略走 assembly**：`apply_strategy` 消费的是 components 与微调能力，属于
   「模型自身事实」，不是三者关系，§4.2.6 没有点名。不动。
 
-### WP1：`resolve_from_recipe()`——统一解析入口（orchestration adapter）
+### WP1：`resolve_assembly(recipe)`——统一解析入口（orchestration adapter）
 
 今天「recipe → 三份描述 → `resolve_assembly()`」这段胶水只存在于 `cli.py:591-689`，阶段 4
 会新增两个调用方（train、InferenceEngine），照抄就是三份；`_run_resolve` 里的 override
 拼装已经在 `test_resolve_mapping.py:232` 被复制了第四次。
 
-- 新增 `vla_factory/assembly/from_recipe.py`：
+- 当时在 `vla_factory/assembly/resolve/recipe.py` 实现（后续已与结果类型、持久化合并到 `assembly/resolve_assembly.py`）：
 
   ```python
-  def resolve_from_recipe(recipe: TrainRecipe) -> ResolvedAssembly:
+  def resolve_assembly(recipe: TrainRecipe) -> ResolvedAssembly:
       """Orchestration adapter — NOT a pure function.
 
       It touches the registry, the filesystem (dataset meta, checkpoint config)
@@ -223,13 +238,12 @@ checkpoint 兼容测试、fallback 的 0.3.0 移除周期、以及风险 R2。`r
      用户会看到「实验目录被清空了，然后告诉我 checkpoint 和模型对不上」；
   3. 取 `RobotProfile`（`recipe.robot.name` 非空时）；
   4. reader 读 `DataSchema` / `NormStats`；
-  5. 拼 overrides（`recipe.assembly` 四个字段 → dict，与 `CONSUMED_OVERRIDES` 的对应关系
-     收在这一处）；
-  6. 调 `resolve_assembly(..., model_config=recipe.model_config, model_path=recipe.model_path)`。
-- **`resolve_assembly()` 新增一个可选 kwarg `model_path`**（第 0 节第 5 点）：它只作为
+  5. 拼 overrides（`recipe.assembly` 已设置字段 → dict；纯解析器消费已知项并拒绝剩余项）；
+  6. 调 `resolve_from_facts(..., model_config=recipe.model_config, model_path=recipe.model_path)`。
+- **`resolve_from_facts()` 新增一个可选 kwarg `model_path`**（第 0 节第 5 点）：它只作为
   `PlanContext.tokenizer_repo` 的兜底值进入规划，**解析器不打开这个路径下的任何文件**
   （checkpoint 的读取是上面第 2 步的事）。这样落盘的每个 call 参数都是完整的，执行侧不
-  需要任何隐式兜底。`pipeline_planner.plan_context()` 里那段「tokenizer_repo 恒为 None」
+  需要任何隐式兜底。`pipelines.plan_context()` 里那段「tokenizer_repo 恒为 None」
   的 docstring 同步改写。
   语义上这也站得住：`model.path` 属于 recipe 的**组合选择区**（架构 §3.4 明确「checkpoint
   实例：recipe `model.path` 选择」），本来就是解析器的合法输入。
@@ -245,7 +259,7 @@ checkpoint 兼容测试、fallback 的 0.3.0 移除周期、以及风险 R2。`r
 两者都在模型声明里，只是分属「具名字段」和「`params`」两个容器——CLAUDE.md「facts vs
 tunables，容器即属性」那条规则的直接应用。
 
-- `entries/act.py`：`params` 增加 `"action_horizon": 100`（与现有 example 一致）。
+- `adapters/act.py`：`params` 增加 `"action_horizon": 100`（与现有 example 一致）。
   pi0/pi05 **不加**——它们的 horizon 是具名事实，加了等于允许 recipe 覆盖预训练固定的
   chunk 长度。
 - **互斥校验（不能只靠 allow-list）**。recipe 侧确实被 `resolve_recipe()` 的 tunable
@@ -275,7 +289,7 @@ tunables，容器即属性」那条规则的直接应用。
 - **两处配套改动**（漏了会在构造 `ACTConfig` 时炸）：
   - `utils/tracked_config.py:FRAMEWORK_CONSUMED_KEYS` 加 `action_horizon`——它的消费者是
     **解析器**（Build IO Spec），永远不会被模型工厂读到；
-  - `entries/act.py:461` 的 framework-managed pop 列表加 `action_horizon`——它不是
+  - `adapters/act.py:461` 的 framework-managed pop 列表加 `action_horizon`——它不是
     `ACTConfig` 的字段，留在 cfg 里会被 `**cfg` 带进去抛 `TypeError`。
 - **这是一次真实的行为变化，不只是摘要数字**：一份没写 `action_spec` 的最小 ACT recipe，
   以前拿到全局默认 50，之后拿到 ACT 声明的 100。补一条测试
@@ -285,10 +299,10 @@ tunables，容器即属性」那条规则的直接应用。
 
 ### WP3：训练接入
 
-- `train.py`：把 `resolve_from_recipe(recipe)` 提到**创建 output_dir 之前**（现在
+- `train.py`：把 `resolve_assembly(recipe)` 提到**创建 output_dir 之前**（现在
   `train.py:98-101` 先 `rmtree`+`mkdir` 再读数据）。架构 §4.2.2 要求解析器在完成校验前不
   创建下游输出目录；组合不成立时不该先毁掉上一次的实验目录（与 WP1 第 2 步同一个理由）。
-- `create_dataloaders(recipe, assembly)`：
+- `create_dataloader(recipe, assembly)`：
   - transform pipeline ← `assembly.data_to_model`；
   - 采样窗口 ← `assembly.model_io_spec.action_horizon`（删掉 `sampler_cfg.action_horizon`）；
   - 手拼的 `model_metadata` dict 参数删除。
@@ -310,19 +324,19 @@ tunables，容器即属性」那条规则的直接应用。
 adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两个都是原料，关系只能自己再
 推一遍。给它成品即可。
 
-- `model/registry/registry.py`：factory 协议与 docstring 改为 `(recipe, assembly)`。
+- `model/registry.py`：factory 协议与 docstring 改为 `(recipe, assembly)`。
   `recipe` 仍要传：工厂需要 `model.path`（checkpoint 选择）与 `model_config`（tunables），
   这两样不是三者关系，不在 assembly 里。
 - `ResolvedAssembly` 增加两个反序列化访问器（`functools.cached_property`，frozen dataclass
   可用，写的是实例 `__dict__`）：
   - `schema` → `DataSchema.from_dict(self.schema_ref)`，给 ACT 取 `image_sizes`（逐相机
     图像尺寸是数据侧事实，不属于 IO spec；§4.2.6 允许下游读 assembly 里保留的 DataSchema）；
-  - `norm_stats` → 需要新增 `NormStats.from_dict()`（`data/manifest.py`；今天
+  - `norm_stats` → 需要新增 `NormStats.from_dict()`（`data/data_schema.py`；今天
     `infer.py:349-359` 手写了一份 `_parse_feature_stats`，一并收敛掉）。
-- `entries/act.py`：`action_dim` / `action_horizon` / `state_dim` / `camera_names` 改读
+- `adapters/act.py`：`action_dim` / `action_horizon` / `state_dim` / `camera_names` 改读
   `assembly.model_io_spec`（相机取 `camera_mapping` 的恒等条目，等价于今天的
   `schema.cameras`，但来源是组合结果而非自查数据）；删 `resolve_action_*` 的 import。
-- `entries/pi0.py`：`camera_mapping` 改读 `assembly.camera_mapping`（折成
+- `adapters/pi0.py`：`camera_mapping` 改读 `assembly.camera_mapping`（折成
   `{model_slot: data_source}`，未映射槽位不进 dict——与 wrapper 现在「未列出的角色发 -1
   占位图 + zero mask」逐字一致）；`action_dim` 改读 `model_io_spec.action_dim`（今天是
   `metadata.dim_policy_max`，阶段 3 已证明 pi0 上两者都是 32，且 IO spec 那个是 fold 出来
@@ -332,27 +346,23 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
   它读的是「recipe 写了什么」而不是「解析出什么」，属于 inspect 的职责（§3.5：inspect
   不做跨维度解析）。阶段 5 删 legacy 分支时再改一次读法。
 
-### WP5：`assembly.json`（带 `format_version`）+ 推理接入 + 快照一致性校验
+### WP5：`ResolvedAssembly` 直接 JSON + 推理接入 + 快照一致性校验
 
-- **产物与版本**。新增 `vla_factory/assembly/artifact.py`，把版本信封关在一处：
+- **产物归对象所有**。`ResolvedAssembly` 直接提供持久化方法：
 
   ```json
-  {"format_version": 1, "assembly": { ...ResolvedAssembly.to_dict() }}
+  { ...ResolvedAssembly.to_dict() }
   ```
 
-  `save_assembly_artifact(path, assembly)` / `load_assembly_artifact(path) -> ResolvedAssembly`。
-  **第一次落盘就带版本号**：字段形状「已经定死」只是当下的事实，产物一旦分发出去就要
-  长期共存；没有版本号时，未来任何形状变更都只能靠猜。未知或更高的 `format_version` →
-  保守失败（§1.7），提示用对应版本的框架或重训。`ResolvedAssembly.to_dict()` 的形状本身
-  **不变**（阶段 3 的约定），版本号住在信封上。
+  `assembly.save(path)` / `ResolvedAssembly.load(path)`。当前明确不兼容旧 checkpoint，
+  因此不建立 envelope、版本常量或迁移体系；加载器严格校验当前对象的必需字段。
   `utils/constants.py` 增加 `ASSEMBLY_FILE = "assembly.json"`；`train.py` 在
-  `_save_inference_metadata` 里与另外三件套同批写出（训练开始前写，中途 checkpoint 可用）。
+  `save_training_contract` 里与 `recipe.yaml` 同批写出（训练开始前写，中途 checkpoint 可用）。
 - **`InferenceEngine` 只读两个文件**：`recipe.yaml`（模型名 + tunables，训练时已是
-  `resolve_recipe()` 合并后的结果）与 `assembly.json`。
+  `merge_model_config()` 合并后的结果）与 `assembly.json`。
   - 缺 `assembly.json` → **直接失败**（§2.3），错误信息说明：该 checkpoint 由旧版本训练，
     请用当前版本重训；不提供回退。
-  - `schema` / `norm_stats` ← 快照的 `schema_ref` / `norm_stats_ref`，**不再读**
-    `schema.json` / `norm_stats.json`。
+  - `schema` / `norm_stats` ← 快照的 `schema_ref` / `norm_stats_ref`。
   - `preprocessor` ← `build_pipeline(assembly.data_to_model, ctx)`；
     `postprocessor` ← `build_pipeline(assembly.model_to_robot, ctx)`。
   - `camera_keys` / `action_dim` / `action_horizon` ← `model_io_spec`；删两处
@@ -374,8 +384,8 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
 
   子集里**不含** `install_hint` / `components` / `support_*` / `params`——它们不影响这个
   checkpoint 的接口契约，改了不该拦住部署。用一条测试守住这份清单不漂移（做法照
-  `CONSUMED_OVERRIDES` 的 `test_every_assembly_override_is_accounted_for`：遍历
-  `ModelMetadata` 的字段，要求每个字段要么在子集里、要么在显式的豁免列表里）。
+  `ModelMetadata.interface_fields()` 由模型描述层维护这份接口事实集合，避免持久化模块再
+  维护一份字段分类体系。
 
 ### WP6：清理运行时二次推导（四组代码）
 
@@ -396,7 +406,7 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
   `data_to_model` 计划实例化出来跑一个真实 sample，断言输出 shape / dtype / 数值范围
   （state 被 pad 到 32、图像落在模型声明的 range 内）。它从「两份实现是否一致」变成
   「唯一那份实现是否真的能跑」——阶段 3 R2 期待的接班人。
-- `resolver/__init__.py` docstring 里残留的 `Build Interface` 顺手改成 `Build IO Spec`。
+- `resolve/` 的职责名统一为 `Build IO Spec`，不再在实现文件里维护阶段编号。
 
 ### WP7：文档同步
 
@@ -404,12 +414,12 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
   「外部基础 checkpoint 继续经 `model.path` 支持并做可选一致性检查；旧版训练产物（无
   `assembly.json`）明确不支持，缺失即保守失败」。同时标注阶段 4 完成范围与
   `robot_to_model` / 平台适配器仍在推迟。
-- **§4.2.1 `ModelIOSpec` 一句澄清**（`types.py` docstring 同步）：`cameras` 是**框架
+- **§4.2.1 `ModelIOSpec` 一句澄清**（现 `resolve_assembly.py` docstring 同步）：`cameras` 是**框架
   Observation 使用的数据侧 canonical camera key**，**不是**模型的 `vision_slots`。pi0 上
   两者不同（数据侧 `front`/`wrist`，模型侧三个 openpi 角色），连接它们的是 `CameraMapping`。
   现在这一点只能从代码推出来，读文档的人极易误解。
-- CLAUDE.md：Code structure（新增 `assembly/from_recipe.py`、`assembly/artifact.py`，删掉
-  `action_facts.py`）、How it runs（train/deploy 两条链路都经过 assembly；部署产物多一件
+- CLAUDE.md：Code structure（新增 `assembly/resolve/`；结果与入口后续收敛到 `assembly/resolve_assembly.py`，删掉
+  `action_facts.py`）、How it runs（train/deploy 两条链路都经过 assembly；部署产物包含
   `assembly.json`）、Key ideas 增加「具身组合是下游唯一入口」与 §2.2 三条边界。
 - `adapt_new_model` skill：工厂签名 `(recipe, schema)` → `(recipe, assembly)`；「从 schema
   自己推 action_dim」的写法改成读 IO spec；新模型的 horizon 按 paradigm 放对容器（WP2 的
@@ -418,20 +428,20 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
 ### 2.5 阶段 4 验证（**实测结果**）
 
 - `pytest`：**351 passed**（基线 306；净增来自新增的
-  `test_assembly_artifact.py` / `test_action_horizon_source.py` /
-  `test_resolve_from_recipe.py`、以及原先永远 skip 的 `TestEndToEnd` 开始真跑，
+  `test_resolved_assembly.py` / `test_action_horizon_source.py` /
+  `test_recipe_resolution.py`、以及原先永远 skip 的 `TestEndToEnd` 开始真跑，
   减去删掉的 `test_action_facts.py`）。
 - `resolve --config examples/act_lekiwi.yaml`（数据指向真实 fixture）：与阶段 3 输出
   逐行一致，**唯一差异** `horizon: 0 → 100`，如计划所述。
 - 真实 2-step 训练（act + fixture，CUDA）：产出
-  `inference_metadata/{assembly.json,recipe.yaml,schema.json,norm_stats.json}`，
-  `assembly.json` 首行即 `"format_version": 1`。
+  `inference_metadata/{assembly.json,recipe.yaml}`，
+  `assembly.json` 与 `assembly.to_dict()` 完全相等。
 - 同一 checkpoint 上 `infer`（`action_shape (100, 8)`）与
   `evaluate`（1 episode / 414 frames，平均 L1 0.1973）均正常。
 - 失败路径：删掉 `assembly.json` → `FileNotFoundError` 指明「旧版本训练的 checkpoint，
-  请重训」（`test_train_infer_roundtrip.py`）；`format_version=999` → 保守失败；
+  请重训」（`test_train_infer_roundtrip.py`）；缺少必需字段 → 保守失败；
   篡改 `image_input_range` / `vector_normalization` / `requires_prompt` / `dim_policy`
-  任一 → `AssemblyDeclarationDrift` 并列出漂移字段（`test_assembly_artifact.py`）。
+  任一 → `ModelInterfaceMismatch` 并列出漂移字段（`test_resolved_assembly.py`）。
 - 顺序：组合失败时 `train()` 不再动 output_dir
   （`test_failed_resolution_leaves_the_output_directory_untouched`）。
 - pi0 侧仍**未**在 uv/openpi 环境实跑（风险 R4 未关闭），见下方「遗留」。
@@ -442,12 +452,12 @@ adapter 里的重复推导全部来自它只拿到 `(recipe, schema)`——两�
 - `resolve` 输出与阶段 3 逐字节一致，**唯一预期差异**：act 的 `horizon` 0 → 100。
 - 最小 ACT recipe（不写 `action_spec`）→ `chunk_size == 100`（WP2 的行为变化）。
 - act + 真实 fixture 跑 `train --steps 2`：产出 `inference_metadata/assembly.json`，
-  `{"format_version": 1, ...}`，内层与阶段 3 的 act 组合断言一致（落盘 → load → `to_dict`
+  内容与阶段 3 的 act 组合断言一致（落盘 → load → `to_dict`
   round-trip）。
 - 用该 checkpoint 跑 `infer` / `evaluate`；`deploy --platform simulator` 能起。
 - **失败路径三条**（都要断言错误信息可读、不是深层异常）：
   1. 删掉 `assembly.json` → 报「checkpoint 由旧版本训练，请重训」，**不回退**；
-  2. 把 `format_version` 改成 `999` → 保守失败；
+  2. 删掉任一必需字段 → 保守失败；
   3. 篡改 `metadata_ref.image_input_range` → 快照一致性校验失败并列出漂移字段
      （这条正是「权重能加载但语义已错」的回归用例）。
 - `test_train_infer_roundtrip.py` 每个 WP 后都必须绿——端到端护栏。
@@ -477,9 +487,9 @@ padding 模型完整走完预测——这条测试是这个 bug 唯一的结构�
 `from_dict` 的空默认值让它变成 unresolved 空计划，`build_pipeline` 照样构造出**空后
 处理器**——ACT 会把归一化空间里的动作直接下发，shape 校验还照过；删掉
 `metadata_ref` 里的接口事实，漂移检查直接通过（`if key in stored` 把「缺字段」当成
-「无需比较」）。**改法**：`load_assembly_artifact` 增加 v1 结构校验（三份描述 +
-`model_io_spec` 必须非空、两条 plan 必须 `resolved=True`、`INTERFACE_FACTS` 必须齐
-全）；漂移检查把缺字段计为漂移；`build_pipeline` 拒绝未解析计划。
+「无需比较」）。**改法**：`ResolvedAssembly.load()` 严格校验三份描述、
+`model_io_spec`、Mappings 和三条 plan 均存在；漂移检查把缺字段计为漂移。规划失败直接
+抛错，plan 不再携带可能被误用的半完成状态。
 
 **3. `--camera-names` 绕过 CameraMapping。** ACT 抛 `KeyError`（响亮），pi0 走
 `camera_mapping.get(role)` 找不到就发 -1 占位图 + zero mask —— **模型全盲但继续推理**。
@@ -487,7 +497,7 @@ padding 模型完整走完预测——这条测试是这个 bug 唯一的结构�
 相机命名归 PlatformAdapter。
 
 **4. 副作用屏障不完整。** 原计划只把「解析」提到了 mkdir 之前，但
-`resolve_vector_keys`、finetune-only 的 `model.path` 检查、`data_to_model.resolved`
+`resolve_vector_keys`、finetune-only 的 `model.path` 检查、pipeline 编译
 检查都还在后面——实测 pi0 不写 `model.path` 会先清空上一次实验目录再报错。**改法**：
 vector keys 校验移入 resolver 的 Validate 阶段（失败给结构化 `INVALID_DESCRIPTION`，
 与上一轮推迟表里的说法相反，评审判断更对：它属于描述自校验，正是 Validate 的职责），
@@ -498,8 +508,8 @@ reader 永远会填，无名维度是「坏 reader」的产物，专门测它的
 `TransformStep.output_image_sizes` fold 得出，最终按 2.8 改为从模型/数据事实直接解析。
 ACT 工厂改读它，`_resolve_resize_image_size` /
 `_schema_image_size` 两个函数删除。三处臆造默认值（`state_dim or action_dim`、
-`or ["top"]`、引擎的 `("front",)`）一律改成显式失败。趁 artifact v1 未发布把字段补齐，
-不需要动 `format_version`。
+`or ["top"]`、引擎的 `("front",)`）一律改成显式失败。当前不兼容旧 checkpoint，直接
+把字段补齐即可。
 
 **6. 小清理。** `pipeline.py` 补回 `Iterable` 导入（`typing.get_type_hints()` 实测
 `NameError`）；`PlanContext.of()` 零调用方，删除。
@@ -528,13 +538,13 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
 
 - 全量 `pytest`：**330 passed / 21 skipped**（lerobot 侧用例在该环境跳过）。
 - **真实 `Pi0Config` + 真实 `PI0Pytorch`**（`gemma_2b` + `gemma_300m`，`model.path=None`
-  只构造结构）经 `resolve_from_recipe` → `factory(recipe, assembly)` 建成：
+  只构造结构）经 `resolve_assembly` → `factory(recipe, assembly)` 建成：
   `config.action_dim=32` / `action_horizon=50` 均来自 `model_io_spec`；wrapper 拿到的
   `camera_mapping` 正是 `{base_0_rgb: front, left_wrist_0_rgb: wrist}`，未映射的
   `right_wrist_0_rgb` 不进 dict（走占位图 + zero mask）。
 - 真实 `compute_loss`（2.49）与 `predict_actions` → `(1, 50, 32)`，即
   `io_spec.action_horizon × io_spec.action_dim`。
-- **训练侧数据链路，零模型依赖**：pi0 的 `resolve_from_recipe` → `create_dataloaders`
+- **训练侧数据链路，零模型依赖**：pi0 的 `resolve_assembly` → `create_dataloader`
   取一个 batch —— images `(2, 3, 224, 224)` float32 落在 `[-1, 1]`、state `(2, 32)`、
   actions `(2, 50, 32)`、prompt `(2, 48)`，与 `ModelIOSpec` 逐项一致。
 
@@ -563,7 +573,7 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
 ### WP2：删 `data.sampler.action_horizon`
 
 采样窗口长度必须等于模型的 action horizon（今天靠用户在两处写同一个数保证）。阶段 4 已让
-`create_dataloaders` 改读 `model_io_spec.action_horizon`，这里删字段即可。`SamplerConfig`
+`create_dataloader` 改读 `model_io_spec.action_horizon`，这里删字段即可。`SamplerConfig`
 只留 `type` / `n_obs_steps`。
 
 ### WP3：删 `training.inference_steps`
@@ -577,7 +587,7 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
 |---|---|
 | `model.config.camera_mapping` / `model.config.default_task` 两条 legacy 分支 + `get_camera_mapping` / `get_default_task` 两个 helper | 已带 deprecation warning；阶段 4 后 entries 不再调，只剩 `inspect model` 一个读法，改为直接读 `recipe.assembly` |
 | `composition:` 旧块名（`parser.py:87-89`） | 阶段 0 改名时的过渡，仓内零使用 |
-| `AssemblyConfig.accept_fps_mismatch` / `gripper_flip` | 解析器 `CONSUMED_OVERRIDES` 不含它们——**写了就报 `UNSUPPORTED_OVERRIDE`**，即一个永远失败的字段。随对应检查（频率 / 夹爪，均在阶段 2 推迟表里）一起恢复 |
+| `AssemblyConfig.accept_fps_mismatch` / `gripper_flip` | 当前不声明这些字段，parser 会把它们作为未知 override 拒绝。随对应检查（频率 / 夹爪，均在阶段 2 推迟表里）一起恢复 |
 | `utils/tracked_config.py:FRAMEWORK_CONSUMED_KEYS` 里的 `camera_mapping` / `default_task` | 随上面的 legacy 分支一起删 |
 
 ### WP5：迁移提示与移除周期
@@ -616,7 +626,7 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
   `execution_action_dim=8`、`action_horizon=100`，与阶段 4 结束时逐项相同。
 - 产物 `recipe.yaml` 顶层只剩 `model / data / robot / assembly / finetuning / training /
   output`；`data` 下只有 `source`，`training` 无 `inference_steps`。
-- 训练侧划分不变：`Manifest: 828 train samples, 414 val samples`，与阶段 4 逐字相同。
+- 训练侧划分不变：828 train samples、414 val samples，与阶段 4 数量相同。
 
 ### 3.2 阶段 5 的实施差异（与本文档原计划不同的五处）
 
@@ -624,12 +634,12 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
    YAML 仍是原始映射时，所以 `parser.py` 之后的代码只见得到当前形状——没有任何「新旧两
    种拼法」的分支；到期移除是删一个文件加两个调用点。`scan()` / `migrate()` 共用同一段
    实现，一个字段不可能被一个报告、被另一个处理。
-2. **顺带删掉了 `ActionSpec`**（`model/interfaces/observation.py`）。它是 `action_spec`
+2. **顺带删掉了 `ActionSpec`**（`model/model_interface.py`）。它是 `action_spec`
    块的运行时镜像，源字段删掉后零生产消费者；留着会成为第三种「动作宽度」的说法。
 3. **`AssemblyConfig` 的两个无消费者字段直接删除**（原计划写「随对应检查恢复」，做法
-   一致）：写了就报 `UNSUPPORTED_OVERRIDE` 的字段等于「能写、但一定失败」。守护测试
+   一致）：没有消费规则的字段不进入 `AssemblyConfig`；未知字段由 parser 直接拒绝。相关测试
    `test_every_assembly_override_is_accounted_for` 随之收紧为「声明字段集 ==
-   `CONSUMED_OVERRIDES`」，新增字段必须与消费它的代码同一个 commit 落地。
+   剩余 override」，新增字段必须与消费它的代码同一个 commit 落地。
 4. **不提供兼容层**（用户决定，覆盖 WP5 的「迁移提示」设计）。`deprecations.py`、它的
    测试、以及 `resolve` 摘要末尾的废弃字段列表全部删除。旧 recipe 里的键成为未知键——
    `parser.py` 一律忽略，不崩也不生效。迁移方式改为「跑 `resolve` 看解析器推出来的结果，
@@ -643,9 +653,10 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
      报告坏声明。
    - `sampler.type` 只有一个合法值，`split.strategy` 的另外两个值直接抛 NotImplementedError
      ——都是「只有一个选项的选择题」。
-   - `split.train_ratio` / `seed` 变成 `training/manifest.py` 的框架常量。判据是
-     `eval_strategy="no"`：**训练期从不评估**，所以这个旋钮唯一的效果是悄悄缩小训练集。
-     实测 `Manifest: 828 train / 414 val` 与阶段 4 逐字相同。
+   - `split.train_ratio` / `seed` 当时先变成训练侧框架常量；后续 training 收敛时进一步
+     修正：既然 `eval_strategy="no"`，固定 9:1 仍会静默缩小训练集，因此现在
+     `build_sample_windows()` 使用全部 episode。真正实现 evaluation loop 时再按 episode
+     恢复 split。
 6. **`data.source` 拍平 + `augmentation` 删除**（用户决定）。`augmentation` 的判据同
    `assembly` 那两个无消费者字段：全仓 grep 后确认没有任何 transform 或 dataloader 读它，
    `random_crop: true` 写了什么都不会发生。`ModelMetadata.requires_augmentation` 因此也
@@ -659,15 +670,15 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
 
 ---
 
-## 4. 明确推迟（供下次启动参考）
+## 4. 原推迟表（后续方向以新计划为准）
 
 | 项 | 现状 | 恢复时需要的前置工作 |
 |---|---|---|
-| `robot_to_model` 规划与消费 | 阶段 3 推迟；`TransformRegistry` 无关节重排 / 夹爪 flip step | 实现两个 T1 step + 一份绑定真实 robot 的 recipe |
-| 平台适配器改读 JointMapping | 现在按 `schema` 逐维名字取 motor key | 同上；且需要 action 侧带真实关节名的数据集（现 fixture 是 `dim_0..7`） |
+| `robot_to_model` 规划与消费 | **后续决定直接复用 `data_to_model`** | 按 `runtime-pipeline-convergence.cn.md` 实施，不新增 T1 step |
+| 平台适配器改读 JointMapping | **后续决定不做**；Adapter 负责输出/消费 DataSchema | 只有真实跨接口需求出现时才设计显式 binding |
 | `n_obs_steps` 与 `metadata.history_frames` 合并 | 两个已适配模型都是 1，合并前后逐字节相同 | 适配一个 history > 1 的模型 |
 | `resolve_vector_keys` 并入解析器 Validate 阶段 | 它是数据描述自校验（每维一个名字），不是三者关系 | 需要时随 Validate 阶段的其他数据校验一起搬，别单独动 |
-| `assembly.json` 的 `format_version` 2 及迁移器 | 本阶段只落地 v1 + 未知版本保守失败 | 第一次真要改形状时，按那次的改动写迁移，而不是现在预设一套 |
+| `assembly.json` 迁移器 | 当前明确不兼容旧 checkpoint | 第一次出现真实兼容需求时再设计，不预设版本体系 |
 | `resolve --json` / assembly diff | 摘要 + 组合断言已够 | 用户提出真实 diff 需求 |
 | `TransformPipelinePlan.risk` / `.reversible` | 阶段 3 WP0 删除（零消费者） | 有消费者要按风险/可逆性分支时 |
 | 训练策略（LoRA / freeze）走 assembly | 消费的是模型自身事实，不是三者关系 | §4.2.6 没点名，除非出现跨维度的策略决策 |
@@ -678,11 +689,11 @@ ACT 工厂改读它，`_resolve_resize_image_size` /
 
 | # | 阶段 | 类型 | 内容 |
 |---|---|---|---|
-| 1 | 4 | `refactor:` | WP1：`resolve_from_recipe()`（含 checkpoint 检查前置、`model_path` → tokenizer 兜底），CLI 改为调用它 |
+| 1 | 4 | `refactor:` | WP1：`resolve_assembly(recipe)`（含 checkpoint 检查前置、`model_path` → tokenizer 兜底），CLI 改为调用它 |
 | 2 | 4 | `feat:` | WP2：`action_horizon` 归位 + paradigm 互斥校验 + defaults 转发 + ACT 默认值行为变化测试 |
-| 3 | 4 | `feat:` | WP3：训练接入（`build_pipeline` + `create_dataloaders(recipe, assembly)` + 解析前置于 mkdir） |
+| 3 | 4 | `feat:` | WP3：训练接入（`build_pipeline` + `create_dataloader(recipe, assembly)` + 解析前置于 mkdir） |
 | 4 | 4 | `refactor:` | WP4：工厂签名 `(recipe, assembly)`；删 `action_facts.py`；`ResolvedAssembly` 访问器 + `NormStats.from_dict` |
-| 5 | 4 | `feat:` | WP5：`assembly.json` + `format_version` + 推理接入 + 快照一致性校验 + 三条失败路径测试 |
+| 5 | 4 | `feat:` | WP5：`ResolvedAssembly` 直接 JSON + 推理接入 + 快照一致性校验 + 三条失败路径测试 |
 | 6 | 4 | `refactor:` + `test:` | WP6：删四组运行时二次推导 + 测试改写 |
 | 7 | 4 | `docs:` | WP7：架构 §7.4 兼容层原文改写、`ModelIOSpec.cameras` 澄清、CLAUDE.md、skill |
 | 8 | 5 | `refactor:` | 阶段 5 WP1–WP4：删废弃字段与 legacy 入口 |

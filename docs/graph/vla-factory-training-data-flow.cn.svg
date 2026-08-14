@@ -50,7 +50,7 @@
 
   <rect x="105" y="455" width="750" height="82" rx="12" class="node sample"/>
   <text x="480" y="487" text-anchor="middle" class="label">样本索引</text>
-  <text x="480" y="512" text-anchor="middle" class="code">Manifest + Sampler -&gt; train / val sample index</text>
+  <text x="480" y="512" text-anchor="middle" class="code">build_sample_windows -&gt; 全部 episode 训练窗口</text>
 
   <path d="M480 537 L480 570" class="arrow"/>
 

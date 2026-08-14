@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 
 from numpy.typing import NDArray
 
-from ..formats.base import VideoRef
+from ..data_schema import VideoRef
 
 
 @runtime_checkable

@@ -1,7 +1,18 @@
-"""Assembly layer: data × model × robot composition resolution.
+"""Resolve a recipe or explicit facts into a train/deploy execution contract."""
 
-Hosts the transform pipeline (moved from ``data/transforms``) and the
-composition resolver (``resolver/``). The resolver combines the three
-unified descriptions (DataSchema, ModelMetadata, RobotProfile) into a
-``ResolvedAssembly``; downstream layers (training / inference) consume it.
-"""
+from .resolve_assembly import (
+    FieldMapping,
+    InvalidAssemblyError,
+    MappingSource,
+    ModelIOSpec,
+    ModelInterfaceMismatch,
+    ResolvedAssembly,
+    resolve_assembly,
+)
+from .resolve import ResolutionError, resolve_from_facts
+
+__all__ = [
+    "resolve_assembly", "resolve_from_facts", "ResolvedAssembly", "ModelIOSpec",
+    "FieldMapping", "MappingSource", "ResolutionError", "InvalidAssemblyError",
+    "ModelInterfaceMismatch",
+]

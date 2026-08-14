@@ -1,17 +1,16 @@
 """``RobotProfile`` and the per-joint / gripper description dataclasses.
 
 Fields follow architecture §4.1.3 (RobotProfile) and ``robot-module.cn.md``.
-All structures are frozen and serializable (``to_dict`` / ``from_dict``) so a
+All structures are frozen, validated, and serializable so a
 ``ResolvedAssembly`` can round-trip them without holding live Python objects.
+File discovery and YAML loading belong to :mod:`vla_factory.robot.registry`;
+this module contains only the robot description itself.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
-
-import yaml
 
 from vla_factory.utils.vocabulary import CONTROL_MODES, is_control_mode
 
@@ -23,9 +22,9 @@ class JointGroup:
     Attributes
     ----------
     names : tuple[str, ...]
-        Canonical, ordered joint names. The order is the *robot-native* order
-        used by the platform; the composition resolver decides how it maps onto
-        the model / data vector order. Required and must be non-empty.
+        Ordered robot-native joint names used by the platform. They are not
+        implicitly matched to DataSchema dimension names. Required and
+        non-empty.
     units : str
         Joint unit. Typically ``"radian"`` for revolute joints or ``"meter"``
         for prismatic joints.
@@ -46,6 +45,11 @@ class JointGroup:
     def validate(self, where: str = "joints") -> None:
         if not self.names:
             raise ValueError(f"{where}.names must be a non-empty list")
+        if any(not name for name in self.names):
+            raise ValueError(f"{where}.names entries must be non-empty strings")
+        duplicates = sorted({name for name in self.names if self.names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"{where}.names contains duplicates: {duplicates}")
         for label, seq in (("types", self.types),
                            ("limits_low", self.limits_low),
                            ("limits_high", self.limits_high)):
@@ -84,8 +88,9 @@ class GripperConvention:
     open_value / close_value : float
         The action/command value that corresponds to a fully open / fully
         closed gripper. The composition resolver uses these to decide whether a
-        ``gripper_flip`` transform is required (e.g. data says 1=open but the
-        model expects 1=close).
+        ``gripper_flip`` transform might be required (e.g. data says 1=open
+        but the model expects 1=close). Such a relationship requires an
+        explicit binding; the resolver does not infer it from this profile.
     joint_index : int | None
         Position of the gripper DoF within the joint vector (0-based), when the
         gripper is one of the arm joints rather than a separate actuator.
@@ -155,10 +160,28 @@ class RobotProfile:
         if not self.name:
             raise ValueError("robot.name must be a non-empty string")
         self.joints.validate(where=f"robot({self.name}).joints")
-        if self.safety_bounds_low and self.safety_bounds_high:
-            if len(self.safety_bounds_low) != len(self.safety_bounds_high):
+        duplicate_cameras = sorted({c for c in self.cameras if self.cameras.count(c) > 1})
+        if duplicate_cameras:
+            raise ValueError(
+                f"robot({self.name}).cameras contains duplicates: {duplicate_cameras}"
+            )
+        if any(not camera for camera in self.cameras):
+            raise ValueError(
+                f"robot({self.name}).cameras entries must be non-empty strings"
+            )
+        if bool(self.safety_bounds_low) != bool(self.safety_bounds_high):
+            raise ValueError(
+                f"robot({self.name}).safety_bounds_low/high must both be set or empty"
+            )
+        if self.safety_bounds_low:
+            joint_count = len(self.joints.names)
+            if (
+                len(self.safety_bounds_low) != joint_count
+                or len(self.safety_bounds_high) != joint_count
+            ):
                 raise ValueError(
-                    f"robot({self.name}).safety_bounds_low/high length mismatch"
+                    f"robot({self.name}).safety_bounds_low/high must each have "
+                    f"{joint_count} entries"
                 )
         if not is_control_mode(self.native_action_type):
             raise ValueError(
@@ -172,6 +195,14 @@ class RobotProfile:
                     f"robot({self.name}).control_modes entry {m!r} is not in "
                     f"the controlled vocabulary {list(CONTROL_MODES)}"
                 )
+        duplicate_modes = sorted(
+            {mode for mode in self.control_modes if self.control_modes.count(mode) > 1}
+        )
+        if duplicate_modes:
+            raise ValueError(
+                f"robot({self.name}).control_modes contains duplicates: "
+                f"{duplicate_modes}"
+            )
         if self.recommended_control_hz <= 0:
             raise ValueError(
                 f"robot({self.name}).recommended_control_hz must be positive"
@@ -198,7 +229,7 @@ class RobotProfile:
     def from_dict(cls, d: dict[str, Any]) -> "RobotProfile":
         joints = JointGroup.from_dict(d.get("joints") or {})
         gripper = GripperConvention.from_dict(d.get("gripper") or {})
-        return cls(
+        profile = cls(
             name=d.get("name", ""),
             cameras=tuple(d.get("cameras") or ()),
             joints=joints,
@@ -211,18 +242,5 @@ class RobotProfile:
             safety_bounds_high=tuple(d.get("safety_bounds_high") or ()),
             recommended_control_hz=int(d.get("recommended_control_hz", 30)),
         )
-
-
-def profile_from_dict(d: dict[str, Any]) -> RobotProfile:
-    """Construct + validate a ``RobotProfile`` from a plain dict."""
-    profile = RobotProfile.from_dict(d)
-    profile.validate()
-    return profile
-
-
-def load_robot_profile(path: str | Path) -> RobotProfile:
-    """Load a ``RobotProfile`` from a YAML file."""
-    raw = yaml.safe_load(Path(path).read_text()) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"robot profile {path!r} must be a YAML mapping")
-    return profile_from_dict(raw)
+        profile.validate()
+        return profile

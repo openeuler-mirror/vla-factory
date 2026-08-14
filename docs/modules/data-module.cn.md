@@ -4,7 +4,7 @@
 
 数据模块是 VLA Factory 的输入端。它负责将外部格式的机器人数据集（LeRobot v3 等）解析为框架内部统一的数据中间表示（Canonical IR），再由数据变换流水线、训练样本构建与批处理共同组装，向训练侧输出模型可直接消费的 `{"observation": Observation, "actions": Tensor}` batch。
 
-数据模块不只服务训练。训练开始时写出的 `schema.json`、`norm_stats.json` 和 resolved `recipe.yaml` 也会在部署推理侧复用，用于重建 schema / stats / transform 语义。因此，数据模块的核心职责不是“喂给训练一个 batch”这么窄，而是建立一套从外部数据到训练、部署都能复用的数据标准。
+数据模块不只服务训练。训练产物的 `assembly.json` 会保存训练时解析出的 DataSchema、NormStats 和 TransformPipelinePlan，供部署侧直接执行。因此，数据模块的核心职责不是“喂给训练一个 batch”这么窄，而是建立一套能被组合解析、训练和部署共同消费的数据标准。
 
 ### 层级职责边界
 
@@ -16,10 +16,9 @@
 | **数据中间表示层** | 用稳定对象表达数据事实，并把这些事实组织成训练和部署共享的数据标准。 | 不理解外部存储格式；不表达上游模型原生 batch；不把数据模块变成按模型分支的 adapter。 |
 
 数据模块在整体架构中对应主架构文档里的“外部数据解析层”和
-“数据中间表示层”。它消费 recipe / model profile 中的数据、采样和
-transform 配置，并向训练和部署提供统一数据标准。训练产物中的
-`recipe.yaml`、`schema.json` 和 `norm_stats.json` 是部署侧重建数据语义
-的事实来源。
+“数据中间表示层”。它从实际数据生成 DataSchema、NormStats 和 episode/frame，
+不消费模型或训练采样配置。Assembly 将这些数据事实与模型事实组合；训练产物中的
+`assembly.json` 是部署执行路径的数据语义与 transform 计划来源。
 
 本文覆盖：
 
@@ -77,7 +76,7 @@ transform 配置，并向训练和部署提供统一数据标准。训练产物�
   - [7.1 Reader 索引与性能](#71-reader-索引与性能)
   - [7.2 视频与图像 schema](#72-视频与图像-schema)
   - [7.3 数据格式与视频解码策略扩展](#73-数据格式与视频解码策略扩展)
-  - [7.4 manifest 持久化](#74-manifest-持久化)
+  - [7.4 样本窗口持久化](#74-样本窗口持久化)
   - [7.5 数据可视化](#75-数据可视化)
   - [7.6 数据格式互转](#76-数据格式互转)
 - [8. 数据集描述（目标设计）](#8-数据集描述目标设计)
@@ -101,8 +100,8 @@ schema、norm stats、transform 语义和 resolved recipe，保证训练阶段�
 | 阶段 | 输入 | 处理 | 输出 |
 |---|---|---|---|
 | 数据解析 | dataset path | `FormatReader` 读取 schema、norm stats、episode 信息 | `DataSchema` / `NormStats` / `Episode` |
-| 数据变换配置 | resolved recipe + schema/stats | `TransformPipeline` 按 `model.config.transforms.inputs` 构建 | model input transform |
-| 样本索引 | episode 信息 + sampler config | `DatasetManifest` + `SlidingWindowSampler` 构造滑窗样本索引 | train / val sample index |
+| 数据变换配置 | `ResolvedAssembly` | 从 `assembly.data_to_model` 实例化 `TransformPipeline` | model input transform |
+| 样本索引 | episode 信息 + 模型时序契约 | `build_sample_windows` 为全部 episode 构造 `SampleWindow` | training window list |
 | 样本构造 | sample index | `VLADataset` 读取帧、解码图像、组装 observation/action | raw sample |
 | 数据变换 | raw sample | `TransformPipeline` 执行归一化、resize、padding 或 tokenization | model-ready sample |
 | 批处理 | model-ready sample | `collate_fn` 聚合 batch | Trainer batch |
@@ -116,15 +115,14 @@ MP4、feature names 或 stats 文件结构。
 部署推理不重新扫描训练数据集作为事实来源。训练开始时会写出
 `inference_metadata/`，其中包含：
 
-- `recipe.yaml`：训练时使用的 resolved recipe，是部署侧配置事实来源。
-- `schema.json`：训练数据的 `DataSchema` 快照。
-- `norm_stats.json`：训练数据的 `NormStats` 快照。
+- `assembly.json`：部署执行契约，包含 schema、norm stats、IO spec 和 pipeline plans。
+- `recipe.yaml`：训练时使用的 resolved recipe。
 
 ![VLA Factory 部署推理流，根据 ../graph/architecture-text.md 生成](../graph/vla-factory-deployment-inference-flow.cn.svg)
 
 | 阶段 | 输入 | 处理 | 输出 |
 |---|---|---|---|
-| 产物加载 | checkpoint path | 读取 recipe、schema、norm stats，加载模型权重 | `InferenceEngine` |
+| 产物加载 | checkpoint path | 读取 assembly / recipe 快照并加载模型权重 | `InferenceEngine` |
 | 观测适配 | platform observation | platform adapter 转换线协议 | `ObsDict` |
 | 前处理 | `ObsDict` | 复用训练侧 transform 逻辑 | `Observation` |
 | 模型推理 | `Observation` | `model.predict_actions` | normalized action chunk |
@@ -141,8 +139,8 @@ MP4、feature names 或 stats 文件结构。
 - **authoring recipe**：用户最直接维护的实验配置入口。
 - **model profile**：模型默认配置来源，作为 `model.config` 的默认值。
 - **schema / stats**：从数据集解析出的数据事实。
-- **训练产物 metadata**：部署侧读取训练时保存的 `recipe.yaml`、
-  `schema.json`、`norm_stats.json`。
+- **训练产物 metadata**：部署侧读取训练时保存的 `recipe.yaml` 与
+  `assembly.json`。
 
 训练入口负责把 authoring recipe、CLI 覆盖和 model profile 合并成
 resolved recipe。部署侧只读取训练产物中的 resolved `recipe.yaml`，
@@ -154,6 +152,7 @@ resolved recipe。部署侧只读取训练产物中的 resolved `recipe.yaml`，
 
 | 对象 | 作用 | 边界 |
 |---|---|---|
+| `describe_dataset` | 数据描述编排入口，根据路径与格式返回同一 Reader 产出的 `DataSchema` 和 `NormStats`。 | Assembly 只调用此入口，不理解 Reader 注册和探测细节。 |
 | `FormatReader` | 数据格式 reader 协议，定义外部格式如何被解析成内部数据事实。 | 理解外部格式；不做模型预处理、不构造训练 batch。 |
 | `LeRobotV3Reader` | 当前主实现，读取 LeRobot v3 的 metadata、stats、parquet 和 video layout。 | LeRobot v3 细节只在 reader 内部消化，不泄漏到 Dataset 或模型 adapter。 |
 
@@ -172,15 +171,15 @@ resolved recipe。部署侧只读取训练产物中的 resolved `recipe.yaml`，
 
 | 对象 | 作用 | 关键字段 |
 |---|---|---|
-| `SampleLocator` | 指向一个训练样本的位置指针。 | `episode_index`, `start_frame_index`, `n_obs_steps`, `action_horizon` |
-| `DatasetManifest` | 全数据集样本索引和 split 索引。 | `locators`, `schema`, `norm_stats`, `episode_ranges`, `splits` |
-| `SlidingWindowSampler` | 将 episode 切成滑窗样本 locator。 | `n_obs_steps`, `action_horizon` |
+| `SampleWindow` | 物化一个训练样本所需的时间窗口。 | `episode_index`, `start_frame_index`, `n_obs_steps`, `action_horizon` |
+| `build_episode_windows` | 将一个 episode 切成 `SampleWindow` 列表。 | `n_obs_steps`, `action_horizon` |
+| `build_sample_windows` | 按确定顺序为全部 episode 构造 window list。 | `episode_lengths`, model temporal contract |
 
 ### 2.4 训练样本与 batch 对象
 
 | 对象 | 作用 | 边界 |
 |---|---|---|
-| `VLADataset` | 根据 `SampleLocator` 读取样本，按需解码图像，组装 flat sample，并调用 transform pipeline。 | 不理解外部格式字段；不实现模型内部逻辑。 |
+| `VLADataset` | 根据 `SampleWindow` 读取样本，按需解码图像，组装 flat sample，并调用 transform pipeline。 | 不理解外部格式字段；不实现模型内部逻辑。 |
 | `collate_fn` | 将 flat sample 聚合成训练协议使用的 batch。 | 不按 `model_name` 分支，不创建模型专属 Observation 类型。 |
 | `Observation` | 模型协议中的统一 observation 容器。 | 字段可选；字段需求由模型 metadata / profile 声明。 |
 
@@ -210,7 +209,7 @@ Reader 可以做：
 Reader 不应该做：
 
 - 不解码视频帧，只生成 `VideoRef`。
-- 不构造 `SampleLocator` 或 `DatasetManifest`。
+- 不构造训练侧的 `SampleWindow`。
 - 不做图像 resize、layout 转换、归一化或 action padding。
 - 不构造训练 batch。
 - 不依赖具体模型 adapter。
@@ -239,6 +238,11 @@ key 顺序；`NormStats` 表达训练 normalize 与部署 unnormalize 共享的�
 
 ### 3.2 FormatReader 协议
 
+公共阅读和调用入口位于 `data/data_schema.py`。这里的 data schema 是数据层
+统一表示的统称，并非只指 `DataSchema` 类：静态数据事实、归一化统计、运行时
+记录和 `describe_dataset()` 都集中在这里；Reader 扩展接口位于
+`data/reader/base.py`。
+
 ```python
 @runtime_checkable
 class FormatReader(Protocol):
@@ -263,8 +267,19 @@ class FormatReader(Protocol):
 
 ### 3.3 Reader 注册与发现机制
 
-Reader 通过 registry 注册。`get_reader("auto", path)` 会遍历所有 reader 的
-`can_read()`，找到第一个声称能处理该路径的 reader。
+仓库内 Reader 使用 `@ReaderRegistry.register(name, aliases=...)` 注册类，注册表
+保存 factory 而不是共享实例，因此每次 `get_reader(name)` 都会构造独立 reader。
+`get_reader("auto", path)` 先遍历内置 reader 的 `can_read()`；内置实现都无法识别
+时，再加载 `vla_factory.readers` Python entry points 并继续探测。外部包因此无需
+修改 VLA Factory 源码：
+
+```toml
+[project.entry-points."vla_factory.readers"]
+my-format = "my_package.reader:MyFormatReader"
+```
+
+显式名称不存在、名称重复或插件没有实现 `FormatReader` 都会明确失败，不会
+静默选择另一个格式。
 
 `can_read()` 应尽量保守：只有当关键 metadata 和版本信息足以证明该 reader
 能正确解析数据集时，才返回 `True`。部分文件相似但 schema 不完整的目录
@@ -427,26 +442,20 @@ Episode  (dataclass)
 
 ### 4.3 模型变换流水线设计
 
-`TransformPipeline` 是模型输入标准的执行层——它负责把 canonical raw sample 转成模型可消费的 model-ready sample。它会体现模型对图像尺寸、layout、归一化、action 维度等输入格式的要求，但这种耦合是**声明式的**（由 YAML 配置驱动），不是按 `model_name` 写死在 Dataset 或 collate 里。
+`TransformPipeline` 是模型输入标准的执行层——它负责把 canonical raw sample 转成模型可消费的 model-ready sample。模型要求由 `ModelMetadata` 的不可覆盖具名事实声明，assembly resolver 据此推导操作；既不由 YAML step 列表驱动，也不按 `model_name` 写死在 Dataset 或 collate 里。
 
 真正把 `Observation` 编排成上游模型库原生 batch dict 的逻辑仍属于 model adapter，例如 ACT adapter 将 `Observation.images["front"]` 转成 LeRobot 期望的 `observation.images.front`。
 
 **input transform**（训练侧）：
 
-```yaml
-# ACT 的 ModelMetadata.params["transforms"]
-transforms:
-  inputs:
-    - {type: image_to_float}
-    - {type: image_layout, layout: "chw"}
-    - {type: image_normalize}
-    - {type: normalize_vector, fields: ["state", "actions"]}
-    - {type: pad_dimensions}
-```
+例如 ACT 用具名事实声明图像值域、CHW layout、stretch resize 策略、ImageNet
+归一化和向量归一化。resolver 将这些事实与 `DataSchema`、`ModelIOSpec` 比较，
+只产出真正需要的 call：向量宽度不同才 padding，图像尺寸不同才 resize。
+不存在 `model.config.transforms.inputs`，也不能逐 run 改写顺序。
 
-这份声明**不直接构建 pipeline**：组合解析器逐条调用各 step 的 `compile_call()`，把事实（pad target、归一化方式、图像范围）和跳过判定烤进 `data_to_model` 计划；训练与推理再用 `build_pipeline(plan, ctx)` 把计划实例化。`TransformContext` 此时只提供 call 参数带不动的东西——统计量。
-
-用户也可以注册自定义 transform step 扩展输入处理逻辑，具体扩展方式见 [新增变换步骤](#53-新增变换步骤)。
+resolver 对选中的 step 调用 `compile_call()`，把参数与跳过判定写入
+`data_to_model`；训练与推理只用 `build_pipeline(plan, ctx)` 实例化保存的计划。
+`TransformContext` 只提供 call 无法序列化的活对象，目前是统计量。
 
 **output postprocessor**（部署侧）：
 
@@ -459,7 +468,7 @@ transforms:
 
 **tokenizer / prompt 字段生成**：
 
-对于需要语言指令的模型（PI0、OpenVLA），`Observation` 预留了 `tokenized_prompt` 和相关 mask 字段，但当前 `collate_fn` 不生成这些字段，它只负责通用堆叠。后续 tokenizer 应作为显式 transform step 纳入 TransformPipeline，由配置声明 tokenizer 类型、参数和 artifact 路径，而不是让 `collate_fn` 承担模型语义处理。
+对于需要语言指令的模型（PI0、OpenVLA），`Observation` 预留了 `tokenized_prompt` 和相关 mask 字段，但 `collate_fn` 不生成这些字段，只负责通用堆叠。tokenizer repo、最大长度以及 prompt 是否包含 state 都是模型具名事实，resolver 据此推导 `task_tokenize` call。
 
 ### 4.4 训练侧数据标准
 
@@ -467,7 +476,7 @@ transforms:
 
 ```text
 Episode / Frame / VideoRef
-  -> SampleLocator
+  -> SampleWindow
   -> canonical raw sample dict
   -> TransformPipeline
   -> collate_fn
@@ -476,39 +485,36 @@ Episode / Frame / VideoRef
 
 #### 4.4.1 样本索引与划分
 
-`SampleLocator` 是指向一个训练样本的指针——它不持有数据，只记录「从哪个 episode 的哪个 timestep 构建训练样本，以及该样本对应的 observation window 和 action horizon」：
+`SampleWindow` 不持有数据，只记录「从哪个 episode 的哪个 timestep 构建训练样本，以及该样本对应的 observation window 和 action horizon」：
 
 ```python
 @dataclass(frozen=True)
-class SampleLocator:
+class SampleWindow:
     episode_index: int
     start_frame_index: int
-    n_obs_steps: int = 1
-    action_horizon: int = 100
+    n_obs_steps: int
+    action_horizon: int
 ```
 
-`SlidingWindowSampler` 为每个 episode 中的每个有效观测位置生成一个 `SampleLocator`：
+`build_episode_windows()` 为一个 episode 中的每个有效观测位置生成一个 `SampleWindow`：
 
 ```text
 episode (长度 = L, n_obs_steps = 1, action_horizon = H)
 
-  frame 0: locator(episode=0, start=0, n_obs=1, horizon=H)
-  frame 1: locator(episode=0, start=1, n_obs=1, horizon=H)
+  frame 0: window(episode=0, start=0, n_obs=1, horizon=H)
+  frame 1: window(episode=0, start=1, n_obs=1, horizon=H)
   ...
-  frame L-1: locator(episode=0, start=L-1, n_obs=1, horizon=H)
+  frame L-1: window(episode=0, start=L-1, n_obs=1, horizon=H)
 ```
 
 当前 `VLADataset._load_sample()` 只物化 observation window 的最后一帧作为 images/state；`n_obs_steps` 是后续扩展多帧观测的标准入口。action chunk 从 observation window 的最后一帧开始，长度为 `action_horizon`。
 
 **tail padding**：当 action_horizon 超出 episode 长度时，`VLADataset._load_sample` 使用 repeat-last padding——用 episode 最后一个有效 action 填充超出部分。如果 episode 所有帧的 action 均为 None，则抛出 `ValueError`。
 
-`DatasetManifest` 由 `build_manifest()` 工厂函数构建：
-
-1. **构建 locators**：对每个 episode，`SlidingWindowSampler.sample_episode()` 为每个有效观测位置生成 `SampleLocator`。
-2. **episode-level split**：所有 episode_index 随机打散（`seed` 控制），按 `train_ratio` 划分 train/val，默认 `train_ratio=0.9`。只支持 `"episode"` 分裂策略——整个 episode 归入同一个 split，避免同一 episode 的帧横跨 train 和 val。
-3. **映射 locator → split**：遍历 all_locators，根据 `locator.episode_index` 属于 train_eps 还是 val_eps，填入 `_train_indices` / `_val_indices`。
-
-分裂粒度选择 episode 而非 frame 的理由：同一 episode 内的帧高度相关（时序依赖），train/val 混入同一 episode 的帧会导致验证集无法有效评估泛化能力。
+`build_sample_windows()` 不构造额外的样本索引对象：它按 episode index 与 frame
+顺序调用 `build_episode_windows()`，把全部窗口直接交给一个 `VLADataset`。训练期当前
+没有 evaluation loop，因此不存在一份无人消费却缩小训练集的 val list。未来实现验证时，
+应按 episode 而非 frame 划分，避免同一条时序轨迹泄漏到训练与验证两侧。
 
 #### 4.4.2 Dataset 与 batch
 
@@ -516,10 +522,10 @@ episode (长度 = L, n_obs_steps = 1, action_horizon = H)
 
 ```python
 def __getitem__(self, idx):
-    # 1. locator → episode → frames (LRU cache)
+    # 1. window → episode → frames (LRU cache)
     # 2. VideoRef → VideoCodec.decode_frame() → HWC uint8
     # 3. 组装 canonical raw sample dict
-    sample = self._load_sample(locator, frames)
+    sample = self._load_sample(window)
     # 4. TransformPipeline 变换
     sample = self.transforms(sample)
     return sample
@@ -546,12 +552,11 @@ Episode 缓存策略：`_episode_cache` 最多缓存 64 个 episode 的帧数据
 | 元数据文件 | 来源 | 部署用途 |
 |---|---|---|
 | `recipe.yaml` | 训练时的完整配置 | 知道模型名、策略、参数 |
-| `schema.json` | `DataSchema` 序列化 | 约定输入格式（cameras、state_dim、action_dim、keys） |
-| `norm_stats.json` | `NormStats` 序列化 | 反归一化模型输出 |
+| `assembly.json` | 训练时的 `ResolvedAssembly` | 执行 schema/stats、ModelIOSpec 与三条 PipelinePlan |
 
 **核心原则**：部署侧的 metadata 是 checkpoint 中保存的版本，**不是重新解析训练数据集的版本**。训练数据集可能已经不在原地、可能被更新，但部署使用的是训练时的「快照」——这正是 checkpoint 保存 metadata 的意义。
 
-TransformPipeline 的 inverse 变换（UnnormalizeAction、UnpadAction）由 checkpoint 中的 resolved `recipe.yaml`、`schema.json` 和 `norm_stats.json` 重建，保证部署侧不重新合并当前代码里的 model profile。大型 transform 参数或拟合结果应作为 artifact 保存，并在 resolved recipe 中显式引用。
+部署侧从 `assembly.model_to_robot` 实例化 inverse 变换（UnnormalizeAction、UnpadAction），运行时活对象从 assembly 内保存的 NormStats 构建。它不重新解析 transform 声明，也不重新合并当前代码里的 model profile。
 
 ### 4.6 Canonical IR 的非目标
 
@@ -571,14 +576,15 @@ TransformPipeline 的 inverse 变换（UnnormalizeAction、UnpadAction）由 che
 
 #### 5.1.1 新增 Reader 的基本步骤
 
-1. 在 `vla_factory/data/formats/` 下新增 reader 文件。
+1. 在 `vla_factory/data/reader/` 下新增 reader 文件。
 2. 实现 `can_read(path)`，用最小 metadata 判断格式。
 3. 实现 `get_schema(path)`，填充 `DataSchema`。
 4. 实现 `get_norm_stats(path)`，填充 `NormStats`。
 5. 实现 `get_episode_lengths(path)` 和 `get_episode_ranges(path)`。
 6. 实现 `read_episode(path, episode_index, codec)`，构造 `Episode`、
    `Frame`、`VideoRef`。
-7. 在 formats registry 中注册 reader。
+7. 仓库内实现使用 `@ReaderRegistry.register("name")` 注册；外部包通过
+   `vla_factory.readers` entry point 发布。
 8. 为 schema、episode reading、dataset sample、dataloader smoke 增加测试。
 
 #### 5.1.2 Reader 文档章节模板
@@ -612,30 +618,38 @@ class MyCodec:
 ```
 
 新 codec 应保证输出为 `numpy HWC uint8`，因为这是 Dataset 与 transform
-pipeline 之间的图像标准。
+pipeline 之间的图像标准。仓库内实现使用
+`@CodecRegistry.register("my-codec")` 注册；外部包使用：
+
+```toml
+[project.entry-points."vla_factory.codecs"]
+my-codec = "my_package.codec:MyCodec"
+```
+
+`resolve_codec("auto")` 明确选择稳定默认值 PyAV；其他未知名称会报错，不会
+静默回退到 PyAV。
 
 ### 5.3 新增变换步骤
 
 新增 transform step 时，应继承 `TransformStep` 并注册到 `TransformRegistry`。
-内置 step 和用户自定义 step 都通过同一个 registry 注册，`transforms.inputs`
-只依赖 `type` 名称，不关心 step 来自 VLA Factory 核心代码还是用户模块。
-因此用户可以在不修改 Dataset、collate 或 model adapter 的情况下扩展输入
-处理逻辑。
+step 不再由 recipe 列表启用：它的需求必须先表示成模型/数据具名事实，再由
+resolver 根据该事实选择。这样 Dataset、collate 和 model adapter 都不承担预处理
+决策，同时只有一条规划路径。
 
 基本步骤：
 
-1. 在 `vla_factory/assembly/transforms/` 下新增或扩展 step。
+1. 在 `vla_factory/assembly/transform/` 下新增或扩展 step。
 2. 使用 `@TransformRegistry.register("your_step")` 注册类型名。
 3. 实现 `__call__(sample)`。
 4. 如需读取模型事实或有跳过判定，实现 `compile_call(cfg, ctx)`（规划期）；
    如需活对象（统计量），实现 `from_call(args, ctx)`（执行期）。
 5. 如影响模型输出空间，实现 `inverse_call(args, ctx)`。改变 shape 的 step 只消费 `PlanContext` 中已经解析好的源/目标 shape，不得再用 `output_*` hook 上报第二份接口事实。
-6. 在 model profile 或 recipe 的 `model.config.transforms.inputs` 中引用。
+6. 在 resolver 中增加由该事实选择此 step 的规则，并覆盖需要与 no-op 两类测试。
 
 新增的 step 仍需遵守 transform 标准：
 
 - 输入和输出都是 flat sample dict。
-- 小参数写在 transform config 中。
+- 小型执行参数写入解析完成的 `TransformStepCall.args`。
 - 接口 shape 不属于 transform 参数。固定模型尺寸写入 `ModelMetadata`（如 `VisionSlot.resolution`），从头训练模型的可调尺寸使用显式模型 tunable（如 ACT 的 `input_image_size`）；resolver 先写入 `ModelIOSpec`，再编译 call。
 - 大型参数、词表或拟合结果保存为 artifact，并在 resolved recipe 中显式引用。
 - 部署侧不重新拟合 transform，只按 checkpoint metadata 加载配置和 artifact。
@@ -660,8 +674,8 @@ Dataset 不应该因为某个模型需要 CHW 或 `[0, 1]` 而改变全局输出
 
 ### 6.3 Transform 决定模型输入标准
 
-模型输入格式属于 transform pipeline。不同模型可以声明不同默认 transform，
-用户也可以在 recipe 中覆盖。
+模型输入格式由 transform pipeline 执行。不同模型声明不同的不可覆盖接口事实，
+resolver 据此推导操作；recipe 不能替换 step 列表或顺序。
 
 ### 6.4 Observation 字段需求由模型声明
 
@@ -681,9 +695,9 @@ state/action 维度和 key 顺序都应从 schema 读取。
 
 ### 6.6 训练产物 metadata 是部署侧事实来源
 
-部署侧应读取训练产物中的 resolved `recipe.yaml`、`schema.json` 和
-`norm_stats.json`。它不应该重新合并当前代码里的 model profile，也不应该
-猜测原始 authoring recipe 和最终配置哪个更可信。
+部署侧应读取训练产物中的 resolved `recipe.yaml` 和 `assembly.json`；后者是 schema、
+stats、ModelIOSpec 与 PipelinePlan 的唯一执行来源。它不应该重新合并当前代码里的 model
+profile，也不应该拼出第二份执行计划。
 
 ## 7. 未来演进思路
 
@@ -704,10 +718,10 @@ episode index 缓存，避免 `get_episode_lengths()`、`get_episode_ranges()`�
 HDF5、RLDS、ROS bag 等格式应通过新增 Reader 接入。视频解码策略也可以继续
 扩展 Decord、OpenCV、image folder、remote object storage 等实现。
 
-### 7.4 manifest 持久化
+### 7.4 样本窗口持久化
 
-可考虑把 `DatasetManifest` 序列化，减少重复构建成本，并增强可复现性。
-manifest 持久化后需要明确它与 live dataset metadata 的一致性检查策略。
+若未来构造 window list 成为真实瓶颈，可考虑持久化 `SampleWindow` 列表。
+在此之前它由 episode length 和模型时序契约快速、确定性地生成，不引入专用 Manifest。
 
 ### 7.5 数据可视化
 
@@ -715,13 +729,13 @@ manifest 持久化后需要明确它与 live dataset metadata 的一致性检查
 逻辑和 transform 前后的数据语义。例如：
 
 - 按 episode 浏览视频帧、timestamp、state 和 action。
-- 按 `SampleLocator` 展示 observation frame、action horizon 和
+- 按 `SampleWindow` 展示 observation frame、action horizon 和
   `action_is_pad`。
 - 对比 raw image、resize/layout/normalize 前后的图像。
 - 展示某一段动作片段对应的视频帧，辅助排查 action 对齐、视频帧错位和
   padding 问题。
 
-这类工具应优先读取 Canonical IR、manifest 和 checkpoint metadata，而不是
+这类工具应优先读取 Canonical IR、sample windows 和 checkpoint metadata，而不是
 直接绑定某一种外部数据格式。
 
 ### 7.6 数据格式互转
@@ -749,8 +763,9 @@ manifest 持久化后需要明确它与 live dataset metadata 的一致性检查
 
 - **measured**：直接探测（维度、分辨率、fps、episode 边界、逐维 names、
   `robot_type`……）；
-- **inferred**：在受控词表下由确定性规则唯一推断（如相机 key
-  `cam_left_wrist` 唯一命中 `wrist_left`），唯一匹配才自动（见 8.5）；
+- **inferred**：在受控词表下由确定性规则推断（如相机 key
+  `cam_left_wrist` 的具体 directional-wrist 规则优先于通用 `wrist`）；
+  最高优先级仅有一个语义时才自动（见 8.5）；
 - **undeclared**：探测不到也推不出，字段为 null。null 不是错误——它是
   解析器保守失败、要求 recipe 受控 override 的依据。
 
@@ -776,7 +791,7 @@ manifest 持久化后需要明确它与 live dataset metadata 的一致性检查
 |---|---|---|
 | `name` | 数据集目录名 | 日志、golden test 标识 |
 | `source_format` | Reader 自报（`lerobot_v3` / `robotwin_hdf5` / …） | inspect、错误提示 |
-| `episodes` / `total_frames` | Reader 探测 | manifest 校验、inspect |
+| `episodes` / `total_frames` | Reader 探测 | 数据摘要校验、inspect |
 
 **robot_ref —— 数据来自哪个本体**
 
@@ -796,7 +811,7 @@ Reader 与 inspect 不解析引用（分层纪律，§6 同源）。多本体混
 | `resolution` | Reader 探测 | resize 规划、兼容检查 |
 | `fps` | Reader 探测 | 频率检查 |
 | `encoding` | Reader 探测（info.json 视频编码） | codec 选择 |
-| `semantic` | **inferred**：相机 key 在受控词表下唯一匹配（8.5），否则 null | **CameraMapping 槽位匹配的主依据**；null 时解析器要求 `assembly.camera_mapping` override |
+| `semantic` | **inferred**：相机 key 的规则表产生唯一最高优先级语义（8.5），否则 null | **CameraMapping 槽位匹配的主依据**；null 时解析器要求 `assembly.camera_mapping` override |
 
 `semantic` 受控词表（首批）：`third_person_front` / `third_person_top` /
 `third_person_side` / `wrist_left` / `wrist_right` / `wrist`（单臂）。
@@ -807,7 +822,7 @@ Reader 与 inspect 不解析引用（分层纪律，§6 同源）。多本体混
 
 | 字段 | 来源 | 消费方 |
 |---|---|---|
-| `dims[]` | Reader 探测，每维一条记录 | StateMapping、JointMapping、维度检查、Frame 读取 |
+| `dims[]` | Reader 探测，每维一条记录 | State/ActionMapping、维度检查、Frame 读取 |
 
 `dims` 是有序列表，向量第 i 维对应第 i 条记录 `{name, source_field}`：
 
@@ -915,17 +930,17 @@ action 与 obs 的时间对齐约定（`alignment`）探测不到，不进第一
 `inferred` 类字段（当前为 `cameras[].semantic` 与 `action.dims[].mode`）
 的产出规则：
 
-- **唯一匹配才自动**：与受控词表的匹配规则是确定性的（相机 key 含
-  `wrist` + `left` → `wrist_left`，含 `top`/`high` →
-  `third_person_top`；action 维名后缀 `.pos` → 位置、`.vel` → 速度），
-  且仅当恰有一个词表项命中时才写入；多个候选或零候选一律 null——
-  不依赖字典序、不做相似度猜测（架构 §1.7）。
+- **唯一最优匹配才自动**：相机规则以表定义并带显式优先级，具体角色覆盖
+  通用角色（`left` + `wrist` 同时命中 `wrist_left` 与 `wrist`，前者优先；
+  `wrist_top` 中 wrist 视角优先于第三人称 top）。若最高优先级仍有两个不同
+  语义（如 `top_side`），或没有规则命中，则写 null；绝不靠规则表顺序破同级
+  冲突。action 仍采用精确后缀规则（`.pos` / `.vel` / `.delta`）。
 - **容器格式不等于语义**：只有格式规范与生产管线绑定时（如 RoboTwin），
   格式本身才构成 measured 证据；通用容器格式（lerobot 可承载任意转换
   来源）不设按格式的默认值。
 - **来源可见**：每项事实标注 `source`（`measured` / `inferred` /
-  `undeclared`），随 `DataSchema` 序列化进
-  `inference_metadata/schema.json`，供 inspect 与 `resolve --explain`
+  `undeclared`），随 `DataSchema` 序列化进 `assembly.json`，供 inspect 与
+  `resolve --explain`
   展示——用户能一眼看出哪些语义是框架推断的，错了用 override 纠正。
 - **推断规则归框架维护**：词表和匹配规则是框架代码的一部分（随版本
   演进、可测试），不是数据集或用户的配置面。
@@ -937,7 +952,7 @@ action 与 obs 的时间对齐约定（`alignment`）探测不到，不进第一
 | 字段 | 解析器消费 |
 |---|---|
 | `cameras[].semantic`（inferred） | CameraMapping 槽位匹配主依据；null 时要求 override |
-| `state.dims[].name` / `action.dims[].name` | StateMapping、JointMapping（与 RobotProfile 关节名对账）、维度检查 |
+| `state.dims[].name` / `action.dims[].name` | State/ActionMapping、有序向量键、维度检查；不与 RobotProfile 名称隐式对账 |
 | `action.dims[].mode` | 控制模式检查；存在 null 维时 `data_to_model` 放行、`model_to_robot` 规划保守失败（要求 `assembly.control_mode` 断言） |
 | `temporal.fps` / `action.frequency_hz` | 频率检查（默认 warning） |
 | `instruction.task_field` | LanguageMapping、语言输入检查 |

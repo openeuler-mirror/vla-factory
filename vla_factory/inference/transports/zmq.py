@@ -2,7 +2,7 @@
 
 Pure transport: owns the sockets and moves observation/action JSON. It does
 not interpret observations, choose adapters, or drive inference — that
-orchestration lives in ``deploy/policy_runtime.py``.
+orchestration lives in ``inference/deploy.py``.
 """
 
 from __future__ import annotations

@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from vla_factory.inference.infer import ObsDict
+from vla_factory.inference.inference_engine import ObsDict
 
 logger = logging.getLogger(__name__)
 

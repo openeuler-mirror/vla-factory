@@ -1,16 +1,17 @@
 # 机器人（robot）模块设计
 
-> 文档状态：**TODO** —— 本文档待补充。完成后对齐**当前已实现**的行为（架构文档描述目标架构，可能超前于实现），供读者参照学习。
+> 文档状态：**已对齐当前运行时边界**（2026-08-13）。
 > 对应架构：见 [总体架构 § 4.1.3 机器人：RobotProfile](../architecture/vla-factory-architecture.cn.md) 与 [§ 2.2 目录结构 `robot/`](../architecture/vla-factory-architecture.cn.md)。
 
 ## 0. 职责
 
-机器人模块负责 `RobotProfile` 的注册与校验，描述机器人本体：自由度、关节名称与顺序、单位与限位、控制模式、夹爪约定、坐标系与 URDF 引用、静态安全边界、推荐控制频率。`RobotProfile` **不**描述连接到哪个进程、使用何种 transport、ROS topic / IP / 端口等运行时信息——这些由推理模块管理。
+机器人模块负责 `RobotProfile` 的注册与内部校验，描述机器人本体静态事实。`RobotProfile` **不**描述运行时连接，也不证明其相机/关节名与 DataSchema 名字相同。Platform Adapter 负责产出和消费 checkpoint DataSchema 接口。
 
 ## 1. 核心对象
 
-- `RobotProfile`：机器人本体声明，组合解析层只消费它，不连接机器人平台。
-- 注册表：机器人本体 profile 的注册与校验。
+- `RobotProfile`：机器人本体声明；`from_dict()` 构造后立即执行内部校验，组合解析层只消费这份有效声明，不连接机器人平台。
+- `registry.py`：唯一的 YAML I/O 与内置 profile 查找入口，提供 `load_robot_profile()`、`get_robot_profile()` 和 `list_robot_profiles()`。
+- `vla_factory.robot`：业务模块应依赖的公共导入入口；`profile.py` 和 `registry.py` 是包内职责拆分。
 
 ## 2. 详细设计
 
@@ -68,10 +69,10 @@ URDF / 厂商资料 / 现有 adapter 确定性导出）且**有消费方**（兼
 
 | 字段 | 说明 | 消费方 |
 |---|---|---|
-| `names` | 机器人原生关节顺序（有序） | JointMapping（架构 §4.2.3）：与数据侧逐维 `name` 对账 |
-| `units` | 关节单位（`radian`/`meter`） | 单位转换检查 |
-| `types` | 逐关节类型（`revolute`/`prismatic`/`continuous`/`fixed`） | 关节拓扑校验 |
-| `limits_low` / `limits_high` | 逐关节**位置**限位，与 `names` 等长 | 矩阵「安全范围」检查的机器人侧上限（关节空间原生限位，与下面 `safety_bounds_*` 是不同维度的量，见 §4.3 附注） |
+| `names` | 机器人原生关节顺序（有序） | Profile 内部非空/去重校验；不与 DataSchema 按名匹配 |
+| `units` | 关节单位（`radian`/`meter`） | 静态描述；当前不自动生成单位转换 |
+| `types` | 逐关节类型 | 与 `names` 长度一致性校验 |
+| `limits_low` / `limits_high` | 逐关节位置限位 | 与 `names` 长度一致性校验 |
 
 `limits_low/high` 与顶层 `safety_bounds_low/high`（下方 frame/safety 块）**不是
 重复字段**：前者永远是关节空间的物理硬限位（弧度/米），后者是当前
@@ -101,14 +102,14 @@ URDF / 厂商资料 / 现有 adapter 确定性导出）且**有消费方**（兼
 |---|---|---|
 | `control_modes` | 支持的控制模式集合 | 矩阵「控制模式」检查的候选集 |
 | `native_action_type` | 默认/规范控制模式 | 未显式指定时的兜底选择 |
-| `recommended_control_hz` | 推荐控制频率 | 矩阵「频率」检查的机器人侧输入（默认 warning，不强制重采样） |
+| `recommended_control_hz` | 推荐控制频率 | Profile 内部正数校验 |
 
 **frame/safety**
 
 | 字段 | 说明 | 消费方 |
 |---|---|---|
 | `coordinate_frame` | 坐标系标签 | 目前只做标签透传；坐标转换是 T2，见 §4.4 |
-| `safety_bounds_low` / `safety_bounds_high` | 动作向量层面的运行边界 | 矩阵「安全范围」检查（见 `limits_low/high` 附注） |
+| `safety_bounds_low` / `safety_bounds_high` | 动作向量层面的运行边界 | Profile 内部成对且与 joints 等长校验 |
 
 ### 4.4 不进第一版的字段
 
@@ -131,12 +132,10 @@ URDF / 厂商资料 / 现有 adapter 确定性导出）且**有消费方**（兼
 
 | 字段 | 兼容性矩阵行（架构 §4.2.2） |
 |---|---|
-| `joints.names` | 关节顺序 |
-| `limits_low/high` / `safety_bounds_low/high` | 安全范围 |
-| `cameras` | 相机槽位（机器人侧候选） |
-| `control_modes` / `native_action_type` | 控制模式 |
-| `grippers[]` | 夹爪约定 |
-| `recommended_control_hz` | 频率 |
+| `joints.names` / `cameras` | Profile 内部必填项与重复校验；不做跨命名空间匹配 |
+| `limits_*` / `safety_bounds_*` | Profile 内部长度与成对校验 |
+| `control_modes` / `native_action_type` | 受控词表校验；数据也显式声明 mode 时可检查冲突 |
+| `gripper` / `recommended_control_hz` | 静态事实及内部校验；当前不生成 transform |
 
 ### 4.6 与阶段2的关系
 

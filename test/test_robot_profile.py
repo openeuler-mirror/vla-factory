@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from vla_factory.robot import get_robot_profile, list_robot_profiles
-from vla_factory.robot.profile import (
+from vla_factory.robot import (
     GripperConvention,
     JointGroup,
     RobotProfile,
-    profile_from_dict,
+    get_robot_profile,
+    list_robot_profiles,
+    load_robot_profile,
 )
 
 
@@ -39,6 +40,16 @@ def test_unknown_profile_raises():
         get_robot_profile("does_not_exist")
 
 
+def test_load_profile_from_path_uses_validated_deserialization(tmp_path):
+    path = tmp_path / "custom.yaml"
+    path.write_text("name: custom\njoints:\n  names: [joint_0]\n")
+
+    profile = load_robot_profile(path)
+
+    assert profile.name == "custom"
+    assert profile.joints.names == ("joint_0",)
+
+
 def test_robotwin_bimanual_profile():
     p = get_robot_profile("robotwin")
     # 14-DoF bimanual: left_arm(6) + left_gripper + right_arm(6) + right_gripper.
@@ -53,6 +64,31 @@ def test_empty_joint_names_invalid():
     bad = RobotProfile(name="x", joints=JointGroup(names=()))
     with pytest.raises(ValueError):
         bad.validate()
+
+
+def test_duplicate_joint_and_camera_names_invalid():
+    with pytest.raises(ValueError, match="joints.names contains duplicates"):
+        RobotProfile(
+            name="x", joints=JointGroup(names=("a", "a")),
+        ).validate()
+    with pytest.raises(ValueError, match="cameras contains duplicates"):
+        RobotProfile(
+            name="x", joints=JointGroup(names=("a",)),
+            cameras=("front", "front"),
+        ).validate()
+
+
+def test_incomplete_or_wrong_width_safety_bounds_invalid():
+    with pytest.raises(ValueError, match="must both be set"):
+        RobotProfile(
+            name="x", joints=JointGroup(names=("a",)),
+            safety_bounds_low=(-1.0,),
+        ).validate()
+    with pytest.raises(ValueError, match="must each have 2 entries"):
+        RobotProfile(
+            name="x", joints=JointGroup(names=("a", "b")),
+            safety_bounds_low=(-1.0,), safety_bounds_high=(1.0,),
+        ).validate()
 
 
 def test_joint_length_mismatch_invalid():
@@ -74,18 +110,18 @@ def test_bad_control_mode_invalid():
         bad.validate()
 
 
-def test_profile_from_dict_validates():
+def test_from_dict_validates():
     raw = {
         "name": "tester",
         "joints": {"names": ["a", "b"], "units": "radian"},
         "cameras": ["cam0"],
         "gripper": {"open_value": 0.0, "close_value": 1.0, "joint_index": 1},
     }
-    profile = profile_from_dict(raw)
+    profile = RobotProfile.from_dict(raw)
     assert profile.joints.names == ("a", "b")
     assert profile.gripper == GripperConvention(joint_index=1)
 
 
-def test_profile_from_dict_rejects_invalid():
+def test_from_dict_rejects_invalid():
     with pytest.raises(ValueError):
-        profile_from_dict({"name": "", "joints": {"names": ["a"]}})
+        RobotProfile.from_dict({"name": "", "joints": {"names": ["a"]}})

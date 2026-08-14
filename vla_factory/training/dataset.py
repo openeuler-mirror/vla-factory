@@ -20,20 +20,72 @@ Use :func:`collate_fn` to assemble a batch back into
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from vla_factory.model.interfaces.observation import Observation
-
-from vla_factory.data.formats.base import FormatReader, Frame
+from vla_factory.assembly.transform.pipeline import TransformPipeline
 from vla_factory.data.codec.base import VideoCodec
-from vla_factory.data.manifest import DatasetManifest, SampleLocator
-from vla_factory.assembly.transforms.pipeline import TransformPipeline
+from vla_factory.data.data_schema import Frame
+from vla_factory.data.reader.base import FormatReader
+from vla_factory.model.model_interface import Observation
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SampleWindow:
+    """The episode and temporal range needed to materialize one sample."""
+
+    episode_index: int
+    start_frame_index: int
+    n_obs_steps: int
+    action_horizon: int
+
+
+def build_episode_windows(
+    episode_index: int,
+    episode_length: int,
+    *,
+    n_obs_steps: int,
+    action_horizon: int,
+) -> list[SampleWindow]:
+    """Return one window for every valid observation position in an episode."""
+    if episode_length < n_obs_steps:
+        return []
+    return [
+        SampleWindow(
+            episode_index=episode_index,
+            start_frame_index=position,
+            n_obs_steps=n_obs_steps,
+            action_horizon=action_horizon,
+        )
+        for position in range(episode_length - n_obs_steps + 1)
+    ]
+
+
+def build_sample_windows(
+    *,
+    episode_lengths: dict[int, int],
+    n_obs_steps: int,
+    action_horizon: int,
+) -> list[SampleWindow]:
+    """Build deterministic windows from every episode in the dataset."""
+    windows: list[SampleWindow] = []
+    for episode_index in sorted(episode_lengths):
+        windows.extend(
+            build_episode_windows(
+                episode_index,
+                episode_lengths[episode_index],
+                n_obs_steps=n_obs_steps,
+                action_horizon=action_horizon,
+            )
+        )
+    return windows
 
 
 class VLADataset(torch.utils.data.Dataset):
@@ -41,12 +93,12 @@ class VLADataset(torch.utils.data.Dataset):
 
     Internally uses a ``FormatReader`` + ``VideoCodec`` to load raw
     episodes as canonical ``Episode`` / ``Frame`` objects, then converts
-    each ``SampleLocator`` into a flat dict of numpy arrays.
+    each ``SampleWindow`` into a flat dict of numpy arrays.
 
     Parameters
     ----------
-    manifest : DatasetManifest
-        Complete sample index with locators, schema, and norm stats.
+    sample_windows : Sequence[SampleWindow]
+        The already-split windows this dataset exposes.
     reader : FormatReader
         Dataset format reader (e.g. LeRobotV3Reader).
     codec : VideoCodec
@@ -56,20 +108,17 @@ class VLADataset(torch.utils.data.Dataset):
     transforms : TransformPipeline | list[TransformStep] | None
         Sample-level transforms (normalise, resize, pad, etc.).  A plain list is
         wrapped in a :class:`TransformPipeline`.
-    split : str
-        One of ``"train"`` or ``"val"``.
     """
 
     def __init__(
         self,
-        manifest: DatasetManifest,
+        sample_windows: Sequence[SampleWindow],
         reader: FormatReader,
         codec: VideoCodec,
         path: Path,
         transforms: TransformPipeline | list | None = None,
-        split: str = "train",
     ) -> None:
-        self.manifest = manifest
+        self.sample_windows = tuple(sample_windows)
         self.reader = reader
         self.codec = codec
         self.path = path
@@ -80,26 +129,14 @@ class VLADataset(torch.utils.data.Dataset):
             self.transforms = transforms
         else:
             self.transforms = TransformPipeline(list(transforms))
-        self.split = split
-
-        # Select the appropriate locator subset
-        if split == "train":
-            self._indices = manifest.train_indices
-        elif split == "val":
-            self._indices = manifest.val_indices
-        else:
-            raise ValueError(f"Unknown split: {split!r}")
-
         # Episode frame cache: ep_index -> list[Frame]
         self._episode_cache: dict[int, list[Frame]] = {}
 
     def __len__(self) -> int:
-        return len(self._indices)
+        return len(self.sample_windows)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        real_idx = self._indices[idx]
-        locator = self.manifest.locators[real_idx]
-        return self._load_sample(locator)
+        return self._load_sample(self.sample_windows[idx])
 
     # ── Internal ──────────────────────────────────────────────────
 
@@ -115,13 +152,13 @@ class VLADataset(torch.utils.data.Dataset):
                 del self._episode_cache[oldest]
         return self._episode_cache[ep_idx]
 
-    def _load_sample(self, loc: SampleLocator) -> dict[str, Any]:
-        """Convert a ``SampleLocator`` into a flat dict of numpy arrays."""
-        frames = self._get_episode_frames(loc.episode_index)
+    def _load_sample(self, window: SampleWindow) -> dict[str, Any]:
+        """Convert a ``SampleWindow`` into a flat dict of numpy arrays."""
+        frames = self._get_episode_frames(window.episode_index)
 
         # ── Observation frames ────────────────────────────────────
-        obs_start = loc.start_frame_index
-        obs_end = min(obs_start + loc.n_obs_steps, len(frames))
+        obs_start = window.start_frame_index
+        obs_end = min(obs_start + window.n_obs_steps, len(frames))
 
         # Use the last observation frame for images/state
         obs_frame = frames[min(obs_end - 1, len(frames) - 1)]
@@ -152,7 +189,7 @@ class VLADataset(torch.utils.data.Dataset):
         # matching lerobot's convention: the first predicted action is the
         # action to take at the current timestep.
         action_start = obs_end - 1
-        action_end = action_start + loc.action_horizon
+        action_end = action_start + window.action_horizon
 
         actions_list: list[np.ndarray] = []
         is_pad: list[bool] = []
@@ -169,7 +206,7 @@ class VLADataset(torch.utils.data.Dataset):
                         break
                 if last_valid is None:
                     raise ValueError(
-                        f"All actions in episode {loc.episode_index} are None; "
+                        f"All actions in episode {window.episode_index} are None; "
                         "cannot pad action horizon without at least one valid action."
                     )
                 actions_list.append(last_valid)
@@ -178,7 +215,9 @@ class VLADataset(torch.utils.data.Dataset):
         if actions_list:
             sample["actions"] = np.stack(actions_list, axis=0).astype(np.float32)
         else:
-            sample["actions"] = np.zeros((loc.action_horizon, 0), dtype=np.float32)
+            sample["actions"] = np.zeros(
+                (window.action_horizon, 0), dtype=np.float32,
+            )
 
         sample["action_is_pad"] = np.array(is_pad, dtype=bool)
 

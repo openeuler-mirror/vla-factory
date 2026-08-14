@@ -37,7 +37,7 @@
                                        │
                                        ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│  Manifest + Sampler -> train / val sample index                            │
+│  build_sample_windows -> all-episode training SampleWindow list             │
 └──────────────────────────────────────┬─────────────────────────────────────┘
                                        │
                                        ▼

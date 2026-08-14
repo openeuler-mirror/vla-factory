@@ -1,5 +1,5 @@
 """Allow ``python -m vla_factory`` to invoke the CLI."""
 
-from vla_factory.recipe.cli import main
+from vla_factory.cli import main
 
 main()

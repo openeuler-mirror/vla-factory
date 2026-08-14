@@ -4,6 +4,9 @@
 > **后续决策（2026-08-11）：** 本计划中 BaseContract / Materialize 的设计记录
 > 已被撤销。当前实现以 ModelMetadata 为唯一模型接口事实源，checkpoint 只做
 > 可选一致性检查；现状以架构文档和模型模块文档为准。
+> **后续产物收敛：** 独立 `schema.json` / `norm_stats.json` 已删除；二者现在只作为
+> `assembly.json` 的 `schema_ref` / `norm_stats_ref` 保存。正文中的旧文件名是阶段 1
+> 当时的迁移记录，不代表当前产物布局。
 > 依据：`docs/architecture/vla-factory-architecture.cn.md` §7.4 阶段1（ccb2ca8）；
 > 字段级规范以 `feat_inspect` 分支 2223989 的
 > [数据模块 §8](../modules/data-module.cn.md)、[模型模块 §4](../modules/model-module.cn.md)、
@@ -12,7 +15,7 @@
 > **执行中与原计划的三处偏差**（正文已就地更新）：
 > 1. **D3 扩大为 D5**——不只是把重复事实从 profile 上提，而是整份 profile 并入
 >    `ModelMetadata.params`，`recipe/model/` 目录删除，配套加了配置面三道闸。
->    起因是用户指出「扩展模型要写两个文件不够直接」，顺带发现 `entries/act.py`
+>    起因是用户指出「扩展模型要写两个文件不够直接」，顺带发现 `adapters/act.py`
 >    在模块顶层反向依赖 `recipe.defaults`（违反架构 §2.2）。
 > 2. **多找到两个死配置**——`num_inference_steps` 与 `tokenizer_max_length` 写在
 >    profile 里从来无人读取，改了不生效也无提示。闸2 正是为这类而设。
@@ -95,7 +98,7 @@ ModelMetadata 声明事实 → TransformContext 携带 → step.from_config 从 
 
 D3 只搬事实、把默认值留在 profile YAML，结果是同一个模型的声明分居两个文件
 （事实在 `.py`、默认值在 `.yaml`），模型作者还要先判断「这个键算事实还是算默认值」。
-现有分层另带两处硬伤：`entries/act.py` 在模块顶层 import `recipe.defaults`
+现有分层另带两处硬伤：`adapters/act.py` 在模块顶层 import `recipe.defaults`
 （model 叶子层反向依赖用户表达层，违反架构 §2.2）；`resolve_recipe()` 与
 `_resolve_*_config()` 各合并一次 profile。
 
@@ -171,15 +174,15 @@ model-module §4.5 要求三份词表单处定义。control mode 第一版只保
 
 ### 改动点
 
-- `data/manifest.py`：新 dataclass 结构 + D2 的派生属性 + `to_dict()` / `from_dict()`
+- `data/data_schema.py`：新 dataclass 结构 + D2 的派生属性 + `to_dict()` / `from_dict()`
   （`from_dict` 承担旧版扁平 `schema.json` 的升级）。`resolve_vector_keys()` 改为读
   `dims[]`（它现在校验的正是「每维恰好一个 key」，逐条目表天然满足，校验退化为存在性检查）。
 - `training/train.py:440`：`json.dump(asdict(schema))` → `schema.to_dict()`。
 - `inference/infer.py:315`：手工重建 DataSchema → `DataSchema.from_dict()`。
-- `data/formats/lerobot_v3.py`：补 per-camera `resolution` / `fps` / `encoding`
+- `data/reader/lerobot_v3.py`：补 per-camera `resolution` / `fps` / `encoding`
   （`info.json` 的 `video_info`）、`instruction.granularity`、`identity.source_format`、
   `robot_ref`；`state.dims[].name` 保留原始后缀不剥离（如 `shoulder_pan.pos`）。
-- `data/formats/robotwin.py`：`_JOINT_ORDER` 拼接布局（`left_arm` / `left_gripper` /
+- `data/reader/robotwin.py`：`_JOINT_ORDER` 拼接布局（`left_arm` / `left_gripper` /
   `right_arm` / `right_gripper`）写进逐维 `source_field`——把 reader 代码里的隐式拼接
   变成 schema 里的显式事实；`action.dims[].mode` 按格式规范直接产出 measured
   （`/joint_action/*` 即 qpos 目标）。
@@ -200,7 +203,7 @@ model-module §4.5 要求三份词表单处定义。control mode 第一版只保
 
 实现 model-module §4。可与 WP1 并行。
 
-### ModelMetadata 新增（`model/interfaces/model.py`）
+### ModelMetadata 新增（`model/model_interface.py`）
 
 | 块 | 字段 |
 |---|---|
@@ -216,9 +219,9 @@ finetune 块只做对齐、不新增：草稿的 `parts` 即现有 `components`�
 
 ### 三个 entry 填充声明
 
-- `entries/act.py`：`dim_policy: flexible`（从零训练的投影层）、视觉槽位随数据、
+- `adapters/act.py`：`dim_policy: flexible`（从零训练的投影层）、视觉槽位随数据、
   `image_normalization: imagenet`、`normalization: mean_std`、`requires_prompt: false`；
-- `entries/pi0.py` / `entries/pi05.py`：3 个固定视觉槽位（224×224、`[-1,1]` HWC）、
+- `adapters/pi0.py` / `adapters/pi05.py`：3 个固定视觉槽位（224×224、`[-1,1]` HWC）、
   `dim_policy: padded_to_max: 32`、pi0 `mean_std` / pi05 `quantile`、`expected_hz: 50`。
 
 ### profile YAML 整体并入声明（按 D5）
@@ -226,7 +229,8 @@ finetune 块只做对齐、不新增：草稿的 `parts` 即现有 `components`�
 `recipe/model/{act,pi0,pi05}.yaml` 的全部内容进入 `ModelMetadata.params`，
 目录与 `load_model_defaults()` 一并删除；`TransformContext` 增加 `metadata` 字段，
 事实类 step 参数从 `ctx.metadata` 读取，**步骤配置里再写该键即报错**。
-transform 步骤清单作为 `params["transforms"]` 保留（阶段3 才由解析器规划）。
+当时暂把 transform 步骤清单保留在 `params["transforms"]`，供阶段 3 迁移规划；
+后续已删除该配置面，当前由 resolver 从 `ModelMetadata` 具名事实直接推导 call。
 
 顺带清掉两个死键：`num_inference_steps` 与 `tokenizer_max_length` 原本写在 profile
 里但无人读取，改了不生效也无提示——前者接上消费链，后者删除（`task_tokenize`
@@ -280,13 +284,13 @@ deprecation warning；`infer.py` 的 ready 日志打印生效值与来源。
 
 路由逻辑集中在 `assembly/action_facts.py`（`resolve_action_dim` /
 `resolve_action_horizon`），四个消费点全部接入：`training/train.py`、
-`entries/act.py`（head 宽度 + chunk size）、`entries/pi0.py`（horizon）、
+`adapters/act.py`（head 宽度 + chunk size）、`adapters/pi0.py`（horizon）、
 `inference/infer.py`（引擎的 `action_dim` / `action_horizon`，以及 evaluate 的
 ground-truth 窗口改用 `engine.action_horizon`）。统一规则：**维度事实优先、
 recipe 兜底、两者不一致时 warning 并采用维度事实**（保守失败留给阶段2 升级为 error）。
 
 接入时发现一处既有的自相矛盾：`train.py` 已按数据事实决定 pad 目标，而
-`entries/act.py` 仍按 recipe 建 action head——recipe 与数据集不一致时，头的宽度
+`adapters/act.py` 仍按 recipe 建 action head——recipe 与数据集不一致时，头的宽度
 和 dataloader 喂进来的宽度会对不上。现已统一。
 
 测试：`test_action_facts.py`（路由单元）+ `test_act_model.py::TestActionFactRouting`
@@ -299,7 +303,7 @@ recipe 兜底、两者不一致时 warning 并采用维度事实**（保守失�
 
 ### ACT 相机错位（bug 修复，本阶段唯一的行为变更）
 
-`entries/act.py:223` 用 `sorted(observation.images.keys())` 与 `self._image_keys` zip
+`adapters/act.py:223` 用 `sorted(observation.images.keys())` 与 `self._image_keys` zip
 建立相机对应，而 `_image_keys` 的顺序来自 `schema.cameras`（`info.json` 的 feature 顺序）。
 **两者顺序不一致时相机会被静默交换**——腕部图像喂进第三人称槽位。当前测试数据
 （`front` / `wrist`）恰好字典序一致，所以 bug 潜伏未爆。这正是架构 §4.2.3 明令禁止的
@@ -311,7 +315,7 @@ recipe 兜底、两者不一致时 warning 并采用维度事实**（保守失�
 
 ### 其余关系假设
 
-- `entries/act.py:370` 的 `state_dim = schema.state_dim or action_spec.action_dim`
+- `adapters/act.py:370` 的 `state_dim = schema.state_dim or action_spec.action_dim`
   兜底规则提取为独立函数并注释标注阶段3 的接管点；
 - pi0 / pi05 的 `camera_mapping` 入口迁移：按架构 §3.1 三区划分它属于组合调整区，
   改为 `assembly.camera_mapping` 优先，`model.config.camera_mapping` 继续兼容并

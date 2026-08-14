@@ -148,19 +148,20 @@ functions (162 collected after parametrize expansion):
 | `test_act_model.py` | 15 | ACT lerobot adapter: protocol compliance, registry integration, observation_to, factory wrapper (compute_loss/predict/multi-camera/save-load), profile defaults & recipe overrides |
 | `test_pi0_model.py` | 4 | pi0 adapter (fake openpi): metadata, camera_mapping translation, loss/predict delegation, empty-camera placeholder |
 | `test_pi05_model.py` | 13 | pi05 deltas vs pi0: factory variant construction, discrete-state prompt, task fallback chain, quantile normalize/unnormalize roundtrip |
-| `test_lora_strategy.py` | 8 | LoRA strategy logic (fake peft): single/multi subtree wrapping, merge unwrap, target-component validation, legacy alias |
+| `test_lora_strategy.py` | 8 | LoRA strategy logic (fake peft): single/multi subtree wrapping, merge unwrap, target-component validation, strict field validation |
 
 **Training (training/)**
 
 | File | Cases | Coverage |
 |------|-------|----------|
 | `test_phase4_engine.py` | 8 | Training engine: strategy dispatch (full/freeze/selective + unknown raises), recipe→training-args mapping, 3-step CPU training loop |
+| `test_training_strategy_registry.py` | 5 | Strategy registration, unknown-name diagnostics, config field/type validation, legacy-field rejection, and one-class extension example |
 
 **Data pipeline (data/)**
 
 | File | Cases | Coverage |
 |------|-------|----------|
-| `test_data_pipeline.py` | 43 | End-to-end data pipeline (bundled 3-episode lerobot dataset): LeRobotV3 reader, PyAV codec decode, sliding-window sampling, manifest build (train/val split / no leakage / determinism), transforms, VLADataset, DataLoader batching |
+| `test_data_pipeline.py` | 41 | End-to-end data pipeline (bundled 3-episode lerobot dataset): LeRobotV3 reader, PyAV codec decode, deterministic all-episode `SampleWindow` construction, transforms, VLADataset, DataLoader batching |
 | `test_robotwin_reader.py` | 7 | RoboTwin reader + codec happy path (synthetic dataset): can_read, schema, episode length/range, state/action reads, frame decode, norm_stats |
 
 **Deploy / inference (deploy/)**

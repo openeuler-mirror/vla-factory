@@ -11,7 +11,7 @@ name: robotwin
 cameras: [head_camera, left_camera, right_camera]
 
 # 14-DoF joint vector in reader order: left_arm(6) + left_gripper(1) +
-# right_arm(6) + right_gripper(1). Matches data/formats/robotwin.py _JOINT_ORDER
+# right_arm(6) + right_gripper(1). Matches data/reader/robotwin.py _JOINT_ORDER
 # and the per-dim source_field the reader writes into the schema.
 joints:
   names: [left_arm_0, left_arm_1, left_arm_2, left_arm_3, left_arm_4, left_arm_5,

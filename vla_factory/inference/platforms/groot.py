@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from vla_factory.inference.infer import ActionCommand, ObsDict, PolicyExecutor
+from vla_factory.inference.execution import ActionCommand, PolicyExecutor
+from vla_factory.inference.inference_engine import ObsDict
 
 
 class GROOTAdapter:

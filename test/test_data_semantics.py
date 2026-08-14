@@ -13,6 +13,7 @@ class TestInferCameraSemantic:
         assert infer_camera_semantic("cam_left_wrist") == "wrist_left"
         assert infer_camera_semantic("cam_right_wrist") == "wrist_right"
         assert infer_camera_semantic("top") == "third_person_top"
+        assert infer_camera_semantic("overhead_camera") == "third_person_top"
         assert infer_camera_semantic("head_camera") == "third_person_front"
 
     def test_zero_candidates_is_undeclared(self):
@@ -29,6 +30,16 @@ class TestInferCameraSemantic:
         # A key that names a wrist view plus an incidental word still resolves
         # deterministically to the wrist role (third-person roles exclude wrist).
         assert infer_camera_semantic("wrist_top") == "wrist"
+
+    def test_more_specific_directional_wrist_wins(self):
+        assert infer_camera_semantic("left_wrist_top") == "wrist_left"
+
+    def test_equal_priority_directional_roles_remain_ambiguous(self):
+        assert infer_camera_semantic("left_right_wrist") is None
+
+    def test_explicit_view_outranks_generic_front_wording(self):
+        assert infer_camera_semantic("head_top") == "third_person_top"
+        assert infer_camera_semantic("front_side") == "third_person_side"
 
 
 class TestInferActionMode:

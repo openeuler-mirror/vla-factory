@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from .profile import RobotProfile, profile_from_dict
+from .profile import RobotProfile
 
 
 def _profiles_dir() -> Path:
@@ -27,6 +27,15 @@ def list_robot_profiles() -> list[str]:
     if not d.is_dir():
         return []
     return sorted(p.stem for p in d.glob("*.yaml"))
+
+
+def load_robot_profile(path: str | Path) -> RobotProfile:
+    """Load and validate a robot profile from a YAML file."""
+    path = Path(path)
+    raw = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"robot profile {path!r} must be a YAML mapping")
+    return RobotProfile.from_dict(raw)
 
 
 def get_robot_profile(name: str) -> RobotProfile:
@@ -44,7 +53,4 @@ def get_robot_profile(name: str) -> RobotProfile:
             f"Unknown robot profile {name!r}. "
             f"Known profiles: {available}."
         )
-    raw = yaml.safe_load(candidate.read_text()) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"robot profile {name!r} must be a YAML mapping")
-    return profile_from_dict(raw)
+    return load_robot_profile(candidate)

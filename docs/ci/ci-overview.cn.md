@@ -136,19 +136,20 @@ master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `
 | `test_act_model.py` | 15 | ACT lerobot adapter：协议合规、注册集成、observation_to、factory wrapper（compute_loss/predict/多相机/save-load）、profile 默认值 & recipe 覆盖 |
 | `test_pi0_model.py` | 4 | pi0 adapter（fake openpi）：metadata、camera_mapping 翻译、loss/predict 委托、空相机占位 |
 | `test_pi05_model.py` | 13 | pi05 与 pi0 的差异：factory variant 构建、discrete-state prompt、task 回退链、quantile normalize/unnormalize roundtrip |
-| `test_lora_strategy.py` | 8 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、legacy alias |
+| `test_lora_strategy.py` | 8 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、严格字段校验 |
 
 **训练 (training/)**
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
 | `test_phase4_engine.py` | 8 | 训练引擎：策略分发（full/freeze/selective + 未知 raises）、recipe→training-args 映射、CPU 3 步训练循环 |
+| `test_training_strategy_registry.py` | 5 | 策略注册表、未知策略诊断、config 字段/类型校验、旧字段拒绝与单类扩展示例 |
 
 **数据管道 (data/)**
 
 | 文件 | 例数 | 覆盖 |
 |------|------|------|
-| `test_data_pipeline.py` | 43 | 端到端数据管道（bundled 3-episode lerobot 数据集）：LeRobotV3 reader、PyAV codec 解码、滑动窗口采样、manifest 构建（train/val 分割/无泄漏/确定性）、transforms、VLADataset、DataLoader 批处理 |
+| `test_data_pipeline.py` | 41 | 端到端数据管道（bundled 3-episode lerobot 数据集）：LeRobotV3 reader、PyAV codec 解码、全部 episode 的确定性 `SampleWindow` 构建、transforms、VLADataset、DataLoader 批处理 |
 | `test_robotwin_reader.py` | 7 | RoboTwin reader + codec 正常路径（合成数据集）：can_read、schema、episode 长度/范围、state/action 读取、帧解码、norm_stats |
 
 **部署 / 推理 (deploy/)**

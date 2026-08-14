@@ -1,11 +1,14 @@
 """Deterministic inference rules for data-side semantics (data-module §8.5).
 
 Two data facts are *inferred* (not directly probed): a camera's ``semantic``
-role and an action dim's ``mode``. Both follow the same discipline:
+role and an action dim's ``mode``. Both use explicit, versioned rules:
 
-- **Unique match only** — exactly one vocabulary candidate may hit; zero or
-  several candidates yield ``None`` (undeclared). The resolver then asks for a
-  controlled override. No dictionary-order / similarity guessing (§1.7).
+- **Camera: unique best match only** — more specific rules outrank general
+  ones, while two semantics tied at the highest matching priority yield
+  ``None``. Rule-table order never breaks a tie.
+- **Action: exact suffix only** — only a controlled suffix maps to a mode.
+- Zero or ambiguous evidence stays undeclared so the resolver can require a
+  controlled override. No similarity guessing (§1.7).
 - **Container formats carry no default** — a generic container (lerobot can
   hold any action source) gets no per-format default; only a format whose spec
   binds the production pipeline (RoboTwin) yields ``measured`` evidence, and
@@ -16,39 +19,57 @@ These rules are framework code (versioned, unit-tested), not user config.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from vla_factory.utils.vocabulary import CAMERA_SEMANTICS, CONTROL_MODES
 
 
-def infer_camera_semantic(key: str) -> str | None:
-    """Map a dataset camera key to a ``CAMERA_SEMANTICS`` role.
+@dataclass(frozen=True)
+class _CameraSemanticRule:
+    semantic: str
+    priority: int
+    all_of: tuple[str, ...] = ()
+    any_of: tuple[str, ...] = ()
 
-    Returns the unique matching role, or ``None`` when zero / more than one
-    candidate matches. Matching is case-insensitive substring on the key.
-    """
-    k = key.lower()
-    # Predicates are made mutually exclusive so that e.g. ``cam_left_wrist``
-    # matches ``wrist_left`` only (not also the bare ``wrist``), preserving the
-    # "unique match" guarantee.
-    candidates: list[str] = []
-    if "wrist" in k and "left" in k:
-        candidates.append("wrist_left")
-    if "wrist" in k and "right" in k:
-        candidates.append("wrist_right")
-    if "wrist" in k and "left" not in k and "right" not in k:
-        candidates.append("wrist")
-    if ("top" in k or "high" in k) and "wrist" not in k:
-        candidates.append("third_person_top")
-    if ("front" in k or "head" in k) and "wrist" not in k \
-            and "top" not in k and "high" not in k and "side" not in k:
-        candidates.append("third_person_front")
-    if "side" in k and "wrist" not in k:
-        candidates.append("third_person_side")
-    if len(candidates) != 1:
+    def matches(self, key: str) -> bool:
+        return all(token in key for token in self.all_of) and (
+            not self.any_of or any(token in key for token in self.any_of)
+        )
+
+
+_CAMERA_SEMANTIC_RULES: tuple[_CameraSemanticRule, ...] = (
+    # Directional wrist evidence is more specific than a generic wrist view.
+    _CameraSemanticRule("wrist_left", priority=30, all_of=("wrist", "left")),
+    _CameraSemanticRule("wrist_right", priority=30, all_of=("wrist", "right")),
+    _CameraSemanticRule("wrist", priority=20, all_of=("wrist",)),
+    # Top and side are equally specific: a key carrying both remains ambiguous.
+    _CameraSemanticRule(
+        "third_person_top", priority=10,
+        any_of=("top", "high", "overhead"),
+    ),
+    _CameraSemanticRule("third_person_side", priority=10, any_of=("side",)),
+    # Explicit top/side wording outranks the weaker front/head convention.
+    _CameraSemanticRule(
+        "third_person_front", priority=0, any_of=("front", "head"),
+    ),
+)
+
+
+def infer_camera_semantic(key: str) -> str | None:
+    """Return the unique highest-priority semantic matching a camera key."""
+    matches = [
+        rule for rule in _CAMERA_SEMANTIC_RULES
+        if rule.semantic in CAMERA_SEMANTICS and rule.matches(key.lower())
+    ]
+    if not matches:
         return None
-    role = candidates[0]
-    return role if role in CAMERA_SEMANTICS else None
+    highest_priority = max(rule.priority for rule in matches)
+    best = {
+        rule.semantic for rule in matches
+        if rule.priority == highest_priority
+    }
+    return next(iter(best)) if len(best) == 1 else None
 
 
 # lerobot-style names carry the source as a suffix (``.pos`` / ``.vel`` /

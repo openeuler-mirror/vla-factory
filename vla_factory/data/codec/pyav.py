@@ -18,7 +18,8 @@ import av
 import numpy as np
 from numpy.typing import NDArray
 
-from ..formats.base import VideoRef
+from ..data_schema import VideoRef
+from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,7 @@ class _VideoFrameCache:
         self.close()
 
 
+@CodecRegistry.register("pyav")
 class PyAVCodec:
     """Default video codec — uses PyAV to decode video frames to numpy.
 

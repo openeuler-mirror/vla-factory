@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from helpers import make_schema
 
-from vla_factory.data.manifest import DataSchema
+from vla_factory.data.data_schema import DataSchema, FeatureStats, NormStats
 
 
 def test_to_dict_from_dict_round_trip():
@@ -19,6 +19,17 @@ def test_to_dict_from_dict_round_trip():
     )
     restored = DataSchema.from_dict(schema.to_dict())
     assert restored == schema
+
+
+def test_norm_stats_to_dict_from_dict_round_trip():
+    stats = NormStats(
+        state=FeatureStats(mean=[1.0], std=[2.0]),
+        action=FeatureStats(q01=[-1.0], q99=[1.0]),
+        images={"front": FeatureStats(min=[0.0], max=[255.0])},
+        method="quantile",
+    )
+
+    assert NormStats.from_dict(stats.to_dict()) == stats
 
 
 def test_derived_properties_match_legacy_fields():
@@ -48,4 +59,3 @@ def test_unknown_robot_type_is_undeclared():
     schema = make_schema(state_dim=1, robot_type="unknown")
     assert schema.robot_ref is None
     assert schema.robot_type == "unknown"  # derived compat prop
-

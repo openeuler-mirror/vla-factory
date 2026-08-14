@@ -1,6 +1,6 @@
 """Regression test for the ACT camera-mapping bug (WP4).
 
-``entries/act.py`` used to ``sorted(observation.images.keys())`` and zip with
+``adapters/act.py`` used to ``sorted(observation.images.keys())`` and zip with
 ``self._image_keys`` (in ``schema.cameras`` order). When the observation dict
 order differed from the schema order, cameras were silently swapped — a wrist
 image could feed the third-person slot. lerobot is NOT required for this test
@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from vla_factory.model.interfaces.observation import Observation
-from vla_factory.model.registry.entries.act import ACTModelWrapper
+from vla_factory.model.model_interface import Observation
+from vla_factory.model.adapters.act import ACTModelWrapper
 
 
 class _DummyModel(torch.nn.Module):
