@@ -751,11 +751,11 @@ real robot / simulator.
 ## 8. Future evolution
 
 - **Protocol version negotiation and capability discovery**: the remote
-  model service currently has no version / capability handshake (phase 3 of
-  the RoboTwin integration doc). A future version could negotiate the wire
+  model service currently has no version / capability handshake. A future
+  version could negotiate the wire
   version and model capabilities at connect time to avoid client/server
   one-sided drift.
-- **Action range checking and clipping**: if the `action_spec` or a platform
+- **Action range checking and clipping**: if the assembly snapshot or a platform
   adapter declares action bounds, they could be checked, clipped, or
   rejected before sending (main architecture doc §7.3).
 - **More platforms / real robots**: integrate more simulators and real

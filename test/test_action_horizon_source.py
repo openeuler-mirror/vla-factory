@@ -23,8 +23,7 @@ from helpers import make_norm_stats, make_schema
 
 from vla_factory.assembly import resolve_from_facts as resolve_assembly
 from vla_factory.model.model_interface import ModelMetadata
-from vla_factory.recipe.model_config import merge_model_config
-from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 
 
 def _resolve(metadata: ModelMetadata, model_config: dict | None = None):

@@ -10,7 +10,7 @@ import torch.nn as nn
 import yaml
 
 from vla_factory.assembly import ResolvedAssembly
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 from vla_factory.training.strategies.base import FinetuningStrategy
 from vla_factory.utils.constants import (
     ASSEMBLY_FILE,

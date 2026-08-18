@@ -19,8 +19,7 @@ import torch.nn as nn
 from helpers import make_assembly, make_schema
 
 import vla_factory.model.adapters.openpi as pi0_mod
-from vla_factory.recipe.parser import parse_recipe_from_string
-from vla_factory.recipe.model_config import merge_model_config
+from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 from vla_factory.data.data_schema import FeatureStats, NormStats
 from vla_factory.assembly.transform.normalize import (
     NormalizeVector,

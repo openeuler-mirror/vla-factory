@@ -5,8 +5,8 @@ normalization statistics. Camera validation belongs to camera mapping, because
 validation and construction must use the same candidate set. Robot camera and joint names are
 not compared with DataSchema names: those are different namespaces unless a
 future explicit binding relates them. The other checks (language, gripper,
-rotation, frequency, safety) are deliberately out of scope —
-``docs/plans/phase2-resolution-diagnostics.cn.md`` records why.
+rotation, frequency, safety) remain out of scope until both sides expose
+comparable facts and a real runtime consumer exists.
 
 Each check raises on the first problem it finds rather than collecting them:
 the user re-runs ``resolve`` after fixing one, exactly as for the earlier

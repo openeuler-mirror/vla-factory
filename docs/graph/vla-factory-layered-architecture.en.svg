@@ -25,10 +25,10 @@
 
   <text x="480" y="48" text-anchor="middle" class="title">VLA Factory Overall Architecture</text>
 
-  <!-- Row 1: User Expression Layer -->
+  <!-- Row 1: User Interface -->
   <rect x="55" y="112" width="850" height="72" rx="14" class="layer user"/>
-  <text x="480" y="146" text-anchor="middle" class="layer-title">User Expression Layer</text>
-  <text x="480" y="170" text-anchor="middle" class="code">vlafactory-cli | YAML recipe | API | ……</text>
+  <text x="480" y="146" text-anchor="middle" class="layer-title">User Interface</text>
+  <text x="480" y="170" text-anchor="middle" class="code">CLI | YAML Recipe | WebUI | Agent | ……</text>
 
   <!-- Row 2: Finetuning | Inference -->
   <rect x="55" y="208" width="413" height="72" rx="14" class="layer train"/>

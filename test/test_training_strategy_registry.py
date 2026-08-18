@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 import torch.nn as nn
 
-from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.user_interface import parse_recipe_from_string
 from vla_factory.training.strategies import (
     FinetuningStrategy,
     get_strategy,

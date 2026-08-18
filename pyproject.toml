@@ -57,7 +57,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vlafactory-cli = "vla_factory.cli:main"
+vlafactory-cli = "vla_factory.user_interface.cli:main"
 
 [project.optional-dependencies]
 # Per-model ecosystem deps. ACT wraps lerobot's ACTPolicy (standard PyPI, pip-friendly).

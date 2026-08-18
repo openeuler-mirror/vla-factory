@@ -36,7 +36,7 @@ from vla_factory.assembly.resolve import (
 )
 from vla_factory.data.data_schema import ActionDim, DataSchema, FeatureStats, NormStats
 from vla_factory.model.model_interface import ModelMetadata, VisionSlot
-from vla_factory.recipe import AssemblyOverrides
+from vla_factory.user_interface import AssemblyOverrides
 
 DATASET_PATH = _project_root / "test/data" / "lerobot_train_data_3_episodes"
 
@@ -217,8 +217,7 @@ class TestPlanIsExecutable:
     @staticmethod
     def _assembly_for(recipe_path: str):
         from vla_factory.assembly import resolve_assembly
-        from vla_factory.recipe.model_config import merge_model_config
-        from vla_factory.recipe.parser import parse_recipe
+        from vla_factory.user_interface import merge_model_config, parse_recipe
 
         recipe = merge_model_config(parse_recipe(str(_project_root / recipe_path)))
         recipe.data.path = str(DATASET_PATH)

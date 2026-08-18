@@ -129,7 +129,7 @@ class ModelMetadata:
     #
     # The key set doubles as the tunable allow-list: ``merge_model_config()``
     # rejects a ``model.config`` key that is not declared here, and the factory
-    # rejects a declared key that nothing reads (see ``recipe/model_config.py``).
+    # rejects a declared key that nothing reads (see ``user_interface/recipe.py``).
     # ``frozen=True`` freezes the binding, not the dict — treat it as read-only.
     params: dict[str, Any] = field(default_factory=dict)
 

@@ -35,7 +35,7 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 
 def _make_recipe_and_assembly(action_dim=6, action_horizon=10, cameras=("front",), state_dim=6):
     """Create a minimal TrainRecipe + ResolvedAssembly pair for factory calls."""
-    from vla_factory.recipe import ModelConfig, TrainRecipe, merge_model_config
+    from vla_factory.user_interface import ModelConfig, TrainRecipe, merge_model_config
 
     recipe = merge_model_config(TrainRecipe(
         model=ModelConfig(
@@ -250,7 +250,7 @@ class TestDefaultProfile:
     """Model default profile + per-run override merge (config-layer only)."""
 
     def test_declaration_has_hyperparams(self):
-        from vla_factory.recipe.model_config import model_params
+        from vla_factory.user_interface import model_params
 
         d = model_params("act")
         assert "dim_model" in d
@@ -279,8 +279,7 @@ class TestDefaultProfile:
 
     def test_image_size_comes_from_model_config_or_native_data(self):
         """The interface is resolved first; the resize call consumes it."""
-        from vla_factory.recipe.model_config import merge_model_config
-        from vla_factory.recipe.parser import parse_recipe_from_string
+        from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 
         schema = make_schema(
             state_dim=6, action_dim=6, cameras=("front",),
@@ -305,7 +304,7 @@ model:
         assert resize_call.args["width"] == 224
 
     def test_unknown_model_returns_empty(self):
-        from vla_factory.recipe.model_config import model_params
+        from vla_factory.user_interface import model_params
 
         assert model_params("nonexistent_model") == {}
 
@@ -316,7 +315,7 @@ model:
 
         entry = get_entry("act")
         recipe, assembly = _make_recipe_and_assembly(cameras=("top",))
-        from vla_factory.recipe.model_config import merge_model_config
+        from vla_factory.user_interface import merge_model_config
         recipe.model.config = {**recipe.model.config, "dim_model": 256}
         recipe = merge_model_config(recipe)
         wrapper = entry.factory(recipe=recipe, assembly=assembly)
@@ -327,7 +326,7 @@ model:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  WP3: the factory reads action facts from the dimensions that own them
+# The factory reads action facts from the dimensions that own them.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -340,7 +339,7 @@ class TestShapesComeFromTheAssembly:
     """
 
     def _recipe(self, action_horizon=None):
-        from vla_factory.recipe import ModelConfig, TrainRecipe, merge_model_config
+        from vla_factory.user_interface import ModelConfig, TrainRecipe, merge_model_config
 
         config = {} if action_horizon is None else {"action_horizon": action_horizon}
         return merge_model_config(

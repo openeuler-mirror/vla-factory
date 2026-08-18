@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 from vla_factory.model.model_interface import Observation
 from vla_factory.utils.tracked_config import TrackedConfig
 

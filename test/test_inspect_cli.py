@@ -1,4 +1,4 @@
-"""Golden-structure tests for the `inspect` CLI (WP6, architecture §3.5)."""
+"""Golden-structure tests for the `inspect` CLI (architecture §3.5)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import logging
 import yaml
 
 from helpers import make_schema
-from vla_factory import cli as cli_module
-from vla_factory.recipe import ModelConfig, TrainRecipe
+from vla_factory.user_interface import cli as cli_module
+from vla_factory.user_interface import ModelConfig, TrainRecipe
 
 DATA_PATH = "test/data/lerobot_train_data_3_episodes"
 
@@ -69,7 +69,7 @@ def test_model_report_uses_resolver_camera_validation_for_dynamic_slots():
     """A model with no declared slots (ACT) has no slot vocabulary to check the
     override against, so only the camera half is validated — the report must not
     invent an error for a slot name it cannot know."""
-    from vla_factory.recipe import AssemblyOverrides
+    from vla_factory.user_interface import AssemblyOverrides
 
     recipe = TrainRecipe(
         model=ModelConfig(name="act"),

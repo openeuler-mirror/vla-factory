@@ -228,7 +228,7 @@ checkpoint 能自述的同名字段只是可选校验输入，不构成第三类
 
 | 闸 | 治什么 | 实现 |
 |---|---|---|
-| 1. 未声明的键即报错 | 键名拼错、写了早已删除的旧键。pi0 的 factory 逐个 `cfg.get()`，取不到的键凭空消失，从不报错 | `recipe/model_config.py:merge_model_config()` 校验 `model.config` 的键 ⊆ `params` 的键；组合 override 只允许写入 `overrides`，报错时用 `difflib` 给候选 |
+| 1. 未声明的键即报错 | 键名拼错、写了早已删除的旧键。pi0 的 factory 逐个 `cfg.get()`，取不到的键凭空消失，从不报错 | `user_interface/recipe.py:merge_model_config()` 校验 `model.config` 的键 ⊆ `params` 的键；组合 override 只允许写入 `overrides`，报错时用 `difflib` 给候选 |
 | 2. 未被读取的键即报错 | 声明了却无人消费——改了不生效且无提示。`num_inference_steps` 曾如此 | `utils/tracked_config.py:TrackedConfig` 记录读取，factory 末尾 `assert_all_consumed()`；框架在 factory 之外消费的键预先登记 |
 | 3. Transform 配置面被移除 | recipe 改写 step、顺序或事实，导致训练/部署与模型契约漂移 | `merge_model_config()` 与 `resolve_from_facts()` 明确拒绝 `model.config.transforms`；pipeline 只由 resolver 从 `ModelMetadata` 事实推导 |
 

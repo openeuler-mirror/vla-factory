@@ -1,14 +1,13 @@
-# 用户表达层（recipe）模块设计
+# User Interface 模块设计
 
-> 文档状态：**已对齐当前实现**（阶段 5 完成后）。架构文档描述目标态，可能超前于实现；
-> 本文只描述**已经能跑**的行为。
-> 对应架构：见 [总体架构 § 3 用户表达层](../architecture/vla-factory-architecture.cn.md#3-用户表达层) 与 [§ 2.2 目录结构 `recipe/`](../architecture/vla-factory-architecture.cn.md)。
+> 文档状态：**已对齐当前实现**。架构文档描述整体边界，本文描述已经能跑的行为。
+> 对应架构：见 [总体架构 § 3 User Interface](../architecture/vla-factory-architecture.cn.md#3-user-interface) 与 [§ 2.2 目录结构 `user_interface/`](../architecture/vla-factory-architecture.cn.md)。
 
 ## 0. 职责
 
-用户表达层是 VLA Factory 的入口。它把用户可读的 YAML recipe 解析成训练和推理都能消费的
-结构化对象（`TrainRecipe` 及子 dataclass）。全局 CLI 位于 `vla_factory/cli.py`，
-recipe 包只负责用户配置本身。
+User Interface 是 VLA Factory 的用户表达层。当前提供 YAML Recipe 与 CLI，未来可以增加
+WebUI、Agent 等入口；所有入口都只组织并调用 assembly、training、inference 等框架能力，
+不在各自实现中复制这些能力。
 
 **recipe 只承载用户的选择，不承载三者之间的关系。** 哪个相机进模型的哪个视觉槽位、动作
 向量怎么 padding、chunk 多长、图像 resize 到多大——这些都是数据、模型、机器人三份描述的
@@ -19,10 +18,12 @@ recipe 包只负责用户配置本身。
 
 | 对象 | 职责 |
 |---|---|
-| `train_recipe.py` | `TrainRecipe` 及子 dataclass；结构与公共 YAML 块一一对应 |
-| `parser.py` | YAML → `TrainRecipe`；除 `model.config` / `finetuning.config` 外，未知键立即报错 |
-| `model_config.py` | `merge_model_config()`：模型声明的 `params` 与 recipe 的 `model.config` 深合并（recipe 优先），并执行可调键 allow-list |
-| `vla_factory/cli.py` | 全局命令入口：train / preprocess / list / resolve / inspect / evaluate / infer / deploy |
+| `recipe.py` | `TrainRecipe` 及子 dataclass、严格 YAML 解析、模型 tunable 默认值合并 |
+| `cli.py` | 当前命令行入口：train / preprocess / list / resolve / inspect / evaluate / infer / deploy |
+
+后续新增 WebUI 或 Agent 时，在 `user_interface/` 下增加独立文件；当单个入口确实增长到需要多个
+模块时再提升为子目录，不预建空层级。Recipe 是多个入口可共享的结构化输入协议，而不是
+整个目录的名字。
 
 ## 2. 三个区
 
@@ -45,8 +46,12 @@ checkpoint 路径，最后一段作为默认模型名，例如 `model: lerobot/p
 
 | 字段 | 说明 |
 |---|---|
-| `camera_mapping` | `{模型视觉槽位: 数据集相机}`。**给了就是完整声明**——没列出的槽位视为有意留空，走占位图 + zero mask，不再对它做自动推断（实测理由见 `phase3-mapping-and-t1-pipeline.cn.md` 修正 1） |
+| `camera_mapping` | `{模型视觉槽位: 数据集相机}`。**给了就是完整声明**——没列出的槽位视为有意留空，走占位图 + zero mask，不再对它做自动推断 |
 | `default_task` | 语言兜底。优先级：帧级 task 文本 > `default_task` > 空 prompt |
+
+`camera_mapping` 不采用“用户写一部分、解析器补一部分”的合并语义：那样既无法表达“这个
+槽位有意留空”，也会让同一份 recipe 随自动推断规则变化而改变结果。显式 override 一旦
+出现，就代表用户已经给出最终关系；完全省略时才允许解析器自动推断。
 
 **本区只放解析器真正消费的 override**。parser 会根据 `AssemblyOverrides` 拒绝未知字段；
 纯解析器也直接接收这个强类型对象，不再维护裸 dict、消费列表或平行枚举。一个没有消费者的调整项等于「能写、但什么都不做」，所以频率与夹爪两项随
@@ -92,7 +97,7 @@ evaluation loop 落地时，再一起引入 episode-level validation split，避
 
 ## 5. 没有兼容层
 
-阶段 5 删掉的字段就是**过期配置**，不提供转换：仓库 0.1.0 早期、调用方全在仓内，维护
+已经删掉的字段就是**过期配置**，不提供转换：仓库 0.1.0 早期、调用方全在仓内，维护
 一层「旧拼法 → 新拼法」只会让两种写法长期并存，而它们随时可能给出不一致的答案。
 
 公共强类型块会拒绝未知键；旧 recipe 就是过期配置，不做字段翻译。已删除的字段与它们如今

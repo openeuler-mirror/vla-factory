@@ -52,7 +52,7 @@ def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
 
 def _make_model_and_recipe(strategy="full", components=None):
     """Create an ACT model wrapper and matching TrainRecipe (requires lerobot)."""
-    from vla_factory.recipe import (
+    from vla_factory.user_interface import (
         FinetuningConfig,
         ModelConfig,
         OutputConfig,
@@ -175,7 +175,7 @@ class TestTrainingArgsMapping:
 
     def test_recipe_to_training_args(self):
         """TrainRecipe fields map to correct TrainingArguments."""
-        from vla_factory.recipe import (
+        from vla_factory.user_interface import (
             ModelConfig,
             OutputConfig,
             TrainingConfig,
@@ -221,7 +221,7 @@ class TestCPUTrainingLoop:
         from vla_factory.training.trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe import (
+        from vla_factory.user_interface import (
             FinetuningConfig,
             ModelConfig,
             OutputConfig,
@@ -308,7 +308,7 @@ class TestCPUTrainingLoop:
         from vla_factory.training.trainer import VLATrainer
         from vla_factory.training.strategies import apply_strategy
         from vla_factory.model.registry import get_entry
-        from vla_factory.recipe import (
+        from vla_factory.user_interface import (
             FinetuningConfig,
             ModelConfig,
             OutputConfig,

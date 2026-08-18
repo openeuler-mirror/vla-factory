@@ -7,8 +7,7 @@ so a value cannot silently drift between a dataset's ``dims[].mode``, a model's
 (``data/``, ``model/``, ``robot/``) may import this module; nothing here
 depends on ``assembly/`` (architecture §2.2 dependency direction).
 
-Phase 1 (WP0) lands the vocabularies + source-annotation types. The first
-control-mode vocabulary is joint-space only — ``joint_pos`` / ``joint_delta`` /
+The current control-mode vocabulary is joint-space only — ``joint_pos`` / ``joint_delta`` /
 ``joint_vel``. EEF modes (``eef_pos`` / ``eef_delta`` / ``se3``) and rotation
 representations are deferred as a group, entering together with EEF model
 adaptation (data-module §8.3); the resolver reports an unknown control mode via

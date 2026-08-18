@@ -20,7 +20,7 @@ from vla_factory.model.checkpoint_validation import (
     validate_checkpoint_if_available,
 )
 from vla_factory.model.registry import list_entries
-from vla_factory.recipe import merge_model_config, parse_recipe
+from vla_factory.user_interface import merge_model_config, parse_recipe
 
 
 def _describe_model_config(recipe, schema=None) -> str:

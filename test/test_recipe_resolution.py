@@ -19,8 +19,7 @@ from vla_factory.assembly import resolve_assembly
 from vla_factory.assembly.resolve import (
     MISSING_INPUT, UNKNOWN_MODEL, UNKNOWN_ROBOT, ResolutionError,
 )
-from vla_factory.recipe.model_config import merge_model_config
-from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 
 DATASET_PATH = _project_root / "test/data" / "lerobot_train_data_3_episodes"
 

@@ -8,8 +8,7 @@ from pathlib import Path
 import torch
 
 from vla_factory.assembly import ResolvedAssembly
-from vla_factory.recipe.parser import parse_recipe
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe, parse_recipe
 from vla_factory.utils.constants import (
     ASSEMBLY_FILE,
     FINAL_DIR,

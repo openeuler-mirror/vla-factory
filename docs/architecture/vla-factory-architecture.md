@@ -49,7 +49,7 @@ The core positioning of the framework is not to reimplement various VLA or imita
 - [0. Overview](#0-overview)
 - [1. Design Principles](#1-design-principles)
 - [2. Global Architecture](#2-global-architecture)
-- [3. User Expression Layer](#3-user-expression-layer)
+- [3. User Interface](#3-user-interface)
 - [4. Core Module Design](#4-core-module-design)
 - [5. Dependency Management Strategy](#5-dependency-management-strategy)
 - [6. Testing Strategy](#6-testing-strategy)
@@ -124,7 +124,7 @@ Composition resolution must satisfy:
 
 Four layers, top to bottom. The diagram shows only the ecosystem each layer plugs into, not internal implementations:
 
-- **User Expression Layer**: `vlafactory-cli | YAML recipe | API | ……`, the framework entry point; the recipe describes the data, model, robot, and fine-tuning config of a run.
+- **User Interface**: currently hosts the YAML Recipe and CLI, with WebUI and Agent entry points available as future peers. Each entry point organizes framework capabilities instead of duplicating training, inference, or composition logic.
 - **Finetuning Layer / Inference Layer**: two peer execution engines. The finetuning layer plugs in fine-tuning strategies such as LoRA / PiSSA / GaLore; the inference layer connects to simulation and evaluation environments such as RoboTwin / LIBERO / ManiSkill.
 - **Composition Resolution Layer**: built on top of the three unified descriptions, it further composes data, VLA model, and robot into an **embodiment composition** (producing `ResolvedAssembly` on success or `ResolutionError` on failure) shared by the finetuning and inference layers. This layer does not plug into any external ecosystem.
 - **Data / VLA Model / Robot**: three dimensions, each with a unified description — a unified data description (`DataSchema`), a unified model description (`ModelMetadata`), and a unified robot description (`RobotProfile`); together they are the framework's "three unifications". Each dimension integrates a concrete ecosystem: LeRobot / RLDS / HDF5 on the data side, GR00T / OpenPI / OpenVLA on the model side, and SO101 / Lekiwi / Franka on the robot side.
@@ -139,8 +139,9 @@ The current core code lives under `vla_factory/`. This structure describes only 
 vla_factory/
 ├── examples/        # recipe examples and minimal runnable samples
 ├── docs/            # architecture, usage notes, and design records
-├── recipe/          # user expression layer: recipe parsing, CLI/API entry, runtime config
-│   └── ...
+├── user_interface/        # user-facing entry points: shared Recipe contract and CLI
+│   ├── recipe.py    # TrainRecipe, strict parsing, model-tunable merge
+│   └── cli.py       # current CLI; WebUI / Agent may be added alongside it
 ├── data/            # data reader and intermediate representation
 │   ├── data_schema.py # unified data-layer representation and describe_dataset entry
 │   ├── reader/      # FormatReader, ReaderRegistry, and format implementations
@@ -178,11 +179,11 @@ vla_factory/
 
 ---
 
-## 3. User Expression Layer
+## 3. User Interface
 
-The user expression layer turns a human-readable YAML recipe into structured objects that both training and inference can consume. It serves two kinds of needs: ordinary users can launch an experiment with only a few key fields, while advanced users can override finer-grained training parameters in the recipe.
+The user interface is the framework's user-expression layer. Its current entry points are YAML Recipe and CLI; WebUI and Agent user interfaces may be added alongside them later. Recipe is the structured input contract these user interfaces can share, not the name of the whole layer. Every user interface translates user intent into calls to the public assembly, training, and inference capabilities.
 
-The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides. Detailed design: [User Expression Layer Module Design](../modules/recipe-module.cn.md).
+The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides. Detailed design: [User Interface Module Design](../modules/user-interface-module.cn.md).
 
 ### 3.1 The Three Zones of a Recipe
 
@@ -240,7 +241,7 @@ The relationships among the three — which camera goes into which model visual 
 
 ### 3.2 Field Overview
 
-The table below summarizes the main recipe fields by zone (full fields, defaults, and allowed values are in `examples/reference.yaml` and `vla_factory/recipe/train_recipe.py`):
+The table below summarizes the main recipe fields by zone (full fields, defaults, and allowed values are in `examples/reference.yaml` and `vla_factory/user_interface/recipe.py`):
 
 | Zone | Block | Main fields | Notes |
 |---|---|---|---|
@@ -252,7 +253,7 @@ The table below summarizes the main recipe fields by zone (full fields, defaults
 | Training params | `training` | `lr`, `lr_backbone`, `batch_size`, `total_steps`, `gradient_checkpointing`, `num_workers` | Optimizer, scheduling, memory, and data loading |
 | Training params | `output` | `output_dir`, `report_to`, `logging_steps`, `save_steps`, `save_total_limit`, `overwrite_output_dir` | Checkpoint, logging, and final weights |
 
-`TrainRecipe` and its sub-dataclasses in `vla_factory/recipe/train_recipe.py` define the public YAML shape. `finetuning.config` remains a mapping until the selected `FinetuningStrategy` parses it into that strategy's strict config dataclass, so adding a strategy does not keep expanding `TrainRecipe`.
+`TrainRecipe` and its sub-dataclasses in `vla_factory/user_interface/recipe.py` define the public YAML shape. `finetuning.config` remains a mapping until the selected `FinetuningStrategy` parses it into that strategy's strict config dataclass, so adding a strategy does not keep expanding `TrainRecipe`.
 
 ### 3.3 Configuration Sources and Priority
 
@@ -938,28 +939,16 @@ Such abstractions should follow these principles:
 
 This "unified standard abstraction" is what turns the framework from a glue layer into infrastructure. It lets VLA Factory not just plug in models but also distill new methods into composable, reusable, verifiable foundational modules.
 
-### 7.4 Migration Path for Composition Resolution
+### 7.4 Composition-Resolution Capability Boundary
 
-The "dataset × robot × VLA model composition resolution" described in Section 4.2 is the target architecture and must be migrated in stages, not switched over all at once:
+The composition resolver described in Section 4.2 is now the common entry point for training and inference. Its current boundary follows four rules:
 
-- **Stage 0: Fix terminology and data structures.** Extend existing DataSchema and ModelMetadata; introduce RobotProfile; introduce the resolver, embodiment composition, and ResolutionError; keep existing training and deployment behavior unchanged; add a resolve dry-run that does not take over downstream execution.
-- **Stage 1: Extract existing implicit facts.** Migrate the current `action_spec` fields into DataSchema, ModelMetadata, and RobotProfile respectively; migrate stable input/output capability from model config into ModelMetadata's interface section; have readers supplement detectable data semantics; lift relationship assumptions in model adapters into declarations or resolution rules; lift stable embodiment facts in deploy adapters into RobotProfile.
-- **Stage 2: Resolution diagnostics.** The resolver first runs compatibility checks and produces an explain trace or ResolutionError; fail early on dimensions, cameras, statistics, control modes, and field orderings; existing downstream keeps using the original construction logic; pin representative ResolutionErrors and explain traces with golden tests.
-- **Stage 3: Generate Mapping and T1 TransformPipelinePlan** (**complete**). Generate the four Camera / State / Action / Language data-to-model mappings and plan normalize, resize, padding, and explicit inverses. Do not generate a name-heuristic JointMapping.
-- **Stage 4: Downstream integration** (**complete**). Training and inference consume `ResolvedAssembly`; training writes its JSON directly; inference preprocesses through the `robot_to_model` semantic entry and restores DataSchema actions with `model_to_robot`. Platform adapters own native-interface-to-DataSchema conversion, and old checkpoints are unsupported.
-- **Stage 5: Recipe slimming** (**done**). Every field that restated a fact the resolver derives is gone from `TrainRecipe`: the whole `action_spec` block, all of `data.sampler` and `data.split`, `training.inference_steps`, and the old composition entries. What is left is choices only — which model, which dataset, which robot, how to train, where to write, plus the controlled overrides in `overrides:`. A sample's shape now follows the model's temporal contract. Training has no evaluation pass yet, so it no longer withholds an unconsumed validation split: every episode contributes training windows, and an episode-level split returns with a real evaluation loop. **No compatibility layer**: the repository is pre-1.0 and every caller is in-tree, so an old recipe is simply out of date — unknown keys fail immediately and `resolve` shows what the composition derived instead.
-- **Stage 6: Controlled T2 extension.** Add FK/IK, coordinate-frame, and frequency conversion based on real use cases and tests; review each capability independently; keep conservative failure by default; do not make T2 a precondition for composition resolution to exist.
+- Automatic planning covers only deterministic T1 conversions backed by sufficient facts, such as camera-slot mapping, resize, layout, normalization, padding/unpadding, and explicit inverses.
+- Platform adapters own conversion between platform-native interfaces and the checkpoint DataSchema. Assembly does not infer cross-namespace relations from camera or joint names, so `robot_to_model` currently shares the `data_to_model` plan.
+- FK/IK, coordinate-frame conversion, frequency resampling, and cross-robot action projection are T2 capabilities. Add them individually only with a real use case, complete prerequisites, and end-to-end tests; do not predeclare fields or abstractions without consumers.
+- Missing or ambiguous information fails conservatively. Implicit defaults, approximate inverses, and legacy-config compatibility layers must not create a second source of truth. Old recipes and old training artifacts without `assembly.json` are unsupported.
 
-Legacy-config compatibility path:
-
-```text
-legacy action_spec / embodiment fields
-    -> ephemeral data/model/robot descriptions
-    -> resolve_assembly
-    -> warning with migration suggestion
-```
-
-The compatibility layer must not become a long-term second source of truth.
+Evolution should preserve the one-way dependency: explicit facts → Mapping / ModelIOSpec → PipelinePlan → downstream execution. Any new capability must use the same saved plan in training and deployment rather than living only inside one adapter.
 
 ### 7.5 Deployment/Inference Evolution
 

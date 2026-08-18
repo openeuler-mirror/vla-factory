@@ -66,7 +66,7 @@ class TestLeRobotV3Reader(unittest.TestCase):
         self.assertEqual(schema.image_sizes["wrist"], (IMAGE_H, IMAGE_W))
 
     def test_schema_entry_table_facts(self):
-        """WP1: the reader fills the entry-table structure with source labels."""
+        """The reader fills the entry-table structure with source labels."""
         schema = self.reader.get_schema(DATASET_PATH)
 
         # identity + robot_ref
@@ -533,8 +533,7 @@ class TestPlanInstantiation(unittest.TestCase):
     """
 
     def _act_setup(self):
-        from vla_factory.recipe.model_config import merge_model_config
-        from vla_factory.recipe.parser import parse_recipe_from_string
+        from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 
         recipe = merge_model_config(parse_recipe_from_string("model:\n  name: act\n"))
         schema = make_schema(
@@ -592,8 +591,7 @@ class TestEndToEnd(unittest.TestCase):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.assembly import resolve_assembly
-        from vla_factory.recipe.parser import parse_recipe
-        from vla_factory.recipe.model_config import merge_model_config
+        from vla_factory.user_interface import merge_model_config, parse_recipe
         from vla_factory.training.dataloader import create_dataloader
 
         yaml_path = Path(_project_root) / "examples" / "act_lekiwi.yaml"

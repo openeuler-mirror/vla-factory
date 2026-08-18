@@ -16,8 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 import torch.nn as nn
 
-from vla_factory.recipe.parser import parse_recipe_from_string
-from vla_factory.recipe import FinetuningConfig, TrainRecipe
+from vla_factory.user_interface import (
+    FinetuningConfig,
+    TrainRecipe,
+    parse_recipe_from_string,
+)
 from vla_factory.training.strategies import get_strategy
 from vla_factory.training.strategies.lora import (
     merge_lora_adapters,

@@ -1,4 +1,4 @@
-from .train_recipe import (
+from .recipe import (
     AssemblyOverrides,
     DataConfig,
     FinetuningConfig,
@@ -7,9 +7,11 @@ from .train_recipe import (
     RobotConfig,
     TrainingConfig,
     TrainRecipe,
+    merge_model_config,
+    model_params,
+    parse_recipe,
+    parse_recipe_from_string,
 )
-from .parser import parse_recipe, parse_recipe_from_string
-from .model_config import merge_model_config, model_params
 
 __all__ = [
     "TrainRecipe",

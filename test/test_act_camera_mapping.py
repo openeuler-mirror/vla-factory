@@ -1,4 +1,4 @@
-"""Regression test for the ACT camera-mapping bug (WP4).
+"""Regression test for the ACT camera-mapping bug.
 
 ``adapters/act.py`` used to ``sorted(observation.images.keys())`` and zip with
 ``self._image_keys`` (in ``schema.cameras`` order). When the observation dict

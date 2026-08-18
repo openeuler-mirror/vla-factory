@@ -24,6 +24,17 @@
 
 Platform Adapter 必须产出 checkpoint DataSchema 要求的相机 key、state 顺序和 action 语义。因此 `robot_to_model = data_to_model`。`model_to_robot` 恢复到 DataSchema action，Adapter 再把该 action 发送给平台。不支持跨机器人 checkpoint 复用或隐式字段重排。`ResolvedAssembly.load()` 严格要求两条输入计划值相等；不兼容旧 checkpoint，也不维护格式版本迁移。
 
+具身组合保存 `TransformPipelinePlan` 而不是已经实例化的 Pipeline，是因为训练与部署通常
+跨进程、跨机器：训练进程中的 Python 对象不能随 checkpoint 交给部署进程，而「注册名 +
+已解析参数」可以稳定序列化。部署只按保存的 call 实例化步骤，不再读取当前 recipe 或
+ModelMetadata 重推 pad、normalize、resize 和逆向关系。
+
+当前 Check Pairs 只检查有可靠显式事实支撑的关系：state/action 维度、control mode 和
+normalization stats；相机的校验与构造统一由 Camera Mapping 完成，避免“检查通过但映射
+构造失败”的两套规则。语言输入已有明确的运行时兜底；夹爪约定、旋转表示、频率转换和
+安全范围尚缺完整事实或真实用例，因此当前既不伪造成功，也不为它们引入 warning 状态。
+未来出现真实跨接口需求时，应补充显式事实/binding 和独立测试，再按 T1/T2 能力接入。
+
 ## 3. 扩展方式
 
 新增解析规则或 TransformStep 时，保持稳定 ID、显式适用/失败条件，禁止模型名、数据名或机器人名硬编码。模型输入尺寸和向量宽度必须来自 ModelMetadata / ModelIOSpec，不从 transform args 反向推导。无法编译必须抛错；`TransformPipelinePlan` 不携带 `resolved` 状态，空 calls 只表示已成功规划出的 identity。

@@ -3,7 +3,7 @@
 ``make_schema`` mirrors the pre-phase-1 flat ``DataSchema`` constructor so that
 test fixtures stay readable while the real ``DataSchema`` stores the entry-table
 form (data-module §8.3). Production code reads the derived compatibility
-properties (decision D2); only these test fixtures build a schema directly.
+properties; only these test fixtures build a schema directly.
 
 ``make_assembly`` runs the real resolver: a model factory now takes a
 ``ResolvedAssembly``, and hand-building one in each test would let a fixture
@@ -16,7 +16,7 @@ from vla_factory.assembly import ResolvedAssembly, resolve_from_facts as resolve
 from vla_factory.data.data_schema import (
     ActionDim, CameraEntry, DataSchema, FeatureStats, NormStats, StateDim,
 )
-from vla_factory.recipe import AssemblyOverrides
+from vla_factory.user_interface import AssemblyOverrides
 
 
 def make_schema(

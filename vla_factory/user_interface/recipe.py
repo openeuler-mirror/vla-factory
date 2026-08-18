@@ -1,23 +1,116 @@
-"""Strict YAML parsing for the public TrainRecipe structure."""
+"""Training recipe structure, YAML parser, and model-tunable resolution."""
 
 from __future__ import annotations
 
-from dataclasses import fields
+import difflib
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
+from omegaconf import OmegaConf
 import yaml
 
-from vla_factory.recipe.train_recipe import (
-    AssemblyOverrides,
-    DataConfig,
-    FinetuningConfig,
-    ModelConfig,
-    OutputConfig,
-    RobotConfig,
-    TrainingConfig,
-    TrainRecipe,
-)
+from vla_factory.model.registry import list_entries
+
+
+@dataclass
+class ModelConfig:
+    """Select a registered model and optionally its pretrained checkpoint."""
+
+    name: str = ""
+    path: str | None = None
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DataConfig:
+    """Select a dataset and the registered reader/codec used to read it."""
+
+    path: str = ""
+    format: str = "auto"
+    video_codec: str = "auto"
+
+
+@dataclass
+class RobotConfig:
+    """Select an optional registered robot profile."""
+
+    name: str = ""
+
+
+@dataclass
+class AssemblyOverrides:
+    """User choices applied while resolving data × model × robot relations."""
+
+    camera_mapping: dict[str, str] | None = None
+    default_task: str | None = None
+
+
+@dataclass
+class FinetuningConfig:
+    """Select a registered fine-tuning strategy and its owned configuration."""
+
+    strategy: str = "full"
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TrainingConfig:
+    """Framework-level training-loop configuration."""
+
+    backend: str = "pytorch"
+    lr: float = 1e-4
+    lr_backbone: float | None = None
+    batch_size: int = 8
+    total_steps: int = 10000
+    gradient_checkpointing: bool = False
+    num_workers: int = 4
+
+
+@dataclass
+class OutputConfig:
+    """Output, logging, and checkpoint configuration."""
+
+    output_dir: str = "outputs/default"
+    report_to: str = "none"
+    logging_steps: int = 50
+    save_steps: int = 5000
+    save_total_limit: int = 3
+    overwrite_output_dir: bool = False
+
+
+@dataclass
+class TrainRecipe:
+    """Complete user-authored training recipe.
+
+    The object mirrors the public YAML blocks exactly. Relations derived from
+    data, model, and robot descriptions belong to ``ResolvedAssembly`` rather
+    than this user-choice structure.
+    """
+
+    model: ModelConfig = field(default_factory=ModelConfig)
+    data: DataConfig = field(default_factory=DataConfig)
+    robot: RobotConfig = field(default_factory=RobotConfig)
+    overrides: AssemblyOverrides = field(default_factory=AssemblyOverrides)
+    finetuning: FinetuningConfig = field(default_factory=FinetuningConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the canonical public YAML representation."""
+        result = asdict(self)
+        if not self.robot.name:
+            result["robot"] = None
+        override_values = {
+            key: value
+            for key, value in result["overrides"].items()
+            if value is not None
+        }
+        result["overrides"] = override_values or None
+        return result
+
+
+# ── YAML parsing ─────────────────────────────────────────────────
 
 
 def parse_recipe(path: str | Path) -> TrainRecipe:
@@ -262,4 +355,80 @@ def _boolean(value: Any, path: str) -> bool:
     return value
 
 
-__all__ = ["parse_recipe", "parse_recipe_from_string"]
+# ── Model tunables ───────────────────────────────────────────────
+
+
+def model_params(model_name: str) -> dict:
+    """Return a registered model's declared tunable defaults."""
+    metadata = list_entries().get(model_name)
+    return dict(metadata.params) if metadata is not None else {}
+
+
+def merge_model_config(recipe: TrainRecipe) -> TrainRecipe:
+    """Return ``recipe`` with declared model defaults merged under overrides.
+
+    Unknown models pass through so assembly resolution can report its
+    structured ``UNKNOWN_MODEL`` error. A registered model with no declared
+    params, however, accepts no arbitrary config keys.
+    """
+    entries = list_entries()
+    metadata = entries.get(recipe.model.name)
+    overrides = recipe.model.config or {}
+    if metadata is None:
+        return recipe
+
+    params = dict(metadata.params)
+    _validate_override_keys(recipe.model.name, params, overrides)
+    merged = OmegaConf.merge(params, overrides)
+    model = replace(
+        recipe.model,
+        config=OmegaConf.to_container(merged, resolve=True),
+    )
+    return replace(recipe, model=model)
+
+
+def _validate_override_keys(
+    model_name: str,
+    params: dict,
+    overrides: dict,
+) -> None:
+    if "transforms" in overrides:
+        raise ValueError(
+            "model.config.transforms is not supported: transform operations are "
+            "derived by the assembly resolver and cannot be overridden per run."
+        )
+
+    unknown = sorted(set(overrides) - set(params))
+    if not unknown:
+        return
+
+    known = sorted(params)
+    lines = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, known, n=3, cutoff=0.6)
+        hint = f" — did you mean {', '.join(close)}?" if close else ""
+        lines.append(f"  {key}{hint}")
+    raise ValueError(
+        f"model.config for {model_name!r} sets key(s) the model does not "
+        f"declare:\n" + "\n".join(lines) + "\n"
+        f"Tunable keys for {model_name!r}: {known}\n"
+        "Values the composition resolver consumes (image range, normalization, "
+        "dimension policy, ...) are facts on ModelMetadata and are deliberately "
+        "not overridable from a recipe."
+    )
+
+
+__all__ = [
+    "AssemblyOverrides",
+    "DataConfig",
+    "FinetuningConfig",
+    "ModelConfig",
+    "OutputConfig",
+    "RobotConfig",
+    "TrainingConfig",
+    "TrainRecipe",
+    "merge_model_config",
+    "model_params",
+    "parse_recipe",
+    "parse_recipe_from_string",
+]

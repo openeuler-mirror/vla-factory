@@ -57,25 +57,13 @@ execute. Do not infer robot camera/joint bindings from names.
 
 ## Code structure
 
-- **`vla_factory/cli.py`** — argparse CLI: `train`, `preprocess`, `list`,
-  `resolve`, `inspect`, `evaluate`, `infer`, `deploy`. Entry: `vlafactory-cli`
-  (installed) or `python -m vla_factory` (from source). This is where user
-  commands land. `resolve` dry-runs the composition; `inspect` prints one
-  dimension's declared facts + sources (`inspect data/model/robot`, or
-  `inspect --config` for all three) — both run with no GPU / no optional extras.
-- **`vla_factory/recipe/`** — user-expression layer: recipe parsing & model defaults.
-  - `train_recipe.py` — the nested public YAML structure: `TrainRecipe`,
-    `ModelConfig`, `DataConfig`, `RobotConfig`, `AssemblyOverrides`,
-    `FinetuningConfig`, `TrainingConfig`, and `OutputConfig`.
-  - `parser.py` — `parse_recipe(path) → TrainRecipe`. Closed recipe blocks reject
-    unknown keys; only `model.config` and `finetuning.config` are deliberately
-    open. There is no legacy-shape translation.
-  - `model_config.py` — `model_params()` + `merge_model_config()`: the single merge
-    point. Deep-merges the model's declared `ModelMetadata.params` under the
-    recipe's per-run `model.config` (recipe wins), and enforces the tunable
-    allow-list — a `model.config` key the model never declared is an error with
-    `difflib` candidates (gate 1 of three; see `model-module.cn.md` §4.6).
-    OmegaConf-based, no Hydra runtime.
+- **`vla_factory/frontend/`** — user-facing entry points and their shared input
+  contract. `recipe.py` owns `TrainRecipe`, strict YAML parsing, and model
+  tunable merging. `cli.py` organizes `train`, `preprocess`, `list`, `resolve`,
+  `inspect`, `evaluate`, `infer`, and `deploy`; future WebUI or Agent frontends
+  live beside it rather than at package root. Entry: `vlafactory-cli`
+  (installed) or `python -m vla_factory` (from source). `resolve` and `inspect`
+  run with no GPU / no optional model extras.
 - **`vla_factory/model/`**
   - `model_interface.py` — the public reading entry: `ModelMetadata`,
     `VisionSlot`, `Observation`, and the framework-agnostic `VLAModel` /
@@ -100,8 +88,8 @@ execute. Do not infer robot camera/joint bindings from names.
   decorators; external packages use `vla_factory.readers` /
   `vla_factory.codecs` entry points. `DataSchema` uses entry-table form
   (`cameras[]`/`state.dims[]`/`action.dims[]`)
-  with per-fact source labels; legacy flat fields are read-only derived props
-  until phase 4), and `semantics.py` (deterministic inference rules for camera
+  with per-fact source labels and read-only derived properties for common
+  widths/keys. `semantics.py` contains deterministic inference rules for camera
   `semantic` and action `mode` — unique-best-match-only, §8.5).
 - **`vla_factory/robot/`** — robot body descriptions (`RobotProfile`):
   `profile.py` owns the pure, validated description types; `registry.py` owns
@@ -238,7 +226,7 @@ currently evaluates no validation metric, so every episode contributes training
 windows; a split returns only together with a real evaluation loop. CLI
 overrides (`--steps`, `--batch-size`, `--output-dir`)
 tweak without editing the file. `examples/reference.yaml` documents every field;
-`docs/modules/recipe-module.cn.md` documents the three zones and the strict,
+`docs/modules/frontend-module.cn.md` documents the three zones and the strict,
 no-compatibility parser contract.
 
 **Facts vs tunables — the container is the attribute.** A model ships one

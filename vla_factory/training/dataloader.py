@@ -25,7 +25,7 @@ from vla_factory.assembly import ResolvedAssembly
 from vla_factory.assembly.transform import TransformContext, build_pipeline
 from vla_factory.data.codec import resolve_codec
 from vla_factory.data.reader import get_reader
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 from vla_factory.training.dataset import (
     VLADataset,
     build_sample_windows,

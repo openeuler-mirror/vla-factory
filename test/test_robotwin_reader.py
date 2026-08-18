@@ -98,7 +98,7 @@ def test_schema(dataset):
 
 
 def test_schema_entry_table_facts(dataset):
-    """WP1: RoboTwin reader surfaces the joint concatenation as explicit facts."""
+    """RoboTwin reader surfaces the joint concatenation as explicit facts."""
     root, _ = dataset
     schema = RoboTwinReader().get_schema(root)
 

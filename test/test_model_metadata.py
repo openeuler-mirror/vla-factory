@@ -1,4 +1,4 @@
-"""Contract tests for the three registered models' ModelMetadata (WP2, §4.3)."""
+"""Contract tests for the three registered models' ModelMetadata (§4.3)."""
 
 from __future__ import annotations
 

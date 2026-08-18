@@ -29,7 +29,7 @@ from typing import Any
 
 from vla_factory.data.data_schema import DataSchema, NormStats, resolve_vector_keys
 from vla_factory.model.model_interface import ModelMetadata
-from vla_factory.recipe import AssemblyOverrides
+from vla_factory.user_interface import AssemblyOverrides
 from vla_factory.robot import RobotProfile
 
 from . import mappings, model_io, pipelines

@@ -19,7 +19,7 @@ from vla_factory.assembly.resolve import (
 )
 from vla_factory.data.data_schema import DataSchema, NormStats
 from vla_factory.model.model_interface import ModelMetadata
-from vla_factory.recipe import AssemblyOverrides
+from vla_factory.user_interface import AssemblyOverrides
 from vla_factory.robot import get_robot_profile
 
 

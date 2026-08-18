@@ -11,8 +11,7 @@ import torch
 from vla_factory.data.codec import resolve_codec
 from vla_factory.data.reader import get_reader
 from vla_factory.inference.inference_engine import InferenceEngine, ObsDict
-from vla_factory.recipe.parser import parse_recipe
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe, parse_recipe
 
 
 def infer_dataset_sample(

@@ -26,7 +26,7 @@ from vla_factory.data.data_schema import DataSchema, NormStats, describe_dataset
 from vla_factory.model.checkpoint_validation import validate_checkpoint_if_available
 from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.model.registry import list_entries
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 from vla_factory.robot import RobotProfile, get_robot_profile, list_robot_profiles
 
 from .transform.plan import TransformPipelinePlan

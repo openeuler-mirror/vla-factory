@@ -73,10 +73,8 @@ def infer_camera_semantic(key: str) -> str | None:
 
 
 # lerobot-style names carry the source as a suffix (``.pos`` / ``.vel`` /
-# ``.delta``). Single source of truth for both the mode inference below and
-# the resolver's joint-order matching (architecture §7.4 phase-2 decision D4)
-# — a dataset name and a robot joint name refer to the same joint iff they are
-# equal after stripping one of these.
+# ``.delta``). Keep suffix recognition in one table so mode inference and any
+# explicit name-normalization consumer cannot drift apart.
 _SUFFIX_TO_MODE = {"pos": "joint_pos", "vel": "joint_vel", "delta": "joint_delta"}
 
 

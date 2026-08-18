@@ -143,8 +143,7 @@ def test_registry():
 
 def test_config_parser():
     """Config: parse YAML → TrainRecipe."""
-    from vla_factory.recipe.parser import parse_recipe_from_string
-    from vla_factory.recipe import TrainRecipe
+    from vla_factory.user_interface import TrainRecipe, parse_recipe_from_string
 
     # Minimal config
     minimal = "model:\n  name: act"
@@ -227,7 +226,7 @@ output:
 
 def test_yaml_files():
     """Parse the actual YAML config files from examples/."""
-    from vla_factory.recipe.parser import parse_recipe
+    from vla_factory.user_interface import parse_recipe
 
     examples_dir = Path(__file__).resolve().parent.parent / "examples"
     if not examples_dir.exists():

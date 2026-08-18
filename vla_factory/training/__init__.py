@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 
 
 def train(

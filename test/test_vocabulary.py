@@ -1,4 +1,4 @@
-"""Tests for the shared cross-dimension vocabularies (WP0)."""
+"""Tests for the shared cross-dimension vocabularies."""
 
 from __future__ import annotations
 

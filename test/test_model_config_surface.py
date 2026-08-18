@@ -31,8 +31,11 @@ from vla_factory.assembly.transform.pad_dimensions import PadDimensions
 from vla_factory.assembly.transform.base import PlanContext
 from vla_factory.data.data_schema import FeatureStats, NormStats
 from vla_factory.model.model_interface import ModelMetadata
-from vla_factory.recipe.model_config import merge_model_config, model_params
-from vla_factory.recipe.parser import parse_recipe_from_string
+from vla_factory.user_interface import (
+    merge_model_config,
+    model_params,
+    parse_recipe_from_string,
+)
 from vla_factory.utils.tracked_config import TrackedConfig
 
 
@@ -199,7 +202,7 @@ class TestInferenceStepsPriority(unittest.TestCase):
 class TestTunablesView(unittest.TestCase):
 
     def test_source_column_separates_recipe_from_declaration(self):
-        from vla_factory.cli import _tunables_view
+        from vla_factory.user_interface.cli import _tunables_view
 
         view = _tunables_view(
             {"dim_model": 512, "dropout": 0.1},

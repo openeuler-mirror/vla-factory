@@ -43,7 +43,7 @@ pytestmark = [
 
 
 def _recipe(output_dir: Path):
-    from vla_factory.recipe.parser import parse_recipe_from_string
+    from vla_factory.user_interface import parse_recipe_from_string
 
     return parse_recipe_from_string(f"""
 model:

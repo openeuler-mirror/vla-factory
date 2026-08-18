@@ -28,7 +28,7 @@ import torch.nn as nn
 
 from vla_factory.model.model_interface import ModelMetadata, Observation
 from vla_factory.model.registry import register_vla
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 from vla_factory.utils.tracked_config import TrackedConfig
 
 logger = logging.getLogger(__name__)

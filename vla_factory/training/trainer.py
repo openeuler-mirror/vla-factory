@@ -15,7 +15,7 @@ import logging
 import torch
 from transformers import Trainer, TrainingArguments
 
-from vla_factory.recipe import TrainRecipe
+from vla_factory.user_interface import TrainRecipe
 
 
 logger = logging.getLogger(__name__)

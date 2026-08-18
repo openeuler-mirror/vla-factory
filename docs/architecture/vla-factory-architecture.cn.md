@@ -49,7 +49,7 @@ VLA Factory 是一个 recipe 驱动的机器人视觉-语言-动作（Vision-Lan
 - [0. 总览](#0-总览)
 - [1. 设计原则](#1-设计原则)
 - [2. 全局架构](#2-全局架构)
-- [3. 用户表达层](#3-用户表达层)
+- [3. User Interface](#3-user-interface)
 - [4. 核心模块设计](#4-核心模块设计)
 - [5. 依赖管理策略](#5-依赖管理策略)
 - [6. 测试策略](#6-测试策略)
@@ -124,7 +124,7 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 
 四个层次，自上而下。图中每层只展示该层接入的生态，不体现内部实现：
 
-- **用户表达层**：`vlafactory-cli | YAML recipe | API | ……`，框架入口，recipe 描述本次实验的数据、模型、机器人和微调配置。
+- **User Interface**：当前承载 YAML Recipe 与 CLI，未来可增加 WebUI、Agent 等用户表达入口；各入口组织并调用框架能力，不复制训练、推理或组合解析逻辑。
 - **微调层 / 推理层**：两个对等的执行引擎。微调层挂接 LoRA / PiSSA / GaLore 等微调策略；推理层对接 RoboTwin / LIBERO / ManiSkill 等仿真与评估环境。
 - **组合解析层**：在三种统一描述之上，把数据、VLA 模型、机器人三者进一步组合为**具身组合**（成功产出 `ResolvedAssembly`，失败抛出 `ResolutionError`），供微调层与推理层共用。本层不接入外部生态。
 - **数据 / VLA 模型 / 机器人**：三大维度，各自建立统一描述——统一的数据描述（`DataSchema`）、统一的模型描述（`ModelMetadata`）、统一的机器人描述（`RobotProfile`），即框架的「三个统一」。各维度接入具体生态：数据侧 LeRobot / RLDS / HDF5、模型侧 GR00T / OpenPI / OpenVLA、机器人侧 SO101 / Lekiwi / Franka。
@@ -139,8 +139,9 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 vla_factory/
 ├── examples/        # recipe 示例和最小运行样例
 ├── docs/            # 架构、使用说明和设计记录
-├── recipe/          # 用户表达层：recipe 解析、CLI/API 入口与运行时配置
-│   └── ...
+├── user_interface/        # 用户表达入口：共享 Recipe 协议与 CLI
+│   ├── recipe.py    # TrainRecipe、严格解析与模型 tunable 合并
+│   └── cli.py       # 当前命令行入口；未来可并列增加 WebUI / Agent
 ├── data/            # 数据 reader 与中间表示
 │   ├── data_schema.py # 数据层统一表示及 describe_dataset 入口
 │   ├── reader/      # FormatReader、ReaderRegistry 与外部格式实现
@@ -178,11 +179,11 @@ vla_factory/
 
 ---
 
-## 3. 用户表达层
+## 3. User Interface
 
-用户表达层的职责是把用户可读的 YAML recipe 转成训练和推理都能消费的结构化对象。它同时服务两类需求：普通用户可以只写少量关键字段启动实验，资深用户也可以在 recipe 中覆盖更细粒度的训练参数。
+User Interface 是框架的用户表达层。当前入口是 YAML Recipe 与 CLI，未来可以并列增加 WebUI、Agent 等入口。Recipe 是这些入口可共享的结构化输入协议，而不是整个层的名字；每种入口只负责把用户意图转换成对 assembly、training、inference 等公开能力的调用。
 
-用户写的 recipe 就是配置的事实来源。模型自带默认值由模型声明（ModelMetadata）随模型发布，不在 recipe 里修改；CLI 提供少量临时覆盖。详细设计见 [用户表达层模块设计](../modules/recipe-module.cn.md)（TODO）。
+用户写的 recipe 就是配置的事实来源。模型自带默认值由模型声明（ModelMetadata）随模型发布，不在 recipe 里修改；CLI 提供少量临时覆盖。详细设计见 [User Interface 模块设计](../modules/user-interface-module.cn.md)。
 
 ### 3.1 Recipe 的三个区
 
@@ -239,7 +240,7 @@ output:
 
 ### 3.2 字段概览
 
-下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/recipe/train_recipe.py`）：
+下表按区汇总 recipe 的主要字段（完整字段、默认值与可选值见 `examples/reference.yaml` 与 `vla_factory/user_interface/recipe.py`）：
 
 | 区 | 块 | 主要字段 | 说明 |
 |---|---|---|---|
@@ -251,7 +252,7 @@ output:
 | 训练参数 | `training` | `lr`、`lr_backbone`、`batch_size`、`total_steps`、`gradient_checkpointing`、`num_workers` | 优化器、调度、显存与数据加载 |
 | 训练参数 | `output` | `output_dir`、`report_to`、`logging_steps`、`save_steps`、`save_total_limit`、`overwrite_output_dir` | checkpoint、日志与最终权重 |
 
-`vla_factory/recipe/train_recipe.py` 中的 `TrainRecipe` 及子 dataclass 是公共 YAML 结构；`finetuning.config` 保持为字典，由选中的 `FinetuningStrategy` 解析成该策略自己的严格 config dataclass。新增策略不需要继续扩张 `TrainRecipe`。
+`vla_factory/user_interface/recipe.py` 中的 `TrainRecipe` 及子 dataclass 是公共 YAML 结构；`finetuning.config` 保持为字典，由选中的 `FinetuningStrategy` 解析成该策略自己的严格 config dataclass。新增策略不需要继续扩张 `TrainRecipe`。
 
 ### 3.3 配置来源与优先级
 
@@ -972,28 +973,21 @@ VLA Factory 的重要价值之一，是把某些模型特有的 trick 抽象成�
 
 这种「标准抽象统一」是框架从胶水层走向基础设施的关键。它让 VLA Factory 不只是接模型，还能把新方法沉淀成可组合、可复用、可验证的基础模块。
 
-### 7.4 组合解析的迁移路径
+### 7.4 组合解析的能力边界
 
-4.2 节描述的「数据集 × 机器人 × VLA 模型组合解析」是目标架构，需要分阶段迁移，不能一次性切换：
+4.2 节描述的组合解析已经是训练与推理的公共入口。当前能力边界遵循四条规则：
 
-- **阶段 0：确定术语和数据结构**。扩展现有 DataSchema 和 ModelMetadata；引入 RobotProfile；引入组合解析器、具身组合和 ResolutionError；保持现有训练和部署行为不变；新增 resolve dry-run，不接管下游执行。
-- **阶段 1：抽取现有隐式事实**。把当前 `action_spec` 字段分别迁移到 DataSchema、ModelMetadata 和 RobotProfile；把 model config 中稳定的输入输出能力迁移到 ModelMetadata 接口部分；让 reader 补充可探测的数据语义；把 model adapter 中的关系假设提取为声明或解析规则；把 deploy adapter 中稳定的本体事实提取到 RobotProfile。
-- **阶段 2：解析诊断**。解析器先运行兼容性检查并生成 explain trace 或 ResolutionError；对维度、相机、统计量、控制模式和字段顺序提前报错；现有下游继续使用原有构建逻辑；用 golden tests 固化代表性 ResolutionError 和 explain trace。
-- **阶段 3：生成 Mapping 和 T1 TransformPipelinePlan**（**已完成**）。生成 Camera / State / Action / Language 四类 data → model Mapping，规划 normalize、resize、padding 及显式 inverse。不生成基于名称猜测的 JointMapping。
-- **阶段 4：下游接入**（**已完成**）。训练和推理消费 `ResolvedAssembly`；训练产物直接保存其 JSON；推理用 `robot_to_model` 语义入口预处理，并用 `model_to_robot` 恢复 DataSchema action。Platform Adapter 负责平台原生接口 ↔ DataSchema，不兼容旧 checkpoint。
-- **阶段 5：Recipe 瘦身**（**已完成**）。凡是复述解析器可推导事实的字段，一律从 `TrainRecipe` 删除：整块 `action_spec`、整块 `data.sampler` 与 `data.split`、`training.inference_steps`，以及旧的组合入口。剩下的只有「选择」——用哪个模型、哪份数据、哪台机器人、怎么训练、写到哪，加上 `overrides:` 里的受控 override。样本形状的两端现在都跟随模型的时序契约。训练期尚未实现评估，因此不再固定扣留一份无消费者的 val split，全部 episode 都进入训练；真正加入评估循环时再恢复 episode-level split。**不提供兼容层**：仓库 0.1.0 早期、调用方全在仓内，旧 recipe 就是过期配置，未知键直接报错，用 `resolve` 看解析器推出来的结果即可。
-- **阶段 6：受控扩展 T2**。在真实用例和测试基础上增加 FK/IK、坐标系和频率转换；每项能力独立评审；默认保持保守失败；不把 T2 作为组合解析成立的前提。
+- 自动规划只覆盖事实充分、可确定验证的 T1 转换，例如相机槽位映射、resize、layout、
+  normalization、padding/unpadding 和显式 inverse。
+- Platform Adapter 负责平台原生接口与 checkpoint DataSchema 之间的转换；Assembly 不根据
+  相机名或关节名猜测跨命名空间关系，因此当前 `robot_to_model` 与 `data_to_model` 共享计划。
+- FK/IK、坐标系、频率重采样和跨机器人动作投影属于 T2。只有出现真实用例、完整条件和
+  端到端测试时才逐项引入，不预建无消费者的字段或抽象。
+- 信息不足或候选不唯一时保守失败；不通过隐式默认、近似 inverse 或旧配置兼容层制造
+  第二事实源。旧 recipe 和缺少 `assembly.json` 的旧训练产物不受支持。
 
-旧配置兼容路径：
-
-```text
-legacy action_spec / embodiment fields
-    -> 临时的数据/模型/机器人描述
-    -> resolve_assembly
-    -> warning with migration suggestion
-```
-
-兼容层不能长期成为第二事实源。
+长期演进应继续保持“显式事实 → Mapping / ModelIOSpec → PipelinePlan → 下游执行”的单向
+依赖。新增能力必须在训练和部署两侧共享同一份计划，不能只在某个 adapter 内生效。
 
 ### 7.5 部署推理演进
 

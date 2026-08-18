@@ -174,9 +174,8 @@ class DataSchema:
     Canonical storage is the entry-table form (``cameras`` / ``state.dims`` /
     ``action.dims`` as per-entry records with source annotations). The legacy
     flat fields (``state_dim`` / ``action_dim`` / ``cameras`` / ``image_sizes``
-    / …) are exposed as **read-only derived properties** so the in-tree
-    consumers need no changes this phase (decision D2); the compat layer is
-    removed in phase 4 once downstream reads ``ResolvedAssembly`` instead.
+    / …) are exposed as **read-only derived properties** so consumers share one
+    derivation of common widths and keys instead of rebuilding them.
 
     Serialized via :meth:`to_dict` / :meth:`from_dict` (entry-table form only —
     no legacy flat-format compatibility).

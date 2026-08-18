@@ -15,7 +15,7 @@ from pathlib import Path
 from vla_factory.assembly import resolve_assembly
 from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.model.registry import get_entry
-from vla_factory.recipe import TrainRecipe, merge_model_config, parse_recipe
+from vla_factory.user_interface import TrainRecipe, merge_model_config, parse_recipe
 from vla_factory.training.checkpoint import (
     save_final_model,
     save_training_contract,

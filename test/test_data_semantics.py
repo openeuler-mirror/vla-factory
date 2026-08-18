@@ -1,4 +1,4 @@
-"""Tests for the deterministic data-side inference rules (WP1, §8.5)."""
+"""Tests for the deterministic data-side inference rules (data module §8.5)."""
 
 from __future__ import annotations
 
