@@ -49,7 +49,7 @@ VLA Factory 是一个 recipe 驱动的机器人视觉-语言-动作（Vision-Lan
 - [0. 总览](#0-总览)
 - [1. 设计原则](#1-设计原则)
 - [2. 全局架构](#2-全局架构)
-- [3. User Interface](#3-user-interface)
+- [3. 用户接口层](#3-用户接口层)
 - [4. 核心模块设计](#4-核心模块设计)
 - [5. 依赖管理策略](#5-依赖管理策略)
 - [6. 测试策略](#6-测试策略)
@@ -124,7 +124,7 @@ VLA Factory 不持有上游模型架构代码。模型能力通过 registry entr
 
 四个层次，自上而下。图中每层只展示该层接入的生态，不体现内部实现：
 
-- **User Interface**：当前承载 YAML Recipe 与 CLI，未来可增加 WebUI、Agent 等用户表达入口；各入口组织并调用框架能力，不复制训练、推理或组合解析逻辑。
+- **用户接口层**：当前承载 YAML Recipe 与 CLI，未来可增加 WebUI、Agent 等用户表达入口；各入口组织并调用框架能力，不复制训练、推理或组合解析逻辑。
 - **微调层 / 推理层**：两个对等的执行引擎。微调层挂接 LoRA / PiSSA / GaLore 等微调策略；推理层对接 RoboTwin / LIBERO / ManiSkill 等仿真与评估环境。
 - **组合解析层**：在三种统一描述之上，把数据、VLA 模型、机器人三者进一步组合为**具身组合**（成功产出 `ResolvedAssembly`，失败抛出 `ResolutionError`），供微调层与推理层共用。本层不接入外部生态。
 - **数据 / VLA 模型 / 机器人**：三大维度，各自建立统一描述——统一的数据描述（`DataSchema`）、统一的模型描述（`ModelMetadata`）、统一的机器人描述（`RobotProfile`），即框架的「三个统一」。各维度接入具体生态：数据侧 LeRobot / RLDS / HDF5、模型侧 GR00T / OpenPI / OpenVLA、机器人侧 SO101 / Lekiwi / Franka。
@@ -179,9 +179,9 @@ vla_factory/
 
 ---
 
-## 3. User Interface
+## 3. 用户接口层
 
-User Interface 是框架的用户表达层。当前入口是 YAML Recipe 与 CLI，未来可以并列增加 WebUI、Agent 等入口。Recipe 是这些入口可共享的结构化输入协议，而不是整个层的名字；每种入口只负责把用户意图转换成对 assembly、training、inference 等公开能力的调用。
+用户接口层是框架的用户表达层。当前入口是 YAML Recipe 与 CLI，未来可以并列增加 WebUI、Agent 等入口。Recipe 是这些入口可共享的结构化输入协议，而不是整个层的名字；每种入口只负责把用户意图转换成对 assembly、training、inference 等公开能力的调用。
 
 用户写的 recipe 就是配置的事实来源。模型自带默认值由模型声明（ModelMetadata）随模型发布，不在 recipe 里修改；CLI 提供少量临时覆盖。
 
