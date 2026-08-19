@@ -135,7 +135,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 ---
 
-**Model declarations**: each model ships one declaration in its entry module (e.g. [`vla_factory/model/registry/entries/act.py`](./vla_factory/model/registry/entries/act.py)). Named `ModelMetadata` fields are facts the framework reads and a recipe cannot override; `ModelMetadata.params` holds that model's tunable defaults, which the per-run `model.config` in the recipe deep-merges on top of — recipe values win. Run `vlafactory-cli inspect model --name <model>` to see every tunable key with its effective value and source. A `model.config` key the model never declared is an error (with close-match suggestions), so a typo never fails silently.
+**Model declarations**: each model ships one declaration in its adapter module (e.g. [`vla_factory/model/adapters/act.py`](./vla_factory/model/adapters/act.py)). Named `ModelMetadata` fields are facts the framework reads and a recipe cannot override; `ModelMetadata.params` holds that model's tunable defaults, which the per-run `model.config` in the recipe deep-merges on top of — recipe values win. Run `vlafactory-cli inspect model --name <model>` to see every tunable key with its effective value and source. A `model.config` key the model never declared is an error (with close-match suggestions), so a typo never fails silently.
 
 ---
 

@@ -7,12 +7,18 @@ callers (CLI ``resolve``, composition resolver) can surface a clear message.
 
 from __future__ import annotations
 
+import re
 from importlib import resources
 from pathlib import Path
 
 import yaml
 
 from .profile import RobotProfile
+
+
+# Name lookup must stay inside the bundled ``profiles/`` directory: a bare
+# stem only, so ``..``-segments or absolute paths cannot escape it.
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def _profiles_dir() -> Path:
@@ -46,6 +52,12 @@ def get_robot_profile(name: str) -> RobotProfile:
     """
     if not name:
         raise ValueError("robot profile name must be a non-empty string")
+    if _PROFILE_NAME_RE.match(name) is None:
+        raise ValueError(
+            f"Invalid robot profile name {name!r}: expected a bare profile "
+            "stem (letters, digits, '_', '-'), not a path. Use "
+            "load_robot_profile(path) to load a profile from a specific file."
+        )
     candidate = _profiles_dir() / f"{name}.yaml"
     if not candidate.is_file():
         available = list_robot_profiles()

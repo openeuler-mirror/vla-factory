@@ -141,7 +141,7 @@ document does not duplicate a per-file case count that quickly becomes stale.
 | User Interface | Recipe parsing and rejection paths, inspect output, CLI registration, and failure-side-effect boundaries |
 
 The current refactor branch contains 22 test modules; a complete development
-environment collects and passes 354 cases. Collection counts can change with
+environment collects and passes 365 cases. Collection counts can change with
 parametrization and optional dependencies, so CI treats pytest output—not this
 document—as the source of truth.
 

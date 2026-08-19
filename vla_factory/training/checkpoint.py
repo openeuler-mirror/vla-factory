@@ -46,8 +46,20 @@ def save_final_model(
     model: nn.Module,
     strategy: FinetuningStrategy,
 ) -> nn.Module:
-    """Finalize strategy-owned wrappers and save one inference state dict."""
-    finalized = strategy.finalize_model(model)
+    """Finalize strategy-owned wrappers and save one inference state dict.
+
+    Finalization (e.g. LoRA merge) may fail on the user's hardware; a merge
+    failure must not lose the whole run, so the un-finalized model is saved
+    as a fallback and the failure is surfaced as a warning.
+    """
+    try:
+        finalized = strategy.finalize_model(model)
+    except Exception as exc:
+        logger.warning(
+            "%s finalize_model failed (%s: %s); saving unmerged state_dict.",
+            type(strategy).__name__, type(exc).__name__, exc,
+        )
+        finalized = model
     final_dir = output_path / FINAL_DIR
     final_dir.mkdir(parents=True, exist_ok=True)
     torch.save(strategy.state_dict(finalized), final_dir / MODEL_WEIGHTS_FILE)

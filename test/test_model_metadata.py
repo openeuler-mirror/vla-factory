@@ -156,6 +156,39 @@ def test_plugin_name_must_match_its_metadata(
         get_entry("_plugin-model")
 
 
+def test_broken_external_plugin_does_not_break_listing(
+    monkeypatch, isolated_model_registry, caplog
+):
+    """`list` / inspect / resolve must survive one broken plugin: it is
+    skipped with a warning instead of failing the whole entries() path."""
+    import logging
+
+    from vla_factory.model import registry
+
+    class BrokenEntryPoint:
+        name = "_broken-plugin"
+
+        @staticmethod
+        def load():
+            raise ImportError("boom")
+
+    monkeypatch.setattr(
+        registry,
+        "entry_points",
+        lambda *, group: (BrokenEntryPoint(),)
+        if group == ModelRegistry.ENTRY_POINT_GROUP else (),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="vla_factory.model.registry"):
+        entries = list_entries()
+
+    assert "act" in entries, "built-in models are still listed"
+    assert "_broken-plugin" not in entries
+    assert any(
+        "_broken-plugin" in record.message for record in caplog.records
+    ), "the broken plugin is named in the warning"
+
+
 PI0_CHECKPOINT_CONFIG = {
     "type": "pi0",
     "input_features": {

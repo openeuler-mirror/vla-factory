@@ -237,3 +237,50 @@ finetuning:
     assert config.r == 32
     assert config.lora_alpha == 32
     assert config.lora_dropout == 0.1
+
+
+def test_save_final_model_falls_back_to_unmerged_state_on_merge_failure(tmp_path):
+    """A merge failure must not lose the run: unmerged weights are saved."""
+    import torch
+
+    from vla_factory.training.checkpoint import save_final_model
+    from vla_factory.training.strategies.base import FinetuningStrategy
+
+    class FailingMerge(FinetuningStrategy):
+        def finalize_model(self, model):
+            raise RuntimeError("merge exploded (e.g. OOM)")
+
+    model = nn.Linear(2, 1)
+    expected = dict(model.state_dict())
+
+    finalized = save_final_model(tmp_path, model, FailingMerge())
+
+    assert finalized is model, "fallback keeps the un-finalized model"
+    weights = tmp_path / "final" / "model.pt"
+    assert weights.is_file(), "final weights exist despite merge failure"
+    restored = torch.load(weights, map_location="cpu")
+    assert list(restored) == list(expected)
+    for key in expected:
+        assert torch.equal(restored[key], expected[key])
+
+
+def test_save_final_model_saves_finalized_state_when_merge_succeeds(tmp_path):
+    import torch
+
+    from vla_factory.training.checkpoint import save_final_model
+    from vla_factory.training.strategies.base import FinetuningStrategy
+
+    class Merging(FinetuningStrategy):
+        def finalize_model(self, model):
+            with torch.no_grad():
+                model.weight.fill_(1.0)
+            return model
+
+    finalized = save_final_model(tmp_path, nn.Linear(2, 1), Merging())
+
+    assert torch.allclose(
+        next(finalized.parameters()),
+        torch.ones_like(next(finalized.parameters())),
+    )
+    restored = torch.load(tmp_path / "final" / "model.pt", map_location="cpu")
+    assert torch.allclose(restored["weight"], torch.ones_like(restored["weight"]))

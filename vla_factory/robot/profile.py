@@ -15,6 +15,23 @@ from typing import Any
 from vla_factory.utils.vocabulary import CONTROL_MODES, is_control_mode
 
 
+def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
+    """Parse a YAML collection field into a tuple of strings.
+
+    A scalar string would otherwise be split into single-character entries by
+    ``tuple()`` (e.g. ``cameras: front`` → ``('f', 'r', 'o', 'n', 't')``) and
+    silently pass validation, so scalars and non-list values are rejected.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise TypeError(
+            f"{field} must be a list of strings, "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class JointGroup:
     """Canonical description of one ordered group of joints (e.g. the arm).
@@ -71,9 +88,9 @@ class JointGroup:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "JointGroup":
         return cls(
-            names=tuple(d.get("names") or ()),
+            names=_string_tuple(d.get("names"), "joints.names"),
             units=d.get("units", "radian"),
-            types=tuple(d.get("types") or ()),
+            types=_string_tuple(d.get("types"), "joints.types"),
             limits_low=tuple(d.get("limits_low") or ()),
             limits_high=tuple(d.get("limits_high") or ()),
         )
@@ -231,10 +248,10 @@ class RobotProfile:
         gripper = GripperConvention.from_dict(d.get("gripper") or {})
         profile = cls(
             name=d.get("name", ""),
-            cameras=tuple(d.get("cameras") or ()),
+            cameras=_string_tuple(d.get("cameras"), "cameras"),
             joints=joints,
             gripper=gripper,
-            control_modes=tuple(d.get("control_modes") or ()),
+            control_modes=_string_tuple(d.get("control_modes"), "control_modes"),
             native_action_type=d.get("native_action_type", "joint_pos"),
             coordinate_frame=d.get("coordinate_frame", "base_link"),
             urdf_ref=d.get("urdf_ref", ""),

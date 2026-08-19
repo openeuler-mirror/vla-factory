@@ -289,11 +289,11 @@ recipe 写好后，由组合解析层（4.2）据此推导数据/模型/机器�
        └─ 失败：只展示相关字段、候选项和最小 override 示例
 ```
 
-只有在调试时，`inspect` 和 `resolve --explain` 才展示框架推导出的内部事实；错误提示遵循局部暴露原则：例如相机映射歧义时，只展示目标模型槽位、候选相机和对应的 override 片段，不输出完整声明。CLI 提供四类能力：解析并预览三者组合；按主题解释 Mapping、Transform 和来源；检查实际数据、模型实例和机器人声明；把具身组合输出给下游或调试工具。这些命令应能在未安装可选模型重依赖、未初始化 GPU、未连接机器人平台的环境中运行。
+只有在调试时，`inspect`（3.5 节）才展示框架推导出的内部事实；错误提示遵循局部暴露原则：例如相机映射歧义时，只展示目标模型槽位、候选相机和对应的 override 片段，不输出完整声明。CLI 提供 `resolve` 解析并预览三者组合，`inspect` 检查实际数据、模型声明和机器人声明。这些命令应能在未安装可选模型重依赖、未初始化 GPU、未连接机器人平台的环境中运行。
 
 ### 3.5 维度检查：inspect
 
-`inspect` 是上节第三类能力的具体形态：把数据集、模型、机器人三个维度的
+`inspect` 是上节所述检查能力的具体形态：把数据集、模型、机器人三个维度的
 描述以结构化形式输出，让用户在组合解析之前就能直观看到「框架眼中的三样
 东西长什么样」。CLI 形式：
 
@@ -309,6 +309,8 @@ vlafactory-cli inspect --config <recipe.yaml>   # 按 recipe 一次输出三份
 事实标注来源（`measured` / `inferred` / `undeclared`），例如
 `inspect model --path` 始终以 ModelMetadata 输出接口事实，并把 checkpoint
 检查结果单列为 `compatible` / `incompatible` / `unavailable`，不生成合并视图。
+`inspect --config` 把三份信封合并为**单个顶层文档**（JSON 数组 / YAML 列表），
+`--json` 输出可被 `json.load` / `jq` 整体消费；读取失败的维度在 stderr 提示后跳过。
 
 inspect 遵守三条纪律：
 

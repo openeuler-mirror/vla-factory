@@ -127,7 +127,7 @@ master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `
 | Inference / Deployment | 执行策略、双 action width、train → infer round trip、平台 adapter、PolicyRunner 和 RPC transport |
 | User Interface | Recipe 解析与拒绝路径、inspect 输出、CLI 命令注册和失败副作用边界 |
 
-当前重构分支有 22 个测试模块；在完整开发环境中收集 354 例并全部通过。
+当前重构分支有 22 个测试模块；在完整开发环境中收集 365 例并全部通过。
 收集数会随 parametrization 和可选依赖变化，CI 以 pytest 结果而不是本文数字
 作为最终依据。
 

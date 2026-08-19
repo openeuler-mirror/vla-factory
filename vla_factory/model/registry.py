@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from typing import Any
 
 from .model_interface import ModelMetadata, VLAModel
 
+
+logger = logging.getLogger(__name__)
 
 ModelFactory = Callable[[Any, Any], VLAModel]
 
@@ -102,7 +105,9 @@ class ModelRegistry:
             module_name = f"vla_factory.model.adapters.{module_info.name}"
             try:
                 importlib.import_module(module_name)
-            except BaseException as exc:
+            except Exception as exc:
+                # KeyboardInterrupt / SystemExit must propagate: swallowing
+                # them here would turn Ctrl-C into a cached RegistryLoadError.
                 errors.append(
                     f"  {module_name}: {type(exc).__name__}: {exc}"
                 )
@@ -129,18 +134,18 @@ class ModelRegistry:
 
     @classmethod
     def _load_all_plugins(cls) -> None:
-        errors: list[str] = []
+        # Same fault tolerance as the single-name path in ``get()``: one bad
+        # external plugin is skipped with a warning so diagnostic commands
+        # (list / inspect / resolve) keep working and can show what broke.
         for entry_point in cls._plugin_entry_points():
             try:
                 cls._install_plugin(entry_point)
-            except BaseException as exc:
-                errors.append(
-                    f"  {entry_point.name}: {type(exc).__name__}: {exc}"
+            except Exception as exc:
+                logger.warning(
+                    "Skipping external model plugin %r (load failed): "
+                    "%s: %s",
+                    entry_point.name, type(exc).__name__, exc,
                 )
-        if errors:
-            raise RegistryLoadError(
-                "Failed to load external model plugins:\n" + "\n".join(errors)
-            )
 
     @classmethod
     def _install_plugin(cls, entry_point: EntryPoint) -> None:

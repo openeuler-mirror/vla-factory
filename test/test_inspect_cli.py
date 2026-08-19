@@ -131,3 +131,65 @@ def test_serve_command_is_not_registered(monkeypatch, capsys):
         cli_module.main()
 
     assert "invalid choice: 'serve'" in capsys.readouterr().err
+
+
+def test_inspect_config_json_emits_one_parseable_document(tmp_path, capsys):
+    """`inspect --config --json` must produce exactly one top-level JSON
+    document (a list of per-dimension envelopes), not concatenated docs."""
+    from argparse import Namespace
+
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text(
+        "model:\n"
+        "  name: act\n"
+        f"data:\n  path: {DATA_PATH}\n  format: lerobot-v3\n"
+        "robot:\n  name: lekiwi\n"
+    )
+
+    cli_module._run_inspect(
+        Namespace(config=str(recipe), json=True, stats=False,
+                  dimension=None, path=None, name=None, format=None)
+    )
+    out = capsys.readouterr().out
+
+    doc = json.loads(out)
+    assert isinstance(doc, list)
+    assert [env["dimension"] for env in doc] == ["data", "model", "robot"]
+    assert doc[1]["facts"]["metadata"]["name"] == "act"
+    assert doc[2]["facts"]["name"] == "lekiwi"
+
+
+def test_inspect_config_json_keeps_stdout_parseable_when_data_is_missing(
+    tmp_path, capsys
+):
+    """A skipped dimension notes go to stderr; stdout stays valid JSON."""
+    from argparse import Namespace
+
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text(
+        f"model:\n  name: act\ndata:\n  path: {tmp_path / 'nope'}\n"
+    )
+
+    cli_module._run_inspect(
+        Namespace(config=str(recipe), json=True, stats=False,
+                  dimension=None, path=None, name=None, format=None)
+    )
+    captured = capsys.readouterr()
+
+    doc = json.loads(captured.out)
+    assert [env["dimension"] for env in doc] == ["model"]
+    assert "skipped data dimension" in captured.err
+
+
+def test_resolve_reports_recipe_errors_without_traceback(tmp_path, capsys):
+    """Recipe-level failures exit 1 with a structured message, not a bare
+    traceback from parse_recipe / merge_model_config."""
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text("model:\n  name: act\n  totally_unknown_field: 1\n")
+
+    with pytest.raises(SystemExit, match="1"):
+        cli_module._run_resolve(str(recipe))
+
+    out = capsys.readouterr().out
+    assert "Recipe error:" in out
+    assert "Traceback" not in out

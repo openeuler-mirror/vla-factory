@@ -451,7 +451,11 @@ def _run_resolve(config_path: str) -> None:
     code. Runs without GPU and without optional model extras — it never triggers
     the model factory.
     """
-    recipe = merge_model_config(parse_recipe(config_path))
+    try:
+        recipe = merge_model_config(parse_recipe(config_path))
+    except (ValueError, TypeError) as e:
+        print(f"Recipe error: {e}")
+        sys.exit(1)
 
     try:
         assembly = resolve_assembly(recipe)
@@ -550,25 +554,23 @@ def _print_resolution_error(err: ResolutionError) -> None:
 # ── inspect (architecture §3.5) ───────────────────────────────────
 
 
-def _emit(dimension: str, source: str, facts: object, as_json: bool) -> None:
-    """Print one dimension's facts in the ``{dimension, source, facts}`` envelope.
+def _emit(documents: object, as_json: bool) -> None:
+    """Print one ``{dimension, source, facts}`` envelope (or a list of them).
 
-    YAML by default (deterministic insertion order → diffable); ``--json``
-    otherwise. Source is per-dimension: data facts carry their own per-fact
-    ``*_source`` labels inside ``facts``; this envelope-level ``source`` records
-    where the whole dimension came from.
+    Exactly one top-level document is written to stdout so ``--json`` output
+    stays machine-parseable (``json.load`` / ``jq``); diagnostic notes go to
+    stderr. YAML by default (deterministic insertion order → diffable).
     """
     import json as _json
 
-    envelope = {"dimension": dimension, "source": source, "facts": facts}
     if as_json:
-        print(_json.dumps(envelope, indent=2, ensure_ascii=False))
+        print(_json.dumps(documents, indent=2, ensure_ascii=False))
     else:
         import yaml as _yaml
-        print(_yaml.safe_dump(envelope, sort_keys=False, allow_unicode=True), end="")
+        print(_yaml.safe_dump(documents, sort_keys=False, allow_unicode=True), end="")
 
 
-def _inspect_data(path: str, fmt: str | None, with_stats: bool, as_json: bool) -> None:
+def _data_envelope(path: str, fmt: str | None, with_stats: bool) -> dict:
     from pathlib import Path as _Path
 
     from vla_factory.data.reader import get_reader
@@ -588,7 +590,15 @@ def _inspect_data(path: str, fmt: str | None, with_stats: bool, as_json: bool) -
             "action": ns.action is not None,
             "images": sorted((ns.images or {}).keys()),
         }
-    _emit("data", "measured/inferred/undeclared (per fact)", facts, as_json)
+    return {
+        "dimension": "data",
+        "source": "measured/inferred/undeclared (per fact)",
+        "facts": facts,
+    }
+
+
+def _inspect_data(path: str, fmt: str | None, with_stats: bool, as_json: bool) -> None:
+    _emit(_data_envelope(path, fmt, with_stats), as_json)
 
 
 def _tunables_view(params: dict, overrides: dict | None) -> dict:
@@ -613,13 +623,17 @@ def _tunables_view(params: dict, overrides: dict | None) -> dict:
 def _inspect_model(
     name: str, path: str | None, as_json: bool, overrides: dict | None = None
 ) -> None:
-    from dataclasses import asdict as _asdict
-
     entries = list_entries()
     meta = entries.get(name)
     if meta is None:
         print(f"Unknown model {name!r}. Known: {sorted(entries)}")
         sys.exit(1)
+    _emit(_model_envelope(meta, path, overrides), as_json)
+
+
+def _model_envelope(meta, path: str | None, overrides: dict | None = None) -> dict:
+    from dataclasses import asdict as _asdict
+
     meta_dict = _asdict(meta)
     # Facts and tunables are the two halves of a model declaration: named fields
     # the resolver reads and a recipe can never override, versus params a recipe
@@ -635,39 +649,65 @@ def _inspect_model(
                 "issues": list(e.issues),
             }
     facts["tunables"] = _tunables_view(params, overrides)
-    _emit("model", "metadata", facts, as_json)
+    return {"dimension": "model", "source": "metadata", "facts": facts}
 
 
 def _inspect_robot(name: str, as_json: bool) -> None:
     from vla_factory.robot import get_robot_profile
 
     profile = get_robot_profile(name)  # raises FileNotFoundError if unknown
-    _emit("robot", "declared", profile.to_dict(), as_json)
+    _emit(_robot_envelope(profile), as_json)
+
+
+def _robot_envelope(profile) -> dict:
+    return {"dimension": "robot", "source": "declared", "facts": profile.to_dict()}
 
 
 def _run_inspect(args) -> None:
     as_json = bool(args.json)
     if args.config:
-        # Inspect all three dimensions from a recipe.
+        # Inspect all three dimensions from a recipe as ONE document — a
+        # machine consumer must be able to json.load / yaml.safe_load the
+        # whole stdout of `inspect --config --json`.
         parsed = parse_recipe(args.config)
         # What the user actually wrote, before the model's declared params are
         # merged underneath — that difference is exactly the "source" column.
         raw_overrides = dict(parsed.model.config or {})
         recipe = merge_model_config(parsed)
+        envelopes: list[dict] = []
         if recipe.data.path:
             # One unreadable dimension must not hide the other two: a recipe is
             # routinely inspected on a machine that has the model but not the
-            # dataset. Report and carry on.
+            # dataset. Report (to stderr) and carry on.
             try:
-                _inspect_data(recipe.data.path, recipe.data.format,
-                              bool(args.stats), as_json)
+                envelopes.append(
+                    _data_envelope(
+                        recipe.data.path, recipe.data.format, bool(args.stats)
+                    )
+                )
             except Exception as e:
-                print(f"(skipped data dimension: {e})")
+                print(f"(skipped data dimension: {e})", file=sys.stderr)
         if recipe.model.name:
-            _inspect_model(recipe.model.name, recipe.model.path, as_json,
-                           overrides=raw_overrides)
+            meta = list_entries().get(recipe.model.name)
+            if meta is None:
+                known = ", ".join(sorted(list_entries())) or "(none)"
+                print(
+                    f"(skipped model dimension: unknown model "
+                    f"{recipe.model.name!r}; known: {known})",
+                    file=sys.stderr,
+                )
+            else:
+                envelopes.append(
+                    _model_envelope(meta, recipe.model.path, overrides=raw_overrides)
+                )
         if recipe.robot.name:
-            _inspect_robot(recipe.robot.name, as_json)
+            from vla_factory.robot import get_robot_profile
+
+            try:
+                envelopes.append(_robot_envelope(get_robot_profile(recipe.robot.name)))
+            except (ValueError, FileNotFoundError) as e:
+                print(f"(skipped robot dimension: {e})", file=sys.stderr)
+        _emit(envelopes, as_json)
         return
 
     if not args.dimension:

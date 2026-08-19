@@ -290,7 +290,28 @@ fill in the three selections
        └─ failure: show only the relevant fields, candidates, and a minimal override example
 ```
 
-Only when debugging do `inspect` and `resolve --explain` reveal the framework-derived internal facts; error messages follow the principle of progressive disclosure: for example, on a camera-mapping ambiguity they show only the target slot, candidate cameras, and the corresponding override snippet, not the full declarations. The CLI provides four capabilities: resolve and preview a three-way composition; explain Mapping / Transform / provenance by topic; inspect actual data, model instances, and robot declarations; and emit the embodiment composition to downstream or debugging tools. These commands must run without optional model heavy-dependencies installed, without a GPU initialized, and without a robot platform connected.
+Only when debugging does `inspect` (Section 3.5) reveal the framework-derived internal facts; error messages follow the principle of progressive disclosure: for example, on a camera-mapping ambiguity they show only the target slot, candidate cameras, and the corresponding override snippet, not the full declarations. The CLI provides `resolve` to resolve and preview a three-way composition, and `inspect` to check actual data, model declarations, and robot declarations. These commands must run without optional model heavy-dependencies installed, without a GPU initialized, and without a robot platform connected.
+
+### 3.5 Dimension Inspection: inspect
+
+`inspect` is the concrete form of the checking capability described in the previous section: it outputs the descriptions of the three dimensions — dataset, model, robot — in structured form, so users can see "what the three things look like in the framework's eyes" before composition resolution. CLI forms:
+
+```bash
+vlafactory-cli inspect data  --path <dataset> [--stats]
+vlafactory-cli inspect model --name <model> [--path <checkpoint>]
+vlafactory-cli inspect robot --name <robot>
+vlafactory-cli inspect --config <recipe.yaml>   # all three at once, per the recipe
+```
+
+The three dimensions share one output envelope: `{dimension, source, facts}` — human-readable YAML by default, `--json` for tool consumption; key order is deterministic and diffable. Every fact inside `facts` is labeled with its source (`measured` / `inferred` / `undeclared`); for example, `inspect model --path` always reports interface facts from ModelMetadata and lists the checkpoint check result separately as `compatible` / `incompatible` / `unavailable`, never producing a merged view. `inspect --config` emits the three envelopes as one top-level document (a JSON array / YAML list), so `--json` output can be consumed whole by `json.load` / `jq`; a dimension that cannot be read is noted on stderr and skipped.
+
+inspect follows three disciplines:
+
+- **No semantic guessing** — facts that cannot be probed, and cannot be uniquely inferred under the controlled vocabulary, are output as null (`semantic: null (undeclared)`); exposing the gap is preferred over similarity guessing. The gap is exactly what makes the resolver fail conservatively and demand a controlled override.
+- **No heavy-dependency activation** — `inspect model` only reads the registry's ModelMetadata and the checkpoint's `config.json` for the optional consistency check, and never calls the model factory; every subcommand runs without GPU, without optional extras, and without a robot connection.
+- **No cross-dimension reference resolution** — a data-side `robot_ref` (e.g. lerobot `robot_type`) is output as a plain string; whether it corresponds to a registered RobotProfile is validated by the composition resolution layer.
+
+`--stats` is an explicit cost switch: statistics default to a summary. The data dimension's output strictly follows the `DataSchema` fields and the deterministic inference rules in `data/semantics.py`.
 
 ---
 
@@ -332,6 +353,8 @@ Each of the three dimensions has a "description", and the resolver only consumes
 `NormStats` is the normalization statistics bound to the actual data content (mean/std, min/max, or quantiles). Together with DataSchema it is read by the reader or computed by the framework, but kept as an independent structure.
 
 The data module parses external datasets into VLA Factory's Canonical IR (`DataSchema` / `Episode` / `Frame` / `NormStats`); video decoding is a replaceable capability used while reading. The training layer persists the resolved schema, norm stats, IO spec, and pipeline plans as part of `ResolvedAssembly` in `inference_metadata/assembly.json`, and deployment reads only that training-time snapshot. **Sample construction** (assembling IR into `Observation` via a transform pipeline) and batching are not in the data layer — they are done in the finetuning layer (4.3).
+
+The data dimension's description **comes entirely from actually reading the dataset**: the Reader probes objective facts (dimensions, resolution, fps, episode boundaries, per-dim names, `robot_type`) and makes deterministic inferences about semantics under a controlled vocabulary (e.g. a camera key uniquely matching `wrist_left`), labeling each fact with its source (measured / inferred / undeclared). Semantics that cannot be probed do not enter the data description, and no dataset-side declaration file is introduced — the gaps are filled on demand by the recipe's controlled overrides (§3.1 zone ②) during composition resolution, or are left to framework-level conventions.
 
 #### 4.1.2 VLA Model: ModelMetadata
 
@@ -845,7 +868,7 @@ Composition-resolution testing is a new focus; see Section 4.2:
 Data tests care about:
 
 - The reader can read schema, norm stats, and episode info.
-- Manifest sample counts, splits, and index ranges are correct.
+- Sample counts, ordering, and time ranges of `SampleWindow` values are correct across all episodes.
 - The transform pipeline's normalize, resize, and padding behave correctly.
 - `VLADataset` output observation/action shapes match model expectations.
 - `collate_fn` handles batch aggregation.

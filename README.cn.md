@@ -133,7 +133,7 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 
 ---
 
-**模型声明**：每个模型在自己的 entry 模块里附带一份声明（如 [`vla_factory/model/registry/entries/act.py`](./vla_factory/model/registry/entries/act.py)）。`ModelMetadata` 的具名字段是框架要读的事实，recipe 不可覆盖；`ModelMetadata.params` 是该模型的可调默认超参，recipe 里逐 run 的 `model.config` 深度合并在其之上——recipe 的值优先。用 `vlafactory-cli inspect model --name <model>` 可以看到每个可调键的生效值与来源。recipe 写了模型未声明的键会直接报错（并提示最接近的候选），拼写错误不会静默失效。
+**模型声明**：每个模型在自己的 adapter 模块里附带一份声明（如 [`vla_factory/model/adapters/act.py`](./vla_factory/model/adapters/act.py)）。`ModelMetadata` 的具名字段是框架要读的事实，recipe 不可覆盖；`ModelMetadata.params` 是该模型的可调默认超参，recipe 里逐 run 的 `model.config` 深度合并在其之上——recipe 的值优先。用 `vlafactory-cli inspect model --name <model>` 可以看到每个可调键的生效值与来源。recipe 写了模型未声明的键会直接报错（并提示最接近的候选），拼写错误不会静默失效。
 
 ---
 

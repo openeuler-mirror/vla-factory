@@ -125,3 +125,25 @@ def test_from_dict_validates():
 def test_from_dict_rejects_invalid():
     with pytest.raises(ValueError):
         RobotProfile.from_dict({"name": "", "joints": {"names": ["a"]}})
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A scalar string would be split into single-character entries by
+        # tuple() and silently pass every downstream validation.
+        {"name": "x", "joints": {"names": "shoulder_pan"}, "cameras": ["front"]},
+        {"name": "x", "joints": {"names": ["a"]}, "cameras": "front"},
+        {"name": "x", "joints": {"names": ["a"], "types": "revolute"}},
+        {"name": "x", "joints": {"names": ["a"]}, "control_modes": "joint_pos"},
+    ],
+)
+def test_from_dict_rejects_scalar_string_collections(raw):
+    with pytest.raises(TypeError, match="must be a list of strings"):
+        RobotProfile.from_dict(raw)
+
+
+def test_get_robot_profile_rejects_path_components():
+    for name in ("../evil", "../../etc/passwd", "/abs/path/evil", "a/b", ".."):
+        with pytest.raises(ValueError, match="bare profile stem"):
+            get_robot_profile(name)
