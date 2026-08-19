@@ -1,13 +1,10 @@
-"""Tests for the phase-0 composition resolver (``resolve_assembly``).
-
-These cover the stable contract: determinism, serializable round-trip, and structured
-``ResolutionError`` (asserting ``code`` / ``path`` / ``params`` — never the
-full user-facing message).
-"""
+"""Assembly resolution, persistence, and model-interface compatibility."""
 
 from __future__ import annotations
 from dataclasses import replace
-from helpers import make_schema
+import json
+
+from helpers import make_assembly, make_schema
 
 import pytest
 
@@ -17,8 +14,17 @@ from vla_factory.assembly.resolve import (
     ResolutionError,
     resolve_from_facts as resolve_assembly,
 )
+from vla_factory.assembly import (
+    InvalidAssemblyError,
+    MappingSource,
+    ModelInterfaceMismatch,
+    ResolvedAssembly,
+)
+from vla_factory.assembly.transform import TransformContext, build_pipeline
+from vla_factory.assembly.transform.plan import TransformPipelinePlan
 from vla_factory.data.data_schema import DataSchema, NormStats
 from vla_factory.model.model_interface import ModelMetadata
+from vla_factory.model.registry import list_entries
 from vla_factory.user_interface import AssemblyOverrides
 from vla_factory.robot import get_robot_profile
 
@@ -186,3 +192,113 @@ def test_identity_transform_plan_is_valid(
     """No required reconciliation naturally produces an empty plan."""
     assembly = resolve_assembly(schema, norm_stats, metadata)
     assert not assembly.data_to_model.calls
+
+
+def _persisted_act_assembly():
+    return make_assembly(
+        make_schema(
+            state_dim=6,
+            action_dim=8,
+            cameras=("front",),
+            image_sizes={"front": (480, 640)},
+        ),
+        "act",
+    )
+
+
+def test_save_and_load_the_assembly_directly(tmp_path):
+    assembly = _persisted_act_assembly()
+    path = tmp_path / "assembly.json"
+    assembly.save(path)
+
+    payload = json.loads(path.read_text())
+    assert payload == assembly.to_dict()
+    assert "format_version" not in payload
+    loaded = ResolvedAssembly.load(path)
+    assert loaded == assembly
+    assert loaded.camera_mapping.entries[0]["source"] is MappingSource.INFERRED
+    assert loaded.robot_to_model == loaded.data_to_model
+
+
+def test_invalid_assembly_json_fails_readably(tmp_path):
+    path = tmp_path / "assembly.json"
+    path.write_text("not json")
+
+    with pytest.raises(InvalidAssemblyError, match="not valid JSON"):
+        ResolvedAssembly.load(path)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "schema_ref", "norm_stats_ref", "metadata_ref", "model_io_spec",
+        "camera_mapping", "state_mapping", "action_mapping", "language_mapping",
+        "data_to_model", "robot_to_model", "model_to_robot",
+    ],
+)
+def test_missing_assembly_contract_field_is_refused(tmp_path, key):
+    path = tmp_path / "assembly.json"
+    body = _persisted_act_assembly().to_dict()
+    body.pop(key)
+    path.write_text(json.dumps(body))
+
+    with pytest.raises(InvalidAssemblyError, match=key):
+        ResolvedAssembly.load(path)
+
+
+def test_distinct_robot_input_plan_is_refused(tmp_path):
+    path = tmp_path / "assembly.json"
+    body = _persisted_act_assembly().to_dict()
+    body["robot_to_model"]["calls"].append({"type": "unexpected", "args": {}})
+    path.write_text(json.dumps(body))
+
+    with pytest.raises(InvalidAssemblyError, match="must equal"):
+        ResolvedAssembly.load(path)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_invalid_mapping_source_is_refused(tmp_path, missing):
+    path = tmp_path / "assembly.json"
+    body = _persisted_act_assembly().to_dict()
+    entry = body["state_mapping"]["entries"][0]
+    if missing:
+        entry.pop("source")
+        message = "missing 'source'"
+    else:
+        entry["source"] = "guessed"
+        message = "invalid source 'guessed'"
+    path.write_text(json.dumps(body))
+
+    with pytest.raises(InvalidAssemblyError, match=message):
+        ResolvedAssembly.load(path)
+
+
+def test_empty_plan_builds_an_identity_pipeline():
+    assert len(build_pipeline(TransformPipelinePlan(), TransformContext())) == 0
+
+
+def test_matching_model_declaration_passes():
+    _persisted_act_assembly().check_model_compatibility(list_entries()["act"])
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("image_input_range", (-1.0, 1.0)),
+        ("vector_normalization", "quantile"),
+        ("requires_prompt", True),
+        ("dim_policy", "fixed"),
+    ],
+)
+def test_interface_drift_is_refused(field, value):
+    metadata = replace(list_entries()["act"], **{field: value})
+
+    with pytest.raises(ModelInterfaceMismatch, match=field):
+        _persisted_act_assembly().check_model_compatibility(metadata)
+
+
+def test_non_interface_changes_do_not_block_serving():
+    metadata = replace(
+        list_entries()["act"], install_hint="different", support_lora=True,
+    )
+    _persisted_act_assembly().check_model_compatibility(metadata)

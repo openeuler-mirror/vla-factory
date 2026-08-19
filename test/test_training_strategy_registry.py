@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pytest
 import torch.nn as nn
 
+from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.user_interface import parse_recipe_from_string
 from vla_factory.training.strategies import (
     FinetuningStrategy,
@@ -30,6 +31,35 @@ def test_strategy_config_is_strict():
         get_strategy("full").parse_config({"unused": True})
     with pytest.raises(TypeError, match="components"):
         get_strategy("freeze").parse_config({"components": "backbone"})
+
+
+@pytest.mark.parametrize(
+    ("name", "config", "backbone_trainable", "head_trainable"),
+    [
+        ("full", {}, True, True),
+        ("freeze", {"components": ["backbone"]}, False, True),
+        ("selective", {"components": ["head"]}, False, True),
+    ],
+)
+def test_basic_strategies_apply_declared_components(
+    name, config, backbone_trainable, head_trainable
+):
+    model = nn.Module()
+    model.backbone = nn.Linear(2, 2)
+    model.head = nn.Linear(2, 2)
+    metadata = ModelMetadata(
+        name="test",
+        components={"backbone": ("backbone.",), "head": ("head.",)},
+    )
+    strategy = get_strategy(name)
+
+    strategy.prepare_model(model, strategy.parse_config(config), metadata)
+
+    assert all(
+        p.requires_grad is backbone_trainable
+        for p in model.backbone.parameters()
+    )
+    assert all(p.requires_grad is head_trainable for p in model.head.parameters())
 
 
 def test_recipe_rejects_strategy_specific_legacy_fields():

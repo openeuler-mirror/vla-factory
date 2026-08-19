@@ -12,16 +12,12 @@ Run:
 from __future__ import annotations
 from helpers import make_schema
 
-import sys
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from vla_factory.data.data_schema import (
     ActionDim, DataSchema, FeatureStats, NormStats, StateDim, resolve_vector_keys,
@@ -621,10 +617,3 @@ class TestLerobotHostAdapters:
         )
         with pytest.raises(KeyError, match="front"):
             adapter({"a": 1.0})
-
-
-# ── Entry point ─────────────────────────────────────────────────────
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

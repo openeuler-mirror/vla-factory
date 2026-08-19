@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
-"""Phase 3 Verification: ACT model (lerobot adapter).
-
-Run:
-    python test/test_act_model.py
-    pytest test/test_act_model.py -v
-"""
+"""ACT adapter, camera binding, and factory integration."""
 
 from __future__ import annotations
 from helpers import make_assembly, make_schema
 
-import sys
 import tempfile
-from pathlib import Path
 
 import pytest
 import torch
 
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+class _DummyModel(torch.nn.Module):
+    def forward(self, *args, **kwargs):  # pragma: no cover - never called here
+        return None
 
 
 def _make_obs(B=2, cameras=("front",), image_size=(224, 224), state_dim=6):
@@ -139,6 +135,65 @@ class TestAdapter:
         moved = obs.to(dtype=torch.float64)
         assert moved.images["front"].dtype == torch.float64
         assert moved.state.dtype == torch.float64
+
+    def test_camera_mapping_is_by_name_not_position(self):
+        """Observation insertion order must never swap the configured cameras."""
+        from vla_factory.model.adapters.act import ACTModelWrapper
+        from vla_factory.model.model_interface import Observation
+
+        wrapper = ACTModelWrapper(
+            _DummyModel(),
+            image_keys=["observation.images.wrist", "observation.images.front"],
+        )
+        front = torch.tensor([1.0])
+        wrist = torch.tensor([2.0])
+        batch = wrapper._obs_to_lerobot_batch(Observation(
+            images={"front": front, "wrist": wrist},
+            image_masks={
+                "front": torch.ones(1, dtype=torch.bool),
+                "wrist": torch.ones(1, dtype=torch.bool),
+            },
+            state=torch.zeros(6),
+        ))
+
+        assert torch.equal(batch["observation.images.front"], front)
+        assert torch.equal(batch["observation.images.wrist"], wrist)
+
+    def test_missing_expected_camera_raises(self):
+        from vla_factory.model.adapters.act import ACTModelWrapper
+        from vla_factory.model.model_interface import Observation
+
+        wrapper = ACTModelWrapper(
+            _DummyModel(),
+            image_keys=["observation.images.wrist", "observation.images.front"],
+        )
+        observation = Observation(
+            images={"front": torch.tensor([1.0])},
+            image_masks={"front": torch.ones(1, dtype=torch.bool)},
+            state=torch.zeros(6),
+        )
+
+        with pytest.raises(KeyError, match="wrist"):
+            wrapper._obs_to_lerobot_batch(observation)
+
+    def test_extra_observation_camera_is_ignored(self):
+        from vla_factory.model.adapters.act import ACTModelWrapper
+        from vla_factory.model.model_interface import Observation
+
+        wrapper = ACTModelWrapper(
+            _DummyModel(), image_keys=["observation.images.front"]
+        )
+        batch = wrapper._obs_to_lerobot_batch(Observation(
+            images={"front": torch.tensor([1.0]), "wrist": torch.tensor([2.0])},
+            image_masks={
+                "front": torch.ones(1, dtype=torch.bool),
+                "wrist": torch.ones(1, dtype=torch.bool),
+            },
+            state=torch.zeros(6),
+        ))
+
+        assert "observation.images.front" in batch
+        assert "observation.images.wrist" not in batch
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -376,24 +431,3 @@ class TestShapesComeFromTheAssembly:
         """
         config = self._config_of(self._recipe(), self._schema())
         assert config.chunk_size == 100
-
-
-def main():
-    from vla_factory.model.adapters.act import _LEROBOT_ACT
-
-    print("=" * 60)
-    print("Phase 3 Verification: ACT Model (lerobot adapter)")
-    print(f"Backend: {'lerobot (official)' if _LEROBOT_ACT else 'lerobot NOT INSTALLED (tests will skip)'}")
-    print("=" * 60)
-
-    # Run via pytest so skip/warning logic is consistent
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", __file__, "-v", "--tb=short"],
-        cwd=str(Path(__file__).resolve().parents[1]),
-    )
-    sys.exit(result.returncode)
-
-
-if __name__ == "__main__":
-    main()

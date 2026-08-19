@@ -1,30 +1,22 @@
-"""Tests for the phase-3 Resolve Mapping / Plan Pipeline stages (§7.4 phase 3).
-
-Coverage mirrors phase 2's split:
+"""Mapping resolution and executable transform-plan contracts.
 
 * **Golden tests** (``TestGoldenRealData``) — the real 3-episode LeKiwi fixture
   against the real ``act`` / ``pi0`` / ``pi05`` registry entries. Expectations
   are written inline rather than in a side file so a reviewer reads the change
   and the expectation together.
-* **Equivalence test** (``TestPlanMatchesBuiltPipeline``) — the planned
-  ``data_to_model`` calls against the pipeline the *production* build path
-  actually constructs for the same inputs. Nothing executes a plan yet, so
-  without this the plans would be unverified data; with it, phase 4 has a
-  judgement criterion for switching the downstream over.
+* **Execution tests** — planned calls are built by the production path and run
+  against representative samples.
 * **Unit tests** — synthetic descriptions for branches the real fixture cannot
   reach (camera override failures, joint mapping against a robot).
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
 _project_root = Path(__file__).resolve().parents[1]
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 from helpers import make_schema
 
@@ -207,11 +199,8 @@ class TestGoldenRealData:
 class TestPlanIsExecutable:
     """A plan is only worth as much as the pipeline it instantiates.
 
-    Phase 3 had to prove the plan matched a *second* implementation (the
-    declaration-driven build path). That path is gone — there is one way to
-    build a step now — so what is left to prove is that every planned call
-    really constructs, with the arguments the plan states and nothing else
-    filled in behind its back.
+    Every planned call must construct through the one production build path,
+    using the arguments recorded in the plan.
     """
 
     @staticmethod
@@ -293,8 +282,7 @@ def _schema_with_cameras() -> DataSchema:
 
 
 def _usable_stats(dim: int = 6) -> NormStats:
-    """Stats good enough to get past the phase-2 norm-stats check, so these
-    tests fail on the thing they are about."""
+    """Valid normalization stats keep each test focused on its target rule."""
     fs = FeatureStats(mean=[0.0] * dim, std=[1.0] * dim)
     return NormStats(state=fs, action=fs)
 

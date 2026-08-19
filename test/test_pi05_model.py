@@ -6,11 +6,8 @@ without openpi/jax installed. Runnable both via pytest and directly:
 """
 from __future__ import annotations
 
-import sys
 import types
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import pytest
@@ -240,7 +237,3 @@ def test_zscore_default_unchanged():
     step = NormalizeVector(stats, fields=("state",), method="zscore")
     out = step({"state": np.array([3.0], dtype=np.float32)})
     np.testing.assert_allclose(out["state"], [1.0], atol=1e-5)
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))

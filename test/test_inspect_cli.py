@@ -1,9 +1,12 @@
-"""Golden-structure tests for the `inspect` CLI (architecture §3.5)."""
+"""Command-line interface registration and inspect output contracts."""
 
 from __future__ import annotations
 
 import json
 import logging
+import sys
+
+import pytest
 import yaml
 
 from helpers import make_schema
@@ -99,3 +102,32 @@ def test_inspect_data_key_order_is_stable(capsys):
     cli_module._inspect_data(DATA_PATH, "lerobot-v3", with_stats=False, as_json=False)
     second = capsys.readouterr().out
     assert first == second
+
+
+def test_deploy_command_validates_loop_frequency(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vlafactory-cli",
+            "deploy",
+            "--checkpoint",
+            "unused-for-argument-validation",
+            "--max-loop-freq-hz",
+            "0",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli_module.main()
+
+    assert "--max-loop-freq-hz must be a positive number" in capsys.readouterr().err
+
+
+def test_serve_command_is_not_registered(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["vlafactory-cli", "serve"])
+
+    with pytest.raises(SystemExit, match="2"):
+        cli_module.main()
+
+    assert "invalid choice: 'serve'" in capsys.readouterr().err

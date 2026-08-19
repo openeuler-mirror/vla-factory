@@ -217,7 +217,3 @@ class TestTunablesView(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "cannot be overridden"):
             merge_model_config(recipe)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,4 +1,4 @@
-"""End-to-end tests for the VLA-Factory data pipeline (Phase 2).
+"""End-to-end tests for readers, transforms, datasets, and loaders.
 
 Uses the built-in test dataset at ``test/data/lerobot_train_data_3_episodes/``.
 If that directory is missing, all tests are skipped with a clear message.
@@ -622,7 +622,3 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(actions.shape[0], batch_size)
         self.assertEqual(actions.shape[1], ACTION_HORIZON)
         self.assertEqual(actions.shape[2], ACTION_DIM)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

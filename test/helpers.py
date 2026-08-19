@@ -1,9 +1,8 @@
 """Shared test helpers.
 
-``make_schema`` mirrors the pre-phase-1 flat ``DataSchema`` constructor so that
-test fixtures stay readable while the real ``DataSchema`` stores the entry-table
-form (data-module §8.3). Production code reads the derived compatibility
-properties; only these test fixtures build a schema directly.
+``make_schema`` keeps fixtures concise when a test only cares about a subset of
+the entry-table schema. Production code reads the schema's derived properties;
+only tests construct these compact descriptions directly.
 
 ``make_assembly`` runs the real resolver: a model factory now takes a
 ``ResolvedAssembly``, and hand-building one in each test would let a fixture

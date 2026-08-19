@@ -92,13 +92,9 @@ Each test environment runs only the tiers it can cover, no duplication:
 
 | Env | Deps | Tiers | Covered cases |
 |-----|------|-------|---------------|
-| **base** | core + `[dev]` | L0 | all of L0 (162 cases¹) |
+| **base** | core + `[dev]` | L0 | all framework contract tests |
 | **act** | + lerobot | L1 + L2 | lerobot parity + overfit smoke (planned, see §4) |
 | **pi** | + openpi | L1 | openpi parity (planned, see §4) |
-
-¹ Measured with `pytest --collect-only` on master: 161 test functions plus
-1 parametrize expansion. The number drifts as tests are added; re-measure
-when updating this document.
 
 L1 tests self-route via `pytest.importorskip`: the act environment runs the
 lerobot-related cases, the pi environment runs the openpi-related ones,
@@ -127,50 +123,27 @@ L0 equals the full suite** and the L1/L2 tiers collect zero tests — the
 daemon reports FAIL, not pass, for an environment whose tiers all collect
 zero, so an empty run can never show up green.
 
-### L0 — unit tests (162 cases)
+### L0 — framework tests
 
-Verify **our own code**. No model extras required; the base environment
-runs everything. Master's `test/` currently holds 13 files with 161 test
-functions (162 collected after parametrize expansion):
+These verify **our own code**. The base environment runs the general tests;
+cases that require optional model dependencies skip explicitly when those
+dependencies are absent. Tests are organized around stable behavioral
+contracts. Historical phase verification scripts are not retained, and this
+document does not duplicate a per-file case count that quickly becomes stale.
 
-**Config / CLI**
+| Subsystem | Main contracts |
+|-----------|----------------|
+| Data | Reader / codec registration and discovery, semantic inference, real data reads, transforms, sample windows, and DataLoader behavior |
+| Model | ModelMetadata field classification, built-in declarations, external plugins, optional checkpoint consistency, and ACT / PI0 / PI05 adapters |
+| Assembly | Compatibility diagnostics, mappings, ModelIOSpec, TransformPipelinePlan, persistence, and interface-drift rejection |
+| Training | Strategy registration and strict config, LoRA mounting, and real train → checkpoint output |
+| Inference / Deployment | Execution policies, dual action widths, train → infer round trip, platform adapters, PolicyRunner, and RPC transport |
+| User Interface | Recipe parsing and rejection paths, inspect output, CLI registration, and failure-side-effect boundaries |
 
-| File | Cases | Coverage |
-|------|-------|----------|
-| `test_protocols_registry_config.py` | 4 | Protocol contracts (Observation/ActionSpec/VLA hierarchy/ModelMetadata), registry (register/lookup/duplicate/unknown model), YAML→TrainRecipe parsing, all `examples/*.yaml` parseable |
-| `test_cli_deploy.py` | 2 | `deploy` command registration / invalid-argument exit; `serve` not registered |
-
-**Model layer (model/)**
-
-| File | Cases | Coverage |
-|------|-------|----------|
-| `test_checkpoint_validation.py` | 12 | Optional checkpoint config parsing and ModelMetadata consistency checks; metadata-based camera mapping |
-| `test_act_model.py` | 15 | ACT lerobot adapter: protocol compliance, registry integration, observation_to, factory wrapper (compute_loss/predict/multi-camera/save-load), profile defaults & recipe overrides |
-| `test_pi0_model.py` | 4 | pi0 adapter (fake openpi): metadata, camera_mapping translation, loss/predict delegation, empty-camera placeholder |
-| `test_pi05_model.py` | 13 | pi05 deltas vs pi0: factory variant construction, discrete-state prompt, task fallback chain, quantile normalize/unnormalize roundtrip |
-| `test_lora_strategy.py` | 8 | LoRA strategy logic (fake peft): single/multi subtree wrapping, merge unwrap, target-component validation, strict field validation |
-
-**Training (training/)**
-
-| File | Cases | Coverage |
-|------|-------|----------|
-| `test_phase4_engine.py` | 8 | Training engine: strategy dispatch (full/freeze/selective + unknown raises), recipe→training-args mapping, 3-step CPU training loop |
-| `test_training_strategy_registry.py` | 5 | Strategy registration, unknown-name diagnostics, config field/type validation, legacy-field rejection, and one-class extension example |
-
-**Data pipeline (data/)**
-
-| File | Cases | Coverage |
-|------|-------|----------|
-| `test_data_pipeline.py` | 41 | End-to-end data pipeline (bundled 3-episode lerobot dataset): LeRobotV3 reader, PyAV codec decode, deterministic all-episode `SampleWindow` construction, transforms, VLADataset, DataLoader batching |
-| `test_robotwin_reader.py` | 7 | RoboTwin reader + codec happy path (synthetic dataset): can_read, schema, episode length/range, state/action reads, frame decode, norm_stats |
-
-**Deploy / inference (deploy/)**
-
-| File | Cases | Coverage |
-|------|-------|----------|
-| `test_inference_engine.py` | 31 | Inference engine: ObsDict build/freeze, 3 execution policies (synchronous / receding-horizon / temporal-ensembling), obs normalization, train↔infer consistency (30 functions + 1 parametrize expansion) |
-| `test_policy_runtime.py` | 7 | PolicyRunner orchestration: fake transport+engine, predict/send, action-adapter, reset control |
-| `test_robotwin_server.py` | 13 | RoboTwin platform adapter + length-prefixed transport: get_action roundtrip, obs parsing, numpy codec roundtrip |
+The current refactor branch contains 22 test modules; a complete development
+environment collects and passes 354 cases. Collection counts can change with
+parametrization and optional dependencies, so CI treats pytest output—not this
+document—as the source of truth.
 
 ### L1 — parity tests (planned, not yet merged)
 

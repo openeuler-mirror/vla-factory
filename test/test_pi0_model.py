@@ -8,9 +8,7 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 import torch
@@ -126,7 +124,3 @@ def test_empty_camera_mapping_all_placeholders():
     assert set(openpi_obs.images.keys()) == {"base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"}
     assert all((t == -1.0).all() for t in openpi_obs.images.values())
     assert all((m == 0).all() for m in openpi_obs.image_masks.values())
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))

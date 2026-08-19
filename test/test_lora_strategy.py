@@ -9,9 +9,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 import torch.nn as nn
@@ -239,7 +237,3 @@ finetuning:
     assert config.r == 32
     assert config.lora_alpha == 32
     assert config.lora_dropout == 0.1
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
