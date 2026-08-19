@@ -183,7 +183,7 @@ vla_factory/
 
 User Interface 是框架的用户表达层。当前入口是 YAML Recipe 与 CLI，未来可以并列增加 WebUI、Agent 等入口。Recipe 是这些入口可共享的结构化输入协议，而不是整个层的名字；每种入口只负责把用户意图转换成对 assembly、training、inference 等公开能力的调用。
 
-用户写的 recipe 就是配置的事实来源。模型自带默认值由模型声明（ModelMetadata）随模型发布，不在 recipe 里修改；CLI 提供少量临时覆盖。详细设计见 [User Interface 模块设计](../modules/user-interface-module.cn.md)。
+用户写的 recipe 就是配置的事实来源。模型自带默认值由模型声明（ModelMetadata）随模型发布，不在 recipe 里修改；CLI 提供少量临时覆盖。
 
 ### 3.1 Recipe 的三个区
 
@@ -322,9 +322,8 @@ inspect 遵守三条纪律：
   `robot_type`）原样输出字符串；它是否对应一个已注册的 RobotProfile
   由组合解析层校验。
 
-`--stats` 是显式开销开关：统计量默认只出摘要。数据维度输出所依据的
-DataSchema 字段表与推断规则，见
-[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)。
+`--stats` 是显式开销开关：统计量默认只出摘要。数据维度输出严格遵循
+`DataSchema` 字段和 `data/semantics.py` 中的确定性推断规则。
 
 ---
 
@@ -365,9 +364,9 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 `NormStats` 是与具体数据内容绑定的归一化统计量（mean/std、min/max 或 quantile）。它与 DataSchema 一起由 reader 读取或由框架计算，但保持独立结构。
 
-数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用；它同时为推理侧保存并复用 schema、norm stats 和 recipe，保证训练与推理使用同一套数据标准。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。详细设计见 [数据模块设计](../modules/data-module.cn.md)，其中展开说明外部数据解析层与数据中间表示层的职责边界、`FormatReader` / `Episode` / `Frame` / `VideoRef` 等数据对象、训练侧的 `SampleWindow`，以及新增数据格式、视频解码策略和 transform step 的扩展方式。
+数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用。训练层把解析出的 schema、norm stats、IO spec 和 pipeline plan 随 `ResolvedAssembly` 写入 `inference_metadata/assembly.json`，部署侧只读取这份训练时快照。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。
 
-数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。字段准入与推断规则见[数据模块设计 §8](../modules/data-module.cn.md#8-数据集描述目标设计)（目标设计）。
+数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。
 
 #### 4.1.2 VLA 模型：ModelMetadata
 
@@ -378,7 +377,7 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 模型作者因此没有分类负担：框架级事实有具名字段和类型，其余一律丢进 `params`。`params` 的键集合同时充当两道校验的依据——recipe 写了未声明的键即报错（并提示最接近的候选），声明了却无人消费的键在构造模型时报错（避免「改了不生效」的静默失效）。
 
-若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `overrides` 区表达（见第 3 章），而不是改模型声明。详细设计见 [模型抽象模块设计](../modules/model-module.cn.md)。
+若某次实验需要调整数据/模型/机器人之间的关系（如相机映射、语言兜底），用 recipe 的 `overrides` 区表达（见第 3 章），而不是改模型声明。
 
 ##### ModelMetadata
 
@@ -450,7 +449,7 @@ def load_act(recipe, assembly):
 - 组合解析所需的静态安全边界；
 - 推荐控制频率。
 
-三个维度共享严格的 schema 和来源记录，但生命周期不同：数据集随内容变化，模型随模型族和实例变化，机器人随本体型号演进。框架只统一它们的解析接口，不强迫它们使用相同的注册和分发方式。详细设计见 [机器人模块设计](../modules/robot-module.cn.md)（TODO）。
+三个维度共享严格的 schema 和来源记录，但生命周期不同：数据集随内容变化，模型随模型族和实例变化，机器人随本体型号演进。框架只统一它们的解析接口，不强迫它们使用相同的注册和分发方式。
 
 #### 4.1.4 三个维度的扩展方式
 
@@ -466,7 +465,7 @@ def load_act(recipe, assembly):
 
 ### 4.2 组合解析层
 
-组合解析层把三者解析为统一的具身组合，是微调层和推理层共同的上游；它是确定性的纯逻辑层，也是目标架构的演进方向。详细设计见 [组合解析层模块设计](../modules/assembly-module.cn.md)（TODO）。
+组合解析层把三者解析为统一的具身组合，是微调层和推理层共同的上游；它是确定性的纯逻辑层，也是目标架构的演进方向。
 
 #### 4.2.1 具身组合（ResolvedAssembly）
 
@@ -699,7 +698,7 @@ Mapping 必须满足：
 
 ### 4.3 微调层
 
-微调层由 `training/` 模块实现，入口是 `vla_factory/training/train.py` 的 `train()`。详细设计见 [微调层模块设计](../modules/training-module.cn.md)。训练流程：
+微调层由 `training/` 模块实现，入口是 `vla_factory/training/train.py` 的 `train()`。训练流程：
 
 ```text
 parse recipe
@@ -768,7 +767,7 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 
 推理模块负责把训练产物转成平台可调用的实时策略服务：从 checkpoint 重建与训练一致的推理链路（模型 + preprocessor / postprocessor），把各仿真器 / 真机平台的原生 observation 翻译成统一 `ObsDict`，按 `robot_to_model` TransformPipeline 组装成 `Observation` 运行模型前向，再按执行策略把归一化 action chunk 经 `model_to_robot` 还原成平台可执行的动作命令。它以 checkpoint 中的 `inference_metadata/{assembly.json,recipe.yaml}` 为唯一事实来源；schema、norm stats、IO spec 和 pipeline plans 均取自 assembly 快照，不重新扫描训练数据集，也不重新推导数据/模型/机器人三者之间的关系。
 
-详细设计见 [推理模块设计](../modules/deploy-module.cn.md)，其中展开说明：
+推理层内部按以下职责组织：
 
 - 推理核心层、平台适配层、传输与远程服务层的职责边界。
 - `InferenceEngine`、`ObsDict`、平台 adapter、`PolicyRunner`、`RemotePolicyModel`、`ZmqPolicyClient`、`LengthPrefixedJsonRpcServer` 等核心对象。

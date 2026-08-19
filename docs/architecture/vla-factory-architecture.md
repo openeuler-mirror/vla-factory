@@ -183,7 +183,7 @@ vla_factory/
 
 The user interface is the framework's user-expression layer. Its current entry points are YAML Recipe and CLI; WebUI and Agent user interfaces may be added alongside them later. Recipe is the structured input contract these user interfaces can share, not the name of the whole layer. Every user interface translates user intent into calls to the public assembly, training, and inference capabilities.
 
-The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides. Detailed design: [User Interface Module Design](../modules/user-interface-module.cn.md).
+The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides.
 
 ### 3.1 The Three Zones of a Recipe
 
@@ -331,7 +331,7 @@ Each of the three dimensions has a "description", and the resolver only consumes
 
 `NormStats` is the normalization statistics bound to the actual data content (mean/std, min/max, or quantiles). Together with DataSchema it is read by the reader or computed by the framework, but kept as an independent structure.
 
-The data module parses external datasets into VLA Factory's Canonical IR (`DataSchema` / `Episode` / `Frame` / `NormStats`); video decoding is used as a replaceable capability during reading. It also saves and reuses schema, norm stats, and recipe for the inference side, so that training and inference share the same data standard. **Sample construction** (assembling IR into `Observation` via a transform pipeline) and batching are not in the data layer — they are done in the finetuning layer (4.3). Detailed design: [Data Module Design](../modules/data-module.md), which covers the responsibility boundary between the external-data parsing layer and the data IR layer, data objects such as `FormatReader` / `Episode` / `Frame` / `VideoRef`, the training-side `SampleWindow`, and how to add new data formats, video-decoding strategies, and transform steps.
+The data module parses external datasets into VLA Factory's Canonical IR (`DataSchema` / `Episode` / `Frame` / `NormStats`); video decoding is a replaceable capability used while reading. The training layer persists the resolved schema, norm stats, IO spec, and pipeline plans as part of `ResolvedAssembly` in `inference_metadata/assembly.json`, and deployment reads only that training-time snapshot. **Sample construction** (assembling IR into `Observation` via a transform pipeline) and batching are not in the data layer — they are done in the finetuning layer (4.3).
 
 #### 4.1.2 VLA Model: ModelMetadata
 
@@ -342,7 +342,7 @@ The model-dimension description lives in **one declaration published with the mo
 
 A model author therefore classifies nothing: framework-level facts have named fields and types, everything else goes in `params`. The `params` key set doubles as the basis for two checks — a `model.config` key the model never declared is an error (with the closest candidates suggested), and a declared key nothing consumes is an error at model construction, which is what keeps "I changed it and nothing happened" from being possible.
 
-If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `overrides` block (see Chapter 3) rather than editing the model declaration. Detailed design: [Model Abstraction Module Design](../modules/model-module.cn.md).
+If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `overrides` block (see Chapter 3) rather than editing the model declaration.
 
 ##### ModelMetadata
 
@@ -416,7 +416,7 @@ This boundary requires VLA Factory neither to copy upstream model code into the 
 - static safety bounds needed for composition resolution;
 - recommended control frequency.
 
-The three dimensions share strict schema and provenance recording but differ in lifecycle: the dataset varies with content, the model varies with model family and instance, and the robot varies with embodiment model. The framework only unifies their resolution interface and does not force them to use the same registration and dispatch mechanism. Detailed design: [Robot Module Design](../modules/robot-module.cn.md) (TODO).
+The three dimensions share strict schema and provenance recording but differ in lifecycle: the dataset varies with content, the model varies with model family and instance, and the robot varies with embodiment model. The framework only unifies their resolution interface and does not force them to use the same registration and dispatch mechanism.
 
 #### 4.1.4 How to Extend the Three Dimensions
 
@@ -432,7 +432,7 @@ External developers do not need to learn the full composition protocol; they onl
 
 ### 4.2 Composition Resolution Layer
 
-The composition resolution layer resolves the three dimensions into a unified embodiment composition and is the common upstream of the finetuning and inference layers; it is a deterministic, pure-logic layer and also the target architecture's direction of evolution. Detailed design: [Composition Resolution Module Design](../modules/assembly-module.cn.md) (TODO).
+The composition resolution layer resolves the three dimensions into a unified embodiment composition and is the common upstream of the finetuning and inference layers; it is a deterministic, pure-logic layer and also the target architecture's direction of evolution.
 
 #### 4.2.1 Embodiment Composition (ResolvedAssembly)
 
@@ -663,7 +663,7 @@ The **inference module** reads ModelIOSpec, the four data-to-model mappings, and
 
 ### 4.3 Finetuning Layer
 
-The finetuning layer is implemented by the `training/` module; its entry point is `train()` in `vla_factory/training/train.py`. Detailed design: [Finetuning Layer Module Design](../modules/training-module.cn.md). Training flow:
+The finetuning layer is implemented by the `training/` module; its entry point is `train()` in `vla_factory/training/train.py`. Training flow:
 
 ```text
 parse recipe
@@ -734,7 +734,7 @@ At inference load time, final weights, root weights, safetensors, or the most re
 
 The inference module turns training artifacts into a platform-callable real-time policy service: it rebuilds an inference chain consistent with training from the checkpoint (model + preprocessor/postprocessor), translates each simulator's/real robot's native observation into a unified `ObsDict`, assembles it into an `Observation` via the `robot_to_model` TransformPipeline, runs the model forward, and then restores the normalized action chunk into a platform-executable action command via `model_to_robot` according to the execution strategy. It uses the checkpoint's `inference_metadata/{assembly.json,recipe.yaml}` as the single source of truth; schema, norm stats, IO spec, and pipeline plans all come from the assembly snapshot. It does not rescan the training dataset or re-derive the relationships among data, model, and robot.
 
-Detailed design: [Inference Module Design](../modules/deploy-module.md), which covers:
+The inference layer is organized around these responsibilities:
 
 - The responsibility boundaries of the inference core layer, the platform adaptation layer, and the transport/remote-service layer.
 - Core objects `InferenceEngine`, `ObsDict`, platform adapters, `PolicyRunner`, `RemotePolicyModel`, `ZmqPolicyClient`, `LengthPrefixedJsonRpcServer`.
