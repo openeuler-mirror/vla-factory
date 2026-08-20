@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="490" viewBox="0 0 960 490" role="img" aria-labelledby="title desc">
   <title id="title">VLA Factory 总体架构图</title>
-  <desc id="desc">VLA Factory 的四个层次：User Interface、微调层与推理层、组合解析层、数据/模型/机器人三个维度。各层只展示可插拔的扩展，不体现内部组件实现。</desc>
+  <desc id="desc">VLA Factory 的四个层次：用户接口层、微调层与推理层、组合解析层、数据/模型/机器人三个维度。各层只展示可插拔的扩展，不体现内部组件实现。</desc>
   <defs>
     <filter id="shadow" x="-8%" y="-10%" width="116%" height="130%">
       <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
@@ -25,9 +25,9 @@
 
   <text x="480" y="48" text-anchor="middle" class="title">VLA Factory 总体架构</text>
 
-  <!-- Row 1: User Interface -->
+  <!-- Row 1: 用户接口层 -->
   <rect x="55" y="112" width="850" height="72" rx="14" class="layer user"/>
-  <text x="480" y="146" text-anchor="middle" class="layer-title">User Interface</text>
+  <text x="480" y="146" text-anchor="middle" class="layer-title">用户接口层</text>
   <text x="480" y="170" text-anchor="middle" class="code">CLI | YAML Recipe | WebUI | Agent | ……</text>
 
   <!-- Row 2: Finetuning | Inference -->
