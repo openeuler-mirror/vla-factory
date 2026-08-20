@@ -17,7 +17,7 @@
 #   (discrete state input, max token len 200).
 #
 # ── Variant B: full finetune instead of LoRA ──────────────────────────────
-#   Set finetuning.strategy: full and drop the finetuning.lora block; lower
+#   Set finetuning.strategy: full and drop finetuning.config; lower
 #   training.lr to ~2.5e-5. Full FT needs ~13 GB VRAM for batch_size 1, so on a
 #   12 GB card keep the LoRA config below.
 #
@@ -32,35 +32,26 @@
 model:
   name: pi0
   path: lerobot/pi0_base          # pytorch safetensors (openpi weights, ported by lerobot)
-  config:
-    camera_mapping:
-      base_0_rgb: front
-      left_wrist_0_rgb: wrist
-    default_task: "pick up the rectangle"
 
-action_spec:
-  action_dim: 9
-  action_horizon: 50
-  action_type: joint_pos
+# 三者之间的关系归组合调整区（架构 §3.1），不是模型超参。
+overrides:
+  camera_mapping:
+    base_0_rgb: front
+    left_wrist_0_rgb: wrist
+  default_task: "pick up the rectangle"
+
+# 动作维度与 chunk 长度不在 recipe 里：前者是数据集事实（inspect data 可看），
+# 后者是 pi0 的家族事实（预训练 action expert 的固定长度，改不了）。
 
 data:
-  source:
-    path: data/banana
-    format: lerobot-v3
-  sampler:
-    type: sliding_window
-    n_obs_steps: 1
-    action_horizon: 50
-  split:
-    strategy: episode
-    train_ratio: 0.9
-    seed: 42
+  path: data/banana
+  format: lerobot-v3
 
 finetuning:
   strategy: lora
-  lora:
-    r: 16                         # peft-aligned (rank alias also accepted)
-    lora_alpha: 16                # peft-aligned (alpha alias also accepted)
+  config:
+    r: 16                         # peft-aligned
+    lora_alpha: 16                # peft-aligned
     lora_dropout: 0.0             # forwarded to peft
     init_lora_weights: gaussian   # forwarded to peft (gaussian matches RLinf's openpi LoRA)
     target_components: ["llm"]    # vla abstraction: LoRA on the PaliGemma VLM subtree
@@ -71,11 +62,7 @@ training:
   batch_size: 1
   total_steps: 3                  # smoke: 3 optimizer steps
   gradient_checkpointing: true
-  inference_steps: 10
   num_workers: 0
-  augmentation:
-    random_crop: false
-    color_jitter: 0.0
 
 output:
   output_dir: outputs/pi0_smoke

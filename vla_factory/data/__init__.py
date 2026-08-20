@@ -1,30 +1,35 @@
-"""Data pipeline for VLA-Factory.
+"""Data pipeline for VLA-Factory (read-only Canonical IR).
 
-Reads robotics datasets and produces training samples
-in the format ``{"observation": Observation, "actions": Tensor}``.
+Reads robotics datasets and produces the canonical intermediate
+representation (``DataSchema`` / ``Episode`` / ``Frame`` / ``NormStats``).
+Sample construction (``VLADataset`` / ``collate_fn`` / ``create_dataloader``)
+lives in the training layer (``vla_factory.training``).
 """
 
-from .manifest import DataSchema, DatasetManifest, FeatureStats, NormStats, SampleLocator
-from .dataset import VLADataset, collate_fn
-from .loader import create_dataloaders
-from .formats import LeRobotV3Reader, get_reader, Frame, Episode, VideoRef
-from .codec import PyAVCodec, VideoCodec, resolve_codec
+from .data_schema import (
+    DataSchema,
+    Episode,
+    FeatureStats,
+    Frame,
+    NormStats,
+    VideoRef,
+    describe_dataset,
+)
+from .reader import FormatReader, ReaderRegistry, get_reader
+from .codec import CodecRegistry, VideoCodec, resolve_codec
 
 __all__ = [
+    "CodecRegistry",
     "DataSchema",
-    "DatasetManifest",
+    "Episode",
     "FeatureStats",
+    "FormatReader",
+    "Frame",
     "NormStats",
-    "SampleLocator",
-    "VLADataset",
-    "collate_fn",
-    "create_dataloaders",
-    "PyAVCodec",
+    "ReaderRegistry",
+    "VideoRef",
     "VideoCodec",
-    "LeRobotV3Reader",
+    "describe_dataset",
     "resolve_codec",
     "get_reader",
-    "Frame",
-    "Episode",
-    "VideoRef",
 ]

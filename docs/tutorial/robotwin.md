@@ -35,10 +35,11 @@ directory containing `data/episode*.hdf5` and
 
 ```yaml
 data:
-  source:
-    path: /path/to/dataset/<task>/<embodiment>_clean_50
-    format: robotwin
-    video_codec: hdf5_jpeg
+  path: /path/to/dataset/<task>/<embodiment>_clean_50
+  format: robotwin
+  video_codec: hdf5_jpeg
+robot:
+  name: robotwin
 ```
 
 ## 3. Start the model server (VLA Factory environment)
@@ -65,7 +66,7 @@ export VLA_FACTORY_PATH=/path/to/vla-factory
 PYTHONPATH="$VLA_FACTORY_PATH${PYTHONPATH:+:$PYTHONPATH}" \
 python script/eval_policy_client.py \
   --port 9999 \
-  --config "$VLA_FACTORY_PATH/vla_factory/deploy/connectors/robotwin.yml" \
+  --config "$VLA_FACTORY_PATH/vla_factory/inference/connectors/robotwin.yml" \
   --overrides \
     task_name beat_block_hammer \
     task_config demo_randomized \
@@ -88,6 +89,6 @@ must match. RoboTwin writes results under its `eval_result/` directory.
   inference, including required and available values.
 - Language-conditioned models such as PI0 and PI0.5 receive the instruction
   returned by `TASK_ENV.get_instruction()`; models such as ACT ignore it.
-- The connector lives at `vla_factory.deploy.connectors.robotwin` and has no
+- The connector lives at `vla_factory.inference.connectors.robotwin` and has no
   torch, Transformers, OpenPI, or LeRobot dependencies, so the RoboTwin
   environment can import it directly.

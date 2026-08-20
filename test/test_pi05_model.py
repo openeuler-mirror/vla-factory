@@ -1,30 +1,38 @@
 """Tests for the pi05 adapter and its data-side differences from pi0.
 
-Patches the shared openpi handle (entries/pi0._try_import_openpi) so tests run
+Patches the shared OpenPI handle (adapters/openpi.try_import_openpi) so tests run
 without openpi/jax installed. Runnable both via pytest and directly:
 `python test/test_pi05_model.py`.
 """
 from __future__ import annotations
 
-import sys
 import types
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import pytest
 import torch.nn as nn
 
-import vla_factory.model.registry.entries.pi0 as pi0_mod
-from vla_factory.config.parser import parse_recipe_from_string
-from vla_factory.data.manifest import FeatureStats, NormStats
-from vla_factory.data.transforms.normalize import (
+from helpers import make_assembly, make_schema
+
+import vla_factory.model.adapters.openpi as pi0_mod
+from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
+from vla_factory.data.data_schema import FeatureStats, NormStats
+from vla_factory.assembly.transform.normalize import (
     NormalizeVector,
     UnnormalizeActionQuantileStep,
 )
-from vla_factory.data.transforms.task_tokenize import TaskTokenize, build_prompt
+from vla_factory.assembly.transform.task_tokenize import TaskTokenize, build_prompt
 from vla_factory.model.registry import get_entry
+
+
+def _assembly_for(recipe, model_name: str):
+    """Resolve the composition these factory tests build their model from."""
+    schema = make_schema(
+        state_dim=9, action_dim=9, cameras=("front",),
+        image_sizes={"front": (224, 224)}, has_language=True,
+    )
+    return make_assembly(schema, model_name, recipe=merge_model_config(recipe))
 
 
 # ── Fakes: record the Pi0Config kwargs the factory passes upstream ──
@@ -51,14 +59,14 @@ class _FakePI0Pytorch(nn.Module):
 
 @pytest.fixture(autouse=True)
 def _fake_openpi():
-    original = getattr(pi0_mod._try_import_openpi, "_cached", None)
-    pi0_mod._try_import_openpi._cached = (
+    original = getattr(pi0_mod.try_import_openpi, "_cached", None)
+    pi0_mod.try_import_openpi._cached = (
         _FakePI0Pytorch,
         _FakePi0Config,
         types.SimpleNamespace,
     )
     yield
-    pi0_mod._try_import_openpi._cached = original
+    pi0_mod.try_import_openpi._cached = original
 
 
 def test_metadata():
@@ -77,15 +85,14 @@ def test_factory_builds_pi05_variant():
         """
 model:
   name: pi05
-  config:
-    camera_mapping:
-      base_0_rgb: front
-action_spec:
-  action_dim: 9
-  action_horizon: 50
+overrides:
+  camera_mapping:
+    base_0_rgb: front
 """
     )
-    wrapper = get_entry("pi05").factory(recipe=recipe, schema=None)
+    wrapper = get_entry("pi05").factory(
+        recipe=recipe, assembly=_assembly_for(recipe, "pi05"),
+    )
     config = wrapper.model.config
     assert config.kw["pi05"] is True, "factory must select the pi05 variant"
     assert config.kw["action_dim"] == 32
@@ -97,15 +104,14 @@ def test_pi0_factory_stays_on_pi0_variant():
         """
 model:
   name: pi0
-  config:
-    camera_mapping:
-      base_0_rgb: front
-action_spec:
-  action_dim: 9
-  action_horizon: 50
+overrides:
+  camera_mapping:
+    base_0_rgb: front
 """
     )
-    wrapper = get_entry("pi0").factory(recipe=recipe, schema=None)
+    wrapper = get_entry("pi0").factory(
+        recipe=recipe, assembly=_assembly_for(recipe, "pi0"),
+    )
     assert wrapper.model.config.kw.get("pi05", False) is False
 
 
@@ -199,9 +205,19 @@ def test_normalize_vector_quantile():
 
 
 def test_quantile_unnormalize_roundtrip():
+    from vla_factory.assembly.transform import TransformContext, TransformRegistry
+    from vla_factory.assembly.transform.base import PlanContext
+
     stats = _quantile_stats()
-    step = NormalizeVector(stats, fields=("actions",), method="quantile")
-    inverse = step.inverse_for_output()
+    args = {"fields": ["actions"], "method": "quantile", "stats_ref": "norm_stats"}
+    step = NormalizeVector.from_call(args, TransformContext(norm_stats=stats))
+    # The pairing the resolver plans, built the way deployment builds it.
+    name, inverse_args = NormalizeVector.inverse_call(
+        args, PlanContext(has_action_stats=True),
+    )
+    inverse = TransformRegistry.get(name).from_call(
+        inverse_args, TransformContext(norm_stats=stats),
+    )
     assert isinstance(inverse, UnnormalizeActionQuantileStep)
     actions = np.array([[0.3, -1.7], [0.9, 1.4]], dtype=np.float32)
     normalized = step({"actions": actions.copy()})["actions"]
@@ -221,7 +237,3 @@ def test_zscore_default_unchanged():
     step = NormalizeVector(stats, fields=("state",), method="zscore")
     out = step({"state": np.array([3.0], dtype=np.float32)})
     np.testing.assert_allclose(out["state"], [1.0], atol=1e-5)
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))

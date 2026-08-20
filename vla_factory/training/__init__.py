@@ -1,12 +1,26 @@
-"""VLA Factory training engine.
+"""Public entry point for VLA Factory supervised training."""
 
-Exports:
-    VLATrainer     — transformers.Trainer subclass for VLA models
-    train          — high-level training orchestration function
-    apply_strategy — parameter freezing based on recipe strategy
-"""
+from pathlib import Path
+from typing import Any
 
-from vla_factory.training.pytorch_trainer import VLATrainer
-from vla_factory.training.strategies import apply_strategy
+from vla_factory.user_interface import TrainRecipe
 
-__all__ = ["VLATrainer", "apply_strategy"]
+
+def train(
+    config: str | Path | TrainRecipe,
+    *,
+    override_steps: int | None = None,
+    override_batch_size: int | None = None,
+    override_output_dir: str | None = None,
+) -> dict[str, Any]:
+    """Run training without importing the heavy Trainer stack eagerly."""
+    from vla_factory.training.train import train as run_training
+
+    return run_training(
+        config,
+        override_steps=override_steps,
+        override_batch_size=override_batch_size,
+        override_output_dir=override_output_dir,
+    )
+
+__all__ = ["train"]

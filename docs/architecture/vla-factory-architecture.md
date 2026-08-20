@@ -49,7 +49,7 @@ The core positioning of the framework is not to reimplement various VLA or imita
 - [0. Overview](#0-overview)
 - [1. Design Principles](#1-design-principles)
 - [2. Global Architecture](#2-global-architecture)
-- [3. User Expression Layer](#3-user-expression-layer)
+- [3. User Interface](#3-user-interface)
 - [4. Core Module Design](#4-core-module-design)
 - [5. Dependency Management Strategy](#5-dependency-management-strategy)
 - [6. Testing Strategy](#6-testing-strategy)
@@ -63,9 +63,9 @@ The core positioning of the framework is not to reimplement various VLA or imita
 
 A training run should be fully described by a recipe. Model selection, data paths, robot selection, sampling windows, action space, fine-tuning strategy, training steps, and output directory all come from configuration, not from scattered scripts.
 
-The recipe is the user's highest-priority configuration entry point. The top-level fields of the recipe express experiment intent (model/data/robot selection, fine-tuning strategy, training parameters, output); the model's own capabilities and defaults are carried by the model declaration (ModelMetadata) and are not in the recipe; adjustments to the relationships among data/model/robot go in the `composition` block. This keeps experiment configuration auditable: the user can see every intentional override in one file, rather than tracing behavior through scripts and implicit defaults.
+The recipe is the user's highest-priority configuration entry point. The top-level fields of the recipe express experiment intent (model/data/robot selection, fine-tuning strategy, training parameters, output); the model's own capabilities and defaults are carried by the model declaration (ModelMetadata) and are not in the recipe; adjustments to the relationships among data/model/robot go in the `overrides` block. This keeps experiment configuration auditable: the user can see every intentional override in one file, rather than tracing behavior through scripts and implicit defaults.
 
-Model-related defaults (default preprocessing, image size, camera slot layout, inference steps, etc.) are published with the model declaration YAML and cannot be modified in the recipe; the recipe only carries the user's composition selection, composition adjustments, and training parameters.
+Model-related **facts** (preprocessing semantics, image value range, camera slot layout, dimension policy, ...) are published with the model declaration `ModelMetadata` and cannot be modified in the recipe; the model's **tunable hyperparameters** (depth, inference steps, compile mode, ...) ship their defaults in the same declaration but may be overridden per-run in the recipe's `model.config`. The recipe carries the user's composition selection, composition adjustments, model hyperparameter overrides, and training parameters.
 
 The CLI may provide a few temporary overrides such as `--steps`, `--batch-size`, `--output-dir` for smoke tests or debugging, but the recipe remains the primary contract.
 
@@ -124,9 +124,9 @@ Composition resolution must satisfy:
 
 Four layers, top to bottom. The diagram shows only the ecosystem each layer plugs into, not internal implementations:
 
-- **User Expression Layer**: `vlafactory-cli | YAML recipe | API | ……`, the framework entry point; the recipe describes the data, model, robot, and fine-tuning config of a run.
+- **User Interface**: currently hosts the YAML Recipe and CLI, with WebUI and Agent entry points available as future peers. Each entry point organizes framework capabilities instead of duplicating training, inference, or composition logic.
 - **Finetuning Layer / Inference Layer**: two peer execution engines. The finetuning layer plugs in fine-tuning strategies such as LoRA / PiSSA / GaLore; the inference layer connects to simulation and evaluation environments such as RoboTwin / LIBERO / ManiSkill.
-- **Composition Resolution Layer**: built on top of the three unified descriptions, it further composes data, VLA model, and robot into an **embodiment composition** (producing `ResolvedComposition` on success or `ResolutionError` on failure) shared by the finetuning and inference layers. This layer does not plug into any external ecosystem.
+- **Composition Resolution Layer**: built on top of the three unified descriptions, it further composes data, VLA model, and robot into an **embodiment composition** (producing `ResolvedAssembly` on success or `ResolutionError` on failure) shared by the finetuning and inference layers. This layer does not plug into any external ecosystem.
 - **Data / VLA Model / Robot**: three dimensions, each with a unified description — a unified data description (`DataSchema`), a unified model description (`ModelMetadata`), and a unified robot description (`RobotProfile`); together they are the framework's "three unifications". Each dimension integrates a concrete ecosystem: LeRobot / RLDS / HDF5 on the data side, GR00T / OpenPI / OpenVLA on the model side, and SO101 / Lekiwi / Franka on the robot side.
 
 Dependencies: the recipe drives the two execution engines; the descriptions of the three dimensions flow into the composition resolution layer; the embodiment composition is then handed to the finetuning and inference layers. The finetuning and inference layers only consume the embodiment composition and no longer derive the relationships among the three dimensions on their own.
@@ -139,24 +139,33 @@ The current core code lives under `vla_factory/`. This structure describes only 
 vla_factory/
 ├── examples/        # recipe examples and minimal runnable samples
 ├── docs/            # architecture, usage notes, and design records
-├── recipe/          # user expression layer: recipe parsing, CLI/API entry, runtime config
-│   └── ...
+├── user_interface/        # user-facing entry points: shared Recipe contract and CLI
+│   ├── recipe.py    # TrainRecipe, strict parsing, model-tunable merge
+│   └── cli.py       # current CLI; WebUI / Agent may be added alongside it
 ├── data/            # data reader and intermediate representation
-│   ├── formats/     # FormatReader interface and per-format implementations (LeRobot / HDF5 / RLDS / Zarr)
-│   └── ...          # DataSchema / Episode / Frame / NormStats IR (read-only, no sample construction)
-├── composition/     # composition resolution of dataset × robot × VLA model
-│   ├── resolver/    # embodiment composition resolver (Resolver / ResolvedComposition)
-│   ├── transforms/  # TransformStep / TransformPipeline / TransformRegistry and step implementations
+│   ├── data_schema.py # unified data-layer representation and describe_dataset entry
+│   ├── reader/      # FormatReader, ReaderRegistry, and format implementations
+│   └── codec/       # VideoCodec, CodecRegistry, and decoder implementations
+├── assembly/        # composition resolution of dataset × robot × VLA model
+│   ├── resolve_assembly.py # public orchestration, ResolvedAssembly, persistence
+│   ├── resolve/     # pure resolve_from_facts and resolution rules
+│   ├── transform/   # TransformStep / TransformPipeline / TransformRegistry and step implementations
 │   └── ...
 ├── model/           # model abstraction and upstream adapters
-│   ├── interfaces/  # VLAModel interface (compute_loss / predict_actions) and the Observation canonical type
-│   ├── registry/    # model registry (@register_vla)
-│   └── ...          # ModelMetadata / BaseContract and per-upstream model adapters
+│   ├── model_interface.py # ModelMetadata, Observation, and the VLAModel interface
+│   ├── registry.py  # ModelRegistry, @register_vla, and external plugin discovery
+│   ├── adapters/    # thin bindings for ACT / PI0 / PI05 and other upstream models
+│   └── checkpoint_validation.py # optional consistency check for redundant checkpoint facts
 ├── robot/           # robot embodiment description (RobotProfile) registration and validation
 ├── training/        # training orchestration: Observation sample construction, dataloader, Trainer, fine-tuning strategies
 │   ├── strategies/
 │   └── ...
 ├── inference/       # inference engine, platform adapters, transports, and action execution strategies
+│   ├── inference_engine.py # checkpoint-to-ActionChunk inference core
+│   ├── execution.py # action-chunk execution policies and PolicyExecutor
+│   ├── checkpoint.py # inference metadata and model-weight loading
+│   ├── evaluate_dataset.py # single-sample inference and dataset evaluation
+│   ├── deploy.py    # public deployment orchestration entry point
 │   ├── connectors/  # lightweight connectors imported by remote robot environments and their bootstrap configs
 │   ├── platforms/   # adaptation between native platform observation/action and the unified inference interface
 │   ├── transports/  # wire protocols and serialization such as ZMQ and length-prefixed JSON RPC
@@ -166,15 +175,15 @@ vla_factory/
 └── test/            # unit tests, contract tests, and integration smoke tests
 ```
 
-**Dependency direction (top-down, no back-edges):** `data/`, `model/`, `robot/` are leaf layers — `data/` only produces IR such as `DataSchema` / `Episode` / `Frame` / `NormStats`; `model/` holds the VLAModel interface, `Observation`, and `ModelMetadata` / `BaseContract`; none of them depend upward. `composition/` reads the three descriptions and produces the embodiment composition; `training/` and `inference/` consume the embodiment composition and each assemble `Observation` samples from IR / platform observations via a TransformPipeline (`data/` does not construct samples). `Observation` lives in `model/interfaces/` and is depended on by `composition/`, `training/`, and `inference/`, while `model/` does not depend back on any of them — the graph is acyclic.
+**Dependency direction (top-down, no back-edges):** `data/`, `model/`, `robot/` are leaf layers — `data/` only produces IR such as `DataSchema` / `Episode` / `Frame` / `NormStats`; `model/` holds the VLAModel interface, `Observation`, and `ModelMetadata`; none of them depend upward. `assembly/` reads the three descriptions and produces the embodiment composition; `training/` and `inference/` consume the embodiment composition and each assemble `Observation` samples from IR / platform observations via a TransformPipeline (`data/` does not construct samples). `Observation` lives in `model/model_interface.py` and is depended on by `assembly/`, `training/`, and `inference/`, while the model interface does not depend back on any of them — the graph is acyclic.
 
 ---
 
-## 3. User Expression Layer
+## 3. User Interface
 
-The user expression layer turns a human-readable YAML recipe into structured objects that both training and inference can consume. It serves two kinds of needs: ordinary users can launch an experiment with only a few key fields, while advanced users can override finer-grained training parameters in the recipe.
+The user interface is the framework's user-expression layer. Its current entry points are YAML Recipe and CLI; WebUI and Agent user interfaces may be added alongside them later. Recipe is the structured input contract these user interfaces can share, not the name of the whole layer. Every user interface translates user intent into calls to the public assembly, training, and inference capabilities.
 
-The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides. Detailed design: [User Expression Layer Module Design](../modules/recipe-module.cn.md) (TODO).
+The recipe written by the user is the single source of truth for configuration. Model defaults are published with the model declaration (ModelMetadata) and cannot be modified in the recipe; the CLI provides a few temporary overrides.
 
 ### 3.1 The Three Zones of a Recipe
 
@@ -193,24 +202,29 @@ robot:
   name: aloha_vx300s_bimanual   # robot embodiment declaration
 ```
 
+The model may also be written as `model: act`. When the scalar contains `/`,
+the full string is the checkpoint path and its last segment is the default
+model name: `model: lerobot/pi0` is equivalent to
+`model: {name: pi0, path: lerobot/pi0}`. Use the explicit mapping for exceptions.
+
 **② Composition Adjustment Zone (optional)** — by default, the relationships among the three are derived automatically by the composition resolution layer (Section 4.2) from their descriptions; this zone is filled only when the resolver cannot decide uniquely or the user wants a non-default policy (Section 4.2 calls this a "controlled override"):
 
 ```yaml
-composition:                    # optional, empty by default
+overrides:                   # optional, empty by default
   camera_mapping:               # model visual slot -> data/robot camera (specified on ambiguity)
     base_0_rgb: front
     left_wrist_0_rgb: wrist
-  accept_fps_mismatch: true     # explicitly accept frequency mismatch
-  gripper_flip: true            # accept gripper convention flip
   default_task: "pick up the block"  # language fallback (used when data/deploy has no task)
 ```
+
+This zone holds only overrides the resolver actually consumes. An adjustment nothing reads is a field a user can set and watch do nothing, so the frequency (`accept_fps_mismatch`) and gripper (`gripper_flip`) knobs are deferred together with their compatibility checks rather than reserved as inert fields.
 
 **③ Training Parameter Zone** — describes "how to train" and is completely independent of the relationships among data, model, and robot:
 
 ```yaml
 finetuning:
   strategy: lora                # full | lora | freeze | selective
-  lora:
+  config:                       # strictly parsed by the selected strategy
     r: 16
     target_components: [llm]    # references keys of ModelMetadata.components
 training:
@@ -227,22 +241,19 @@ The relationships among the three — which camera goes into which model visual 
 
 ### 3.2 Field Overview
 
-The table below summarizes the main recipe fields by zone (full fields, defaults, and allowed values are in `examples/reference.yaml` and `vla_factory/config/recipe.py`):
+The table below summarizes the main recipe fields by zone (full fields, defaults, and allowed values are in `examples/reference.yaml` and `vla_factory/user_interface/recipe.py`):
 
 | Zone | Block | Main fields | Notes |
 |---|---|---|---|
 | Composition selection | `model` | `name`, `path` | Model selection; `path` is required for fine-tuning, optional for from-scratch |
-| Composition selection | `data.source` | `path`, `format`, `video_codec` | Dataset path and format; `format: auto` auto-detects |
+| Composition selection | `data` | `path`, `format`, `video_codec` | Dataset path and format; `format: auto` auto-detects |
 | Composition selection | `robot` | `name` | Robot embodiment declaration |
-| Composition adjustment (optional) | `composition` | `camera_mapping`, `state_mapping`, `action_mapping`, `joint_mapping`, `language_mapping`/`default_task`, `accept_fps_mismatch`, `gripper_flip` | Explicitly specify the three-way relationship when the resolver cannot decide uniquely; cannot rewrite objective facts (shape, checkpoint slots, joint topology, fixed dim caps) |
-| Training params | `data.sampler` | `type`, `n_obs_steps`, `action_horizon` | Window strategy for slicing episodes into training samples |
-| Training params | `data.split` | `strategy`, `train_ratio`, `seed` | Train/val split |
-| Training params | `finetuning` | `strategy`, `lora`, `freeze_components`, `trainable_components` | Fine-tuning strategy and component selection |
-| Training params | `training` | `lr`, `lr_backbone`, `batch_size`, `total_steps`, `gradient_checkpointing`, `inference_steps`, `num_workers`, `augmentation` | Optimizer, scheduling, memory, and data loading |
+| Composition adjustment (optional) | `overrides` | `camera_mapping`, `default_task` | Explicitly specify the three-way relationship when the resolver cannot decide uniquely; cannot rewrite objective facts (shape, checkpoint slots, joint topology, fixed dim caps). Only overrides with a consumer are kept; the rest are deferred with their checks |
+| Training params | `finetuning` | `strategy`, `config` | Registered fine-tuning strategy and its strictly validated configuration |
+| Training params | `training` | `lr`, `lr_backbone`, `batch_size`, `total_steps`, `gradient_checkpointing`, `num_workers` | Optimizer, scheduling, memory, and data loading |
 | Training params | `output` | `output_dir`, `report_to`, `logging_steps`, `save_steps`, `save_total_limit`, `overwrite_output_dir` | Checkpoint, logging, and final weights |
-| Extension | `transforms.imports` | custom transform module paths | Register user-defined transforms |
 
-`TrainRecipe` and its sub-dataclasses (`DataConfig`, `SamplerConfig`, `SplitConfig`, `LoraConfig`, `OutputConfig`, `AugmentationConfig`, etc.) in `vla_factory/config/recipe.py` are the structural definitions of these fields; `parser.py` constructs them from YAML. Users do not need to fill every field — only the ones whose defaults they want to override.
+`TrainRecipe` and its sub-dataclasses in `vla_factory/user_interface/recipe.py` define the public YAML shape. `finetuning.config` remains a mapping until the selected `FinetuningStrategy` parses it into that strategy's strict config dataclass, so adding a strategy does not keep expanding `TrainRecipe`.
 
 ### 3.3 Configuration Sources and Priority
 
@@ -266,9 +277,9 @@ Once the recipe is written, the composition resolution layer (Section 4.2) deriv
 |---|---|
 | Data attributes and semantics | FormatReader inspects the actual data and produces DataSchema |
 | Model static capability | ModelMetadata |
-| Model instance facts | BaseContract, preferred within ModelMetadata's capability envelope |
+| Checkpoint instance | Selected by recipe `model.path`; optionally checked against ModelMetadata, never an interface-fact source |
 | Robot facts | RobotProfile / URDF |
-| Three-way relationship | Generated by the resolver; explicitly specified in the recipe's `composition` block when ambiguous |
+| Three-way relationship | Generated by the resolver; explicitly specified in the recipe's `overrides` block when ambiguous |
 
 The embodiment composition (Section 4.2) must record the source of every final field. Ordinary users do not need to read the DataSchema or RobotProfile field reference first — the first-use flow is:
 
@@ -279,7 +290,28 @@ fill in the three selections
        └─ failure: show only the relevant fields, candidates, and a minimal override example
 ```
 
-Only when debugging do `inspect` and `resolve --explain` reveal the framework-derived internal facts; error messages follow the principle of progressive disclosure: for example, on a camera-mapping ambiguity they show only the target slot, candidate cameras, and the corresponding override snippet, not the full declarations. The CLI provides four capabilities: resolve and preview a three-way composition; explain Mapping / Transform / provenance by topic; inspect actual data, model instances, and robot declarations; and emit the embodiment composition to downstream or debugging tools. These commands must run without optional model heavy-dependencies installed, without a GPU initialized, and without a robot platform connected.
+Only when debugging does `inspect` (Section 3.5) reveal the framework-derived internal facts; error messages follow the principle of progressive disclosure: for example, on a camera-mapping ambiguity they show only the target slot, candidate cameras, and the corresponding override snippet, not the full declarations. The CLI provides `resolve` to resolve and preview a three-way composition, and `inspect` to check actual data, model declarations, and robot declarations. These commands must run without optional model heavy-dependencies installed, without a GPU initialized, and without a robot platform connected.
+
+### 3.5 Dimension Inspection: inspect
+
+`inspect` is the concrete form of the checking capability described in the previous section: it outputs the descriptions of the three dimensions — dataset, model, robot — in structured form, so users can see "what the three things look like in the framework's eyes" before composition resolution. CLI forms:
+
+```bash
+vlafactory-cli inspect data  --path <dataset> [--stats]
+vlafactory-cli inspect model --name <model> [--path <checkpoint>]
+vlafactory-cli inspect robot --name <robot>
+vlafactory-cli inspect --config <recipe.yaml>   # all three at once, per the recipe
+```
+
+The three dimensions share one output envelope: `{dimension, source, facts}` — human-readable YAML by default, `--json` for tool consumption; key order is deterministic and diffable. Every fact inside `facts` is labeled with its source (`measured` / `inferred` / `undeclared`); for example, `inspect model --path` always reports interface facts from ModelMetadata and lists the checkpoint check result separately as `compatible` / `incompatible` / `unavailable`, never producing a merged view. `inspect --config` emits the three envelopes as one top-level document (a JSON array / YAML list), so `--json` output can be consumed whole by `json.load` / `jq`; a dimension that cannot be read is noted on stderr and skipped.
+
+inspect follows three disciplines:
+
+- **No semantic guessing** — facts that cannot be probed, and cannot be uniquely inferred under the controlled vocabulary, are output as null (`semantic: null (undeclared)`); exposing the gap is preferred over similarity guessing. The gap is exactly what makes the resolver fail conservatively and demand a controlled override.
+- **No heavy-dependency activation** — `inspect model` only reads the registry's ModelMetadata and the checkpoint's `config.json` for the optional consistency check, and never calls the model factory; every subcommand runs without GPU, without optional extras, and without a robot connection.
+- **No cross-dimension reference resolution** — a data-side `robot_ref` (e.g. lerobot `robot_type`) is output as a plain string; whether it corresponds to a registered RobotProfile is validated by the composition resolution layer.
+
+`--stats` is an explicit cost switch: statistics default to a summary. The data dimension's output strictly follows the `DataSchema` fields and the deterministic inference rules in `data/semantics.py`.
 
 ---
 
@@ -300,7 +332,7 @@ robot ────┘
 ```
 
 - **Dataset**: the actual content of the training data — which cameras, which state/action fields, what dimensions, what ordering, what fps, what action statistics. It varies with the actual data content.
-- **VLA model**: what inputs the model needs — how many visual slots, what image size, whether state/action dimensions are fixed or padded, how long the action horizon is, what normalization is required. Model-family capability is described by the registry; instance facts of a specific checkpoint are supplemented by its own metadata.
+- **VLA model**: what inputs the model needs — how many visual slots, what image size, whether state/action dimensions are fixed or padded, how long the action horizon is, what normalization is required. The complete interface is described by registry ModelMetadata; checkpoints within one family only change the weight source, not the interface.
 - **Robot**: what the robot is physically — how many DoF, what the joints are named, how they are ordered, which control modes are supported, what values represent gripper open/close, where the joint limits are, what the recommended control frequency is. It evolves with robot model and embodiment variant.
 
 Each of the three dimensions has a "description", and the resolver only consumes these descriptions — it does not read raw data, create models, or connect to robot platforms.
@@ -320,15 +352,24 @@ Each of the three dimensions has a "description", and the resolver only consumes
 
 `NormStats` is the normalization statistics bound to the actual data content (mean/std, min/max, or quantiles). Together with DataSchema it is read by the reader or computed by the framework, but kept as an independent structure.
 
-The data module parses external datasets into VLA Factory's Canonical IR (`DataSchema` / `Episode` / `Frame` / `NormStats`); video decoding is used as a replaceable capability during reading. It also saves and reuses schema, norm stats, and recipe for the inference side, so that training and inference share the same data standard. **Sample construction** (assembling IR into `Observation` via a transform pipeline) and batching are not in the data layer — they are done in the finetuning layer (4.3). Detailed design: [Data Module Design](../modules/data-module.md), which covers the responsibility boundary between the external-data parsing layer and the data IR layer, the core objects `FormatReader` / `Episode` / `Frame` / `VideoRef` / `DatasetManifest`, and how to add new data formats, video-decoding strategies, and transform steps.
+The data module parses external datasets into VLA Factory's Canonical IR (`DataSchema` / `Episode` / `Frame` / `NormStats`); video decoding is a replaceable capability used while reading. The training layer persists the resolved schema, norm stats, IO spec, and pipeline plans as part of `ResolvedAssembly` in `inference_metadata/assembly.json`, and deployment reads only that training-time snapshot. **Sample construction** (assembling IR into `Observation` via a transform pipeline) and batching are not in the data layer — they are done in the finetuning layer (4.3).
 
-#### 4.1.2 VLA Model: ModelMetadata and BaseContract
+The data dimension's description **comes entirely from actually reading the dataset**: the Reader probes objective facts (dimensions, resolution, fps, episode boundaries, per-dim names, `robot_type`) and makes deterministic inferences about semantics under a controlled vocabulary (e.g. a camera key uniquely matching `wrist_left`), labeling each fact with its source (measured / inferred / undeclared). Semantics that cannot be probed do not enter the data description, and no dataset-side declaration file is introduced — the gaps are filled on demand by the recipe's controlled overrides (§3.1 zone ②) during composition resolution, or are left to framework-level conventions.
 
-The model-dimension description (interface capability, default preprocessing, camera slot layout, input size, inference steps, etc.) lives in the **model's own declaration YAML**, is published with the model, and is reflected here as the Model dimension's facts; it is not in the recipe and cannot be modified per-run. If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `composition` block (see Chapter 3) rather than editing the model declaration. Detailed design: [Model Abstraction Module Design](../modules/model-module.cn.md) (TODO).
+#### 4.1.2 VLA Model: ModelMetadata
+
+The model-dimension description lives in **one declaration published with the model**, `ModelMetadata` (one adapter declaration file per model family). It has two halves, and **the container is the attribute**:
+
+- **Named fields = facts** — interface capability, camera slot layout, input size and image value range, dimension policy, normalization method: everything the composition resolver reads. They are not in the recipe and cannot be modified per-run; changing one would make the embodiment composition disagree with the model that actually runs.
+- **`params` = tunables** — only that model's upstream hyperparameters (depth, width, dropout, inference steps, compile mode, ...), each with a default value that the recipe's `model.config` may override. Transform operations are derived from named facts and are not recipe fields.
+
+A model author therefore classifies nothing: framework-level facts have named fields and types, everything else goes in `params`. The `params` key set doubles as the basis for two checks — a `model.config` key the model never declared is an error (with the closest candidates suggested), and a declared key nothing consumes is an error at model construction, which is what keeps "I changed it and nothing happened" from being possible.
+
+If an experiment needs to adjust the relationships among data/model/robot (e.g. camera mapping, language fallback), express it in the recipe's `overrides` block (see Chapter 3) rather than editing the model declaration.
 
 ##### ModelMetadata
 
-`ModelMetadata` is the static capability description of a model, reusing and extending existing model metadata to describe the relatively stable interface capabilities and constraints of a model family. It carries two categories of information at once: the interface facts needed for composition resolution, and the model's own capabilities such as backend, trainable components, and fine-tuning abilities (the resolver reads only the former for composition resolution; the latter is kept in the embodiment composition for the training module to access). Specific fields include: model name, backend type, action dim / horizon, action head type, architecture type, training paradigm, trainable-component map, whether prompt is required, image size, supported fine-tuning methods, default transform list, install hint. The key information categories composition resolution depends on:
+`ModelMetadata` is the static capability description of a model, reusing and extending existing model metadata to describe the relatively stable interface capabilities and constraints of a model family. It carries two categories of information at once: the interface facts needed for composition resolution, and the model's own capabilities such as backend, trainable components, and fine-tuning abilities (the resolver reads only the former for composition resolution; the latter is kept in the embodiment composition for the training module to access). Specific fields include: model name, backend type, action dim / horizon, action head type, architecture type, training paradigm, trainable-component map, whether prompt is required, image size/range/layout/resize policy, tokenizer requirements, supported fine-tuning methods, and install hint. The key information categories composition resolution depends on:
 
 - visual slots, names, and input shapes;
 - state/action dimension policy: fixed, flexible, padded;
@@ -341,15 +382,15 @@ The model-dimension description (interface capability, default preprocessing, ca
 
 The number of model slots does not equal the number of real cameras that must exist. A fixed model slot only means a corresponding key/tensor must be preserved on the model's call boundary. The current design introduces no extra type for missing cameras: any model slot without a real-camera mapping is uniformly padded, with the model input adapter generating the placeholder image and invalid mask the model needs. For example, if the robot or data has only 2 real cameras while the model has 3 fixed slots, the resolver still produces 3 model input slots and plans padding for the third — a mere count mismatch is not deemed incompatible.
 
-##### BaseContract
+##### Optional checkpoint consistency check
 
-`BaseContract` describes the input slots, dimensions, temporal info, image specs, and normalization facts that a specific model instance or checkpoint can self-report; it is read by the checkpoint-metadata reader. Merge rules:
-
-- Facts reliably self-reported by the checkpoint or model instance take precedence;
-- BaseContract cannot declare anything beyond ModelMetadata's capability envelope;
-- ModelMetadata provides semantics that instance metadata cannot express;
-- On conflict, fail;
-- Each merged fact records its source.
+A checkpoint `config.json` may repeat input-slot, dimension, and image-shape
+information. Before loading weights, the framework may compare those values
+with ModelMetadata: an unreadable config skips the optional check, while a
+contradiction fails clearly. This is a diagnostic gate, not a second contract;
+it cannot override ModelMetadata or alter resolver, ModelIOSpec, Mapping, or
+PipelinePlan output. Local directories, weight files, and external repositories
+can therefore provide interchangeable checkpoints for one model family.
 
 ##### VLAModel Protocol
 
@@ -368,15 +409,15 @@ Models are registered via a decorator:
 
 ```python
 @register_vla(ModelMetadata(name="act", ...))
-def load_act(recipe, schema):
+def load_act(recipe, assembly):
     ...
 ```
 
-`get_entry(name)` lazily imports `model/registry/entries/*` on first access, triggering each entry's registration. The registry loader treats an entry-import failure as a real error, so that syntax errors or missing hard dependencies are not disguised as "model not registered". A missing optional dependency should produce a clear error at factory call time. For example, the ACT entry can be registered and listed, but when actually creating an ACT model, if lerobot is not installed, the user should be prompted to install the `[act]` extra.
+`get_entry(name)` lazily imports `model/adapters/*` on first access, triggering built-in registration. External packages publish models through the `vla_factory.models` Python entry-point group. The registry loader treats an adapter or plugin import failure as a real error, so syntax errors and missing hard dependencies are not disguised as "model not registered". A missing optional dependency should produce a clear error at factory call time. For example, ACT can be registered and listed, but when actually creating it without lerobot installed, the user should be prompted to install the `[act]` extra.
 
 ##### Thin Adapter
 
-Each model entry should be a thin adapter. Taking ACT as an example:
+Each model adapter should remain thin. Taking ACT as an example:
 
 - The upstream `lerobot` holds ACTPolicy and the network structure.
 - VLA Factory's wrapper only converts `Observation` into the lerobot batch dict.
@@ -398,7 +439,7 @@ This boundary requires VLA Factory neither to copy upstream model code into the 
 - static safety bounds needed for composition resolution;
 - recommended control frequency.
 
-The three dimensions share strict schema and provenance recording but differ in lifecycle: the dataset varies with content, the model varies with model family and instance, and the robot varies with embodiment model. The framework only unifies their resolution interface and does not force them to use the same registration and dispatch mechanism. Detailed design: [Robot Module Design](../modules/robot-module.cn.md) (TODO).
+The three dimensions share strict schema and provenance recording but differ in lifecycle: the dataset varies with content, the model varies with model family and instance, and the robot varies with embodiment model. The framework only unifies their resolution interface and does not force them to use the same registration and dispatch mechanism.
 
 #### 4.1.4 How to Extend the Three Dimensions
 
@@ -406,7 +447,7 @@ External developers do not need to learn the full composition protocol; they onl
 
 **Adding a data format**: implement `FormatReader`; produce unified DataSchema, NormStats, and episode/frame from the actual data; validate strictly via DataSchema; add reader-contract and representative composition tests. Adding a new dataset of an existing format usually only requires providing a path, not registering a data instance. A reader must not, to fit some model, rename fields to model-specific names, do model-specific padding, reorder actions per a model's requirement, or inject model-specific normalization.
 
-**Adding a model**: add or extend a ModelMetadata registry entry; declare the model's observation, action, language, normalization, and temporal interface; wrap the upstream implementation with a thin ModelAdapter; support BaseContract extraction as needed; add metadata-contract and representative composition tests. A ModelAdapter must not select cameras by dataset name, adjust output semantics by robot name, guess field correspondences by sorting, or re-execute the resolver's compatibility checks.
+**Adding a model**: add or extend a ModelMetadata registry entry; declare the model's observation, action, language, normalization, and temporal interface; wrap the upstream implementation with a thin ModelAdapter; add optional checkpoint-config validation as needed; add metadata-contract and representative composition tests. A ModelAdapter must not select cameras by dataset name, adjust output semantics by robot name, guess field correspondences by sorting, or re-execute the resolver's compatibility checks.
 
 **Adding a robot**: add a RobotProfile; reference URDF or other standard embodiment descriptions as needed; declare sensors, joints, control modes, gripper, coordinate frames, and static safety bounds; add profile-contract and representative composition tests. A RobotProfile should support importing determinable fields from URDF, vendor descriptions, or existing adapters; developers only supplement VLA semantics not present in the standard description. The robot's runtime platform, connectors, and transports are out of scope for this section.
 
@@ -414,11 +455,11 @@ External developers do not need to learn the full composition protocol; they onl
 
 ### 4.2 Composition Resolution Layer
 
-The composition resolution layer resolves the three dimensions into a unified embodiment composition and is the common upstream of the finetuning and inference layers; it is a deterministic, pure-logic layer and also the target architecture's direction of evolution. Detailed design: [Composition Resolution Module Design](../modules/composition-module.cn.md) (TODO).
+The composition resolution layer resolves the three dimensions into a unified embodiment composition and is the common upstream of the finetuning and inference layers; it is a deterministic, pure-logic layer and also the target architecture's direction of evolution.
 
-#### 4.2.1 Embodiment Composition (ResolvedComposition)
+#### 4.2.1 Embodiment Composition (ResolvedAssembly)
 
-**The "embodiment composition" is a core concept defined by this framework.** It is the **sole product** of successfully resolving "dataset × robot × VLA model", and corresponds to `ResolvedComposition` in code.
+**The "embodiment composition" is a core concept defined by this framework.** It is the **sole product** of successfully resolving "dataset × robot × VLA model", and corresponds to `ResolvedAssembly` in code.
 
 The reason for defining this concept explicitly is that both the training module and the inference module need to know "exactly which three things are being used this run and how they relate" — and this is precisely what is most error-prone and most often silently assumed by each side. The embodiment composition extracts this knowledge from training code and inference code and fixes it as a non-bypassable handoff object.
 
@@ -427,28 +468,29 @@ The reason for defining this concept explicitly is that both the training module
 The embodiment composition contains four categories of information, together answering "which descriptions are used, what the final interface is, how fields correspond, and which transforms must run":
 
 ```text
-embodiment composition ResolvedComposition
+embodiment composition ResolvedAssembly
 ├─ normalized references to the three descriptions
 │   ├─ dataset description (DataSchema + NormStats)
-│   ├─ VLA model description (ModelMetadata + BaseContract)
+│   ├─ VLA model description (ModelMetadata)
 │   └─ robot description (RobotProfile)
-├─ canonical interface shared by all three
+├─ model IO spec (ModelIOSpec)
 │   (the observation / action / language / temporal semantics ultimately used by this composition)
 ├─ field mappings
 │   ├─ CameraMapping  : cameras -> model visual slots
 │   ├─ StateMapping   : state fields -> model state vector
-│   ├─ ActionMapping  : dimension and semantic relations among data actions / model output / robot commands
-│   ├─ LanguageMapping: task-text field -> model prompt
-│   └─ JointMapping   : canonical joint order -> robot-native joint names
-└─ declarative descriptions of three Transform Pipelines (TransformPipelineSpec)
+│   ├─ ActionMapping  : data actions -> model action vector
+│   └─ LanguageMapping: task-text field -> model prompt
+└─ declarative descriptions of three Transform Pipelines (TransformPipelinePlan)
     ├─ data_to_model  : data sample -> model training interface
     ├─ robot_to_model : robot real-time observation -> model input
-    └─ model_to_robot : model action output -> robot canonical command
+    └─ model_to_robot : model action output -> DataSchema action
 ```
 
 - **Normalized references to the three descriptions**: downstream no longer needs to query each registry; all facts are in one object. From the downstream perspective they are part of the embodiment composition, not external inputs to be queried again.
-- **Canonical interface**: the final interface all three obey; it is the "fact standard" after composition, and every downstream module reads/writes observation/action against it.
-- **Field mappings**: only describe local field and semantic correspondences; they perform no tensor computation themselves.
+- **Model IO spec (`ModelIOSpec`)**: what the model actually takes in and gives out once the descriptions are reconciled — camera keys and per-camera sizes, state width and prompt requirement on the way in; action width and horizon on the way out. It is the fact standard after composition: downstream builds the model against it and reads/writes observation/action by it.
+  `cameras` holds the **canonical observation keys the framework uses (data-side names)**, not the model's own vision slots: on pi0 the data side is `front`/`wrist`, the model side is three openpi roles, and `CameraMapping` connects them. `ModelIOSpec` is resolved before pipeline planning from model facts and flexible/native data facts: pi0 camera sizes come from `VisionSlot.resolution`; ACT may select an explicit `model.config.input_image_size`, otherwise it keeps `DataSchema`'s native size. The transform plan consumes this target interface to generate resize/pad calls; step arguments and shape hooks never define the interface in reverse.
+  `action_dim` is the **model's output width** (32 for pi0). The inference engine exposes this as `model_output_dim` and separately exposes `execution_action_dim`, the DataSchema action width after `model_to_robot` (8 for pi0).
+- **Field mappings**: describe only real field and semantic correspondences; they perform no tensor computation. In particular, `StateMapping` / `ActionMapping` do not manufacture source-less entries for padding. The model target width lives in `ModelIOSpec`; padding count is the target width minus the number of real mapped dimensions, and execution lives in the PipelinePlan.
 - **Transform Pipeline declarations**: declarative descriptions telling downstream "which transforms to run, in order, along this path", but containing no instantiated executable objects.
 
 ##### What the embodiment composition does not contain
@@ -478,7 +520,7 @@ They must not bypass the embodiment composition to independently query the data,
 
 #### 4.2.2 Resolver
 
-The resolver is the entry point for three-way composition resolution; its public entry is `resolve_composition()`. It is a **deterministic, pure-logic component**:
+The resolver is the entry point for three-way composition resolution; its public entry is `resolve_assembly()`. It is a **deterministic, pure-logic component**:
 
 - it creates no models;
 - it builds no DataLoader;
@@ -494,7 +536,6 @@ The resolver is the entry point for three-way composition resolution; its public
 - DataSchema generated by the data reader for the actual data;
 - NormStats;
 - ModelMetadata already in the model registry;
-- an optional BaseContract;
 - RobotProfile;
 - controlled overrides (explicit user specifications for ambiguous cases);
 - resolution rules and the existing TransformRegistry.
@@ -506,14 +547,13 @@ Training hyperparameters and deployment session config **do not** enter the reso
 A single composition resolution executes in these phases:
 
 ```text
-1. Load            load DataSchema, NormStats, ModelMetadata, BaseContract, RobotProfile
-2. Materialize     merge ModelMetadata with BaseContract, normalize controlled vocabularies of the three
-3. Validate        validate the internal structure and provenance of each
-4. Check Pairs     check dataset×model, model×robot, dataset×robot pairwise relations
-5. Build Interface determine the post-composition observation, action, language, and temporal semantics
-6. Resolve Mapping generate Camera, State, Action, Language, Joint mappings
-7. Plan Pipeline   generate declarative TransformPipelineSpec, marking order, risk, and reversibility
-8. Emit            on success emit the embodiment composition; on failure raise a structured ResolutionError
+1. Load            load DataSchema, NormStats, ModelMetadata, RobotProfile
+2. Validate        validate the internal structure and provenance of each
+3. Check Pairs     check compatibility facts that share an explicit vocabulary
+4. Resolve Mappings generate Camera, State, Action, and Language DataSchema-to-model correspondences
+5. Build IO Spec   resolve the model interface directly from model tunables/facts, DataSchema, and CameraMapping
+6. Plan Pipeline   generate TransformPipelinePlan calls toward that ModelIOSpec
+7. Emit            on success emit the embodiment composition; on failure raise a structured ResolutionError
 ```
 
 The resolver must not create models, DataLoaders, training output directories, or deployment connections before completing all validations.
@@ -525,20 +565,14 @@ Compatibility checks cover:
 | Check | Comparison | On mismatch |
 |---|---|---|
 | State dim | data vs model | flexible/padded convertible; fixed errors |
-| Action dim | data vs model vs robot | plan a transform if paddable; otherwise error |
-| Camera slots | data/robot cameras vs model slots | unique match → Mapping; unmapped slots padded; ambiguity errors |
-| Language input | data language vs model requirement | controlled default → warning; otherwise error |
-| Control mode | data/model/robot | handled by transform tier |
-| Gripper convention | data/model/robot | plan a transform when flip is determinable |
-| Rotation representation | data/model/robot | plan a transform when conditions are complete |
+| Action dim | data vs model | plan a transform if paddable; otherwise error |
+| Camera slots | DataSchema cameras vs model slots | unique match → Mapping; unmapped slots follow model policy; ambiguity errors |
+| Control mode | explicit controlled vocabulary from data/model/robot | error on an explicit conflict |
 | Normalization stats | data stats vs model method | pass if stats satisfy; otherwise error |
-| Frequency | data fps vs model/robot | warning by default; no implicit resampling |
-| Joint order | data keys vs robot joints | Mapping if uniquely reorderable; otherwise error |
-| Safety bounds | model output vs robot limits | record constraints; do not mask severe mismatches |
 
 Camera compatibility is checked per model slot, not by total camera count. When there is a unique real view, a Mapping is established; when there is no real view, an empty mapping is kept and padding is planned; failure happens only when multiple candidates exist and cannot be decided uniquely.
 
-The final success criterion is not the simple sum of the three pairwise checks, but that all three can form a consistent result under one canonical interface.
+RobotProfile camera/joint names are not compared with DataSchema names, and robot joint count is not treated as an action-width contract. Without an explicit binding, a name mismatch is absence of evidence, not incompatibility.
 
 ##### Transform tiers
 
@@ -573,22 +607,19 @@ When conditions are insufficient, only a structured "unsupported / extra conditi
 
 #### 4.2.3 Mapping
 
-Mapping only expresses stable semantic correspondences and performs no tensor operations. Taking cameras as an example, each relation centers on a model visual slot and describes both the training-time and runtime sources:
+Mapping only expresses stable DataSchema-to-model semantic correspondences and performs no tensor operations. Taking cameras as an example:
 
 ```text
-model visual slot
-├─ training source: a camera in DataSchema, or empty mapping
-└─ runtime source:  a camera in RobotProfile, or empty mapping
+model visual slot <- DataSchema camera, or an explicit empty mapping
 ```
 
-For example, the same model head visual slot may come from the top camera in the data at training time and from the robot head camera at runtime. An empty source does not make the model slot disappear; the resolver still keeps the slot and plans padding along the corresponding path, with the specific placeholder values and mask form implemented by the model input adapter.
+At runtime the platform adapter first converts native camera names to those same DataSchema keys, so a second robot-camera mapping is unnecessary. Explicitly unmapped model slots still receive the placeholder and mask implemented by the model adapter.
 
 Mappings must satisfy:
 
 - every model slot has an explicit source relation or empty mapping;
-- a non-empty source must be findable in the corresponding DataSchema or RobotProfile;
+- a non-empty source must be findable in DataSchema;
 - an empty mapping must plan camera-slot padding along the corresponding path;
-- one camera relation simultaneously describes both "data → model" and "robot → model";
 - automatic mapping uses only deterministic rules;
 - a controlled override directly produces the final Mapping;
 - semantics are never guessed from dictionary order or string sorting.
@@ -599,23 +630,23 @@ The framework reuses the existing Transform system rather than adding another tr
 
 | Object | Responsibility |
 |---|---|
-| `TransformStepSpec` | serializable single-step type and config |
-| `TransformPipelineSpec` | ordered list of TransformStepSpec produced by the resolver |
+| `TransformStepCall` | serializable single call: registered name + constructor arguments (`type` / `args`) |
+| `TransformPipelinePlan` | ordered list of TransformStepCall produced by the resolver (`calls`) |
 | `TransformRegistry` | resolves a step type to an implementation and maintains capability metadata |
 | `TransformStep` | instantiated, executable single-step transform |
 | `TransformPipeline` | ordered TransformSteps actually run by downstream |
 
-The embodiment composition stores only `TransformPipelineSpec` (declarative). Downstream uses `TransformRegistry` to instantiate an executable `TransformPipeline`. The embodiment composition must not write a `TransformPipeline` containing Python objects and runtime context directly into the resolution result.
+The embodiment composition stores only `TransformPipelinePlan` (declarative). Downstream uses `TransformRegistry` to instantiate an executable `TransformPipeline`. The embodiment composition must not write a `TransformPipeline` containing Python objects and runtime context directly into the resolution result.
 
 ##### Three semantic pipelines
 
-The embodiment composition describes three possibly-different semantic adaptation paths:
+The assembly exposes three semantic entries backed by only two actual plans:
 
 **data_to_model**: converts a data sample into the model training interface, including data cameras and state fields to model input slots, image dtype/layout/resize/normalization, state/action normalization, action padding, and task/language field mapping.
 
-**robot_to_model**: converts a **normalized semantic object** of the robot's real-time observation into a model input, including robot camera semantics to model visual slots, state-key and joint-order reordering, units/coordinate-representation/normalization, and the padding and input-format conversion the model needs. It does not handle ROS messages, HTTP JSON, shared memory, or vendor SDK objects — the inference module should first use a PlatformAdapter to convert the platform payload into a canonical robot observation before running this pipeline. Even if the training data comes from the same robot, `robot_to_model` cannot default to equaling `data_to_model`: data field names, collection encoding, and the runtime observation contract may differ.
+**robot_to_model**: the platform adapter first converts a native robot payload to the checkpoint DataSchema interface, then executes this semantic entry. Its calls and `resolved` value equal `data_to_model`; it contains no camera renaming or joint reordering.
 
-**model_to_robot**: converts the model's internal action output into the robot's canonical command semantics, including action unpadding, denormalization, joint/action key reordering, unit and action-representation conversion, and explicit, supported control-space conversion. It only produces canonical actions conforming to the RobotProfile and is not responsible for sending commands, executing safety stops, or choosing transports.
+**model_to_robot**: unpads and denormalizes model output back to the DataSchema action interface. The platform adapter turns that ordered vector into a platform command and sends it. Assembly currently performs no implicit cross-interface joint, unit, or control-space conversion.
 
 ##### Forward and inverse cannot rely on list reversal
 
@@ -627,11 +658,11 @@ Each transform implementation must explicitly state whether it is exactly invert
 - safety clamp is irreversible;
 - temporal resampling can be lossy.
 
-The resolver plans three explicit TransformPipelineSpecs. Downstream modules instantiate the appropriate pipeline per target path and must not simply reverse `data_to_model` and treat it as `robot_to_model` or `model_to_robot`.
+The resolver plans `data_to_model` and `model_to_robot`, then sets `robot_to_model = data_to_model`. `model_to_robot` must still be generated from each step's explicit inverse; it is not a reversed call list.
 
 ##### Rule provenance
 
-Resolution rules and TransformPipelineSpecs may depend only on explicit facts from the three dimensions. It is forbidden to trigger branches on hardcoded model names, dataset names, robot names, the current deployment platform, or implementation details of some Trainer. When a specific object does have a unique constraint, that constraint should be lifted into a declaration field of its dimension and consumed by a generic rule.
+Resolution rules and TransformPipelinePlans may depend only on explicit facts from the three dimensions. It is forbidden to trigger branches on hardcoded model names, dataset names, robot names, the current deployment platform, or implementation details of some Trainer. When a specific object does have a unique constraint, that constraint should be lifted into a declaration field of its dimension and consumed by a generic rule.
 
 #### 4.2.5 Failure Handling
 
@@ -649,29 +680,28 @@ The resolver may collect mutually-independent problems and raise a single `Resol
 
 #### 4.2.6 Boundary with the Training and Inference Modules
 
-The **training module** may read: DataSchema and NormStats kept in the embodiment composition, ModelMetadata with its backend/training components/fine-tuning abilities, the canonical model interface, the data × model Mapping, and the `data_to_model` TransformPipelineSpec. The training module is itself responsible for training mode, objective function, fine-tuning strategy, backend, Trainer, sampler, DataLoader, batch construction, optimizer, scheduler, distributed execution, and checkpoints/training artifacts. It must not re-derive camera mappings from model names, guess action semantics from array shapes, bypass the embodiment composition to query the registry independently, override joint orders already fixed by the resolver, or silently ignore composition errors.
+The **training module** may read: DataSchema and NormStats kept in the embodiment composition, ModelMetadata with its backend/training components/fine-tuning abilities, the model IO spec, the data × model Mapping, and the `data_to_model` TransformPipelinePlan. The training module is itself responsible for training mode, objective function, fine-tuning strategy, backend, Trainer, sampler, DataLoader, batch construction, optimizer, scheduler, distributed execution, and checkpoints/training artifacts. It must not re-derive camera mappings from model names, guess action semantics from array shapes, bypass the embodiment composition to query the registry independently, override joint orders already fixed by the resolver, or silently ignore composition errors.
 
-The **inference module** may read: RobotProfile and embodiment capability and static safety constraints kept in the embodiment composition, ModelMetadata and model runtime capability, the canonical model interface, the robot × model Mapping, and the `robot_to_model` and `model_to_robot` TransformPipelineSpecs. The inference module is itself responsible for platform adapters and connectors, transports, client/server topology, session config, platform wire format, action-chunk execution strategy, connection retry/timeout/lifecycle, and runtime safety execution. It must not bypass the embodiment composition to query the registry independently, nor use platform information to re-derive the three-way semantic relationships; it may parse platform runtime parameters as long as the composition facts remain unchanged.
+The **inference module** reads ModelIOSpec, the four data-to-model mappings, and the `robot_to_model` / `model_to_robot` plans. It owns platform adapters/connectors, transports, action-chunk execution, and runtime safety. A platform adapter must explicitly convert native observations/actions to and from the checkpoint DataSchema; inference must not guess a mapping from RobotProfile names.
 
 ### 4.3 Finetuning Layer
 
-The finetuning layer is implemented by the `training/` module; its entry point is `train()` in `vla_factory/training/train.py`. Detailed design: [Finetuning Layer Module Design](../modules/training-module.cn.md) (TODO). Training flow:
+The finetuning layer is implemented by the `training/` module; its entry point is `train()` in `vla_factory/training/train.py`. Training flow:
 
 ```text
 parse recipe
-    -> prepare output_dir
-    -> read schema / norm_stats
-    -> resolve state/action vector keys
-    -> save inference_metadata
+    -> resolve recipe + assembly
+    -> resolve strategy + strict config
+    -> prepare output_dir + save training contract
     -> create model from registry
-    -> apply fine-tuning strategy
-    -> create dataloaders
-    -> build TrainingArguments
+    -> strategy.prepare_model
+    -> create one all-episode training dataloader
     -> VLATrainer.train()
+    -> strategy.finalize_model / state_dict
     -> save final/model.pt
 ```
 
-As the composition-resolution capability of Section 4.2 lands, the training entry will first call `resolve_composition()` to obtain the embodiment composition, then read data description, model description, and Mappings from it — replacing the manual field parsing currently scattered across train().
+The entry calls `resolve_assembly()` first. Output directories, models, and DataLoaders are created only after composition succeeds. Training reads descriptions, mappings, IO spec, and pipeline plans from that product instead of re-deriving relationships.
 
 The finetuning layer assembles `Observation` samples from the Canonical IR (`Episode` / `Frame`) produced by the data layer, according to the `data_to_model` TransformPipeline obtained from the embodiment composition, then performs window sampling and batching and hands the result to `VLATrainer`.
 
@@ -685,6 +715,13 @@ The fine-tuning strategy decides which parameters are trainable. It should opera
 - `lora`: for models that support LoRA.
 
 ACT trained from scratch usually uses `full`; pretrained VLA models may use full, freeze, selective, or LoRA.
+
+Strategies register through `@register_strategy(name)` and strictly parse their
+own `finetuning.config`. `prepare_model()` owns freezing/wrapping, while
+`finalize_model()` and `state_dict()` own save-time convergence; neither the
+training entry nor checkpoint persistence branches on names such as `lora`.
+A method that changes loss, sampling, or the loop is not a strategy and belongs
+in a future Training Method layer.
 
 #### 4.3.2 VLATrainer
 
@@ -708,7 +745,7 @@ The Trainer ecosystem provides mixed precision, gradient accumulation, checkpoin
 
 #### 4.3.3 Checkpoint and Final Model
 
-Before training starts, `training/train.py` writes the metadata needed by inference into `inference_metadata/` under the output directory. Intermediate checkpoints are written by the HF Trainer. After training, the framework additionally writes:
+Before training starts, `training/checkpoint.py` writes the metadata needed by inference into `inference_metadata/` under the output directory. Intermediate checkpoints are written by the HF Trainer. After training, the framework additionally writes:
 
 ```text
 <output_dir>/final/model.pt
@@ -718,9 +755,9 @@ At inference load time, final weights, root weights, safetensors, or the most re
 
 ### 4.4 Inference Layer
 
-The inference module turns training artifacts into a platform-callable real-time policy service: it rebuilds an inference chain consistent with training from the checkpoint (model + preprocessor/postprocessor), translates each simulator's/real robot's native observation into a unified `ObsDict`, assembles it into an `Observation` via the `robot_to_model` TransformPipeline, runs the model forward, and then restores the normalized action chunk into a platform-executable action command via `model_to_robot` according to the execution strategy. It uses the checkpoint's `inference_metadata` (recipe, schema, norm stats) as the single source of truth — it does not rescan the training dataset or re-derive the relationships among data, model, and robot.
+The inference module turns training artifacts into a platform-callable real-time policy service: it rebuilds an inference chain consistent with training from the checkpoint (model + preprocessor/postprocessor), translates each simulator's/real robot's native observation into a unified `ObsDict`, assembles it into an `Observation` via the `robot_to_model` TransformPipeline, runs the model forward, and then restores the normalized action chunk into a platform-executable action command via `model_to_robot` according to the execution strategy. It uses the checkpoint's `inference_metadata/{assembly.json,recipe.yaml}` as the single source of truth; schema, norm stats, IO spec, and pipeline plans all come from the assembly snapshot. It does not rescan the training dataset or re-derive the relationships among data, model, and robot.
 
-Detailed design: [Inference Module Design](../modules/deploy-module.md), which covers:
+The inference layer is organized around these responsibilities:
 
 - The responsibility boundaries of the inference core layer, the platform adaptation layer, and the transport/remote-service layer.
 - Core objects `InferenceEngine`, `ObsDict`, platform adapters, `PolicyRunner`, `RemotePolicyModel`, `ZmqPolicyClient`, `LengthPrefixedJsonRpcServer`.
@@ -786,7 +823,7 @@ To emphasize: **pi0 / pi05 cannot be installed with plain pip** — openpi's str
 
 ### 5.4 Adapter Dependency Boundary
 
-A model entry module being importable does not mean the upstream model dependency must already be installed. The recommended practice is:
+A model adapter module being importable does not mean the upstream model dependency must already be installed. The recommended practice is:
 
 - The entry top level imports only stable internal VLA Factory modules.
 - Upstream model libraries are imported lazily inside the factory.
@@ -819,8 +856,8 @@ Configuration tests care about:
 
 Composition-resolution testing is a new focus; see Section 4.2:
 
-- Input-contract tests for each of the three dimensions (required fields, unknown fields, enum vocabularies, dimension and key counts, ModelMetadata/BaseContract merging, RobotProfile/URDF consistency).
-- Resolution-rule tests cover each row of the compatibility matrix: direct compatibility, auto-generated Mapping, auto-generated TransformPipelineSpec, warning, error, success after controlled override, and result stability under identical input.
+- Input-contract tests for each dimension (required fields, unknown fields, enum vocabularies, dimension and key counts, optional checkpoint/ModelMetadata consistency, RobotProfile/URDF consistency).
+- Resolution-rule tests cover each row of the compatibility matrix: direct compatibility, auto-generated Mapping, auto-generated TransformPipelinePlan, warning, error, success after controlled override, and result stability under identical input.
 - Failure tests assert `ResolutionError`'s `code`, `path`, and `params` rather than matching the full user-facing text.
 - Golden-composition tests save embodiment-composition golden files for a few representative combinations (e.g. LeRobot ACT data × ACT × LeKiwi; RoboTwin data × ACT × simulation robot; LeRobot ALOHA data × PI0/PI0.5 × ALOHA).
 - Mapping and Transform-Pipeline tests cover unique field matching, camera-slot ambiguity, padding of unmapped camera slots, state/action key reordering, normalize/denormalize pairing, pad/unpad pairing, gripper flip, rotation conversion, risk and reversibility declarations, and the prohibition on name hardcoding.
@@ -831,7 +868,7 @@ Composition-resolution testing is a new focus; see Section 4.2:
 Data tests care about:
 
 - The reader can read schema, norm stats, and episode info.
-- Manifest sample counts, splits, and index ranges are correct.
+- Sample counts, ordering, and time ranges of `SampleWindow` values are correct across all episodes.
 - The transform pipeline's normalize, resize, and padding behave correctly.
 - `VLADataset` output observation/action shapes match model expectations.
 - `collate_fn` handles batch aggregation.
@@ -925,28 +962,16 @@ Such abstractions should follow these principles:
 
 This "unified standard abstraction" is what turns the framework from a glue layer into infrastructure. It lets VLA Factory not just plug in models but also distill new methods into composable, reusable, verifiable foundational modules.
 
-### 7.4 Migration Path for Composition Resolution
+### 7.4 Composition-Resolution Capability Boundary
 
-The "dataset × robot × VLA model composition resolution" described in Section 4.2 is the target architecture and must be migrated in stages, not switched over all at once:
+The composition resolver described in Section 4.2 is now the common entry point for training and inference. Its current boundary follows four rules:
 
-- **Stage 0: Fix terminology and data structures.** Extend existing DataSchema and ModelMetadata; introduce BaseContract; introduce RobotProfile; introduce the resolver, embodiment composition, and ResolutionError; keep existing training and deployment behavior unchanged; add a resolve dry-run that does not take over downstream execution.
-- **Stage 1: Extract existing implicit facts.** Migrate the current `action_spec` fields into DataSchema, ModelMetadata, and RobotProfile respectively; migrate stable input/output capability from model config into ModelMetadata's interface section; have readers supplement detectable data semantics; lift relationship assumptions in model adapters into declarations or resolution rules; lift stable embodiment facts in deploy adapters into RobotProfile.
-- **Stage 2: Resolution diagnostics.** The resolver first runs compatibility checks and produces an explain trace or ResolutionError; fail early on dimensions, cameras, statistics, control modes, and field orderings; existing downstream keeps using the original construction logic; pin representative ResolutionErrors and explain traces with golden tests.
-- **Stage 3: Generate Mapping and T1 TransformPipelineSpec.** Generate camera, state, action, language, and joint mappings; plan pipelines containing T1 steps such as normalize, padding, joint reorder, and gripper flip; pin representative embodiment compositions with golden tests; provide dry-run and diff first, without immediately requiring full downstream execution.
-- **Stage 4: Downstream integration.** The training module starts consuming the "data × model" composition result; the inference module starts consuming the "model × robot" result; delete duplicated relationship derivation in adapters; keep an explicit compatibility layer with migration warnings.
-- **Stage 5: Recipe slimming.** Mark duplicated action/state facts as deprecated; auto-convert old recipes into temporary descriptions and controlled overrides; the composition part of a new recipe keeps only the three-way selection and necessary overrides; provide a migration command or readable hints; set an explicit removal timeline for the compatibility layer.
-- **Stage 6: Controlled T2 extension.** Add FK/IK, coordinate-frame, and frequency conversion based on real use cases and tests; review each capability independently; keep conservative failure by default; do not make T2 a precondition for composition resolution to exist.
+- Automatic planning covers only deterministic T1 conversions backed by sufficient facts, such as camera-slot mapping, resize, layout, normalization, padding/unpadding, and explicit inverses.
+- Platform adapters own conversion between platform-native interfaces and the checkpoint DataSchema. Assembly does not infer cross-namespace relations from camera or joint names, so `robot_to_model` currently shares the `data_to_model` plan.
+- FK/IK, coordinate-frame conversion, frequency resampling, and cross-robot action projection are T2 capabilities. Add them individually only with a real use case, complete prerequisites, and end-to-end tests; do not predeclare fields or abstractions without consumers.
+- Missing or ambiguous information fails conservatively. Implicit defaults, approximate inverses, and legacy-config compatibility layers must not create a second source of truth. Old recipes and old training artifacts without `assembly.json` are unsupported.
 
-Legacy-config compatibility path:
-
-```text
-legacy action_spec / embodiment fields
-    -> ephemeral data/model/robot descriptions
-    -> resolve_composition
-    -> warning with migration suggestion
-```
-
-The compatibility layer must not become a long-term second source of truth.
+Evolution should preserve the one-way dependency: explicit facts → Mapping / ModelIOSpec → PipelinePlan → downstream execution. Any new capability must use the same saved plan in training and deployment rather than living only inside one adapter.
 
 ### 7.5 Deployment/Inference Evolution
 

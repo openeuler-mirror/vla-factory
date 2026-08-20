@@ -9,16 +9,20 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 import torch.nn as nn
 
-from vla_factory.config.parser import parse_recipe_from_string
-from vla_factory.config.recipe import LoraConfig, TrainRecipe
-from vla_factory.training.strategies.lora import apply_lora
+from vla_factory.user_interface import (
+    FinetuningConfig,
+    TrainRecipe,
+    parse_recipe_from_string,
+)
+from vla_factory.training.strategies import get_strategy
+from vla_factory.training.strategies.lora import (
+    merge_lora_adapters,
+)
 
 
 # ── Fake peft: record the subtree passed to get_peft_model ──
@@ -122,14 +126,26 @@ class _MetaNoLora(_Meta):
 
 def _make_recipe(targets):
     return TrainRecipe(
-        finetuning_strategy="lora",
-        lora_config=LoraConfig(r=16, lora_alpha=16, target_components=list(targets)),
+        finetuning=FinetuningConfig(
+            strategy="lora",
+            config={
+                "r": 16,
+                "lora_alpha": 16,
+                "target_components": list(targets),
+            },
+        ),
     )
+
+
+def _prepare(model, recipe, metadata):
+    strategy = get_strategy(recipe.finetuning.strategy)
+    config = strategy.parse_config(recipe.finetuning.config)
+    return strategy.prepare_model(model, config, metadata)
 
 
 def test_single_subtree_target_wraps_only_that_subtree():
     model = _FakePI0()
-    out = apply_lora(model, _make_recipe(["llm"]), _Meta())
+    out = _prepare(model, _make_recipe(["llm"]), _Meta())
     assert out is model, "returned model must be the same top-level object"
     assert len(_injected) == 1, "exactly one subtree injected"
     assert isinstance(_injected[0][0], _FakePaliGemma), "injected subtree is the paligemma (llm)"
@@ -141,22 +157,18 @@ def test_single_subtree_target_wraps_only_that_subtree():
 
 def test_multi_target_wraps_whole_model():
     model = _FakePI0()
-    out = apply_lora(model, _make_recipe(["llm", "action_expert"]), _Meta())
+    out = _prepare(model, _make_recipe(["llm", "action_expert"]), _Meta())
     assert isinstance(out, _FakePeftModel), "multi-target → whole-model wrap"
     assert len(_injected) == 1, "single get_peft_model call on the whole model"
 
 
 def test_merge_unwraps_whole_model_wrap():
     """Whole-model LoRA: the top-level PeftModel itself must be merged away."""
-    if importlib.util.find_spec("transformers") is None:
-        pytest.skip("transformers not installed (train.py imports it at module top)")
-    from vla_factory.training.train import _merge_lora_adapters
-
     model = _FakePI0()
-    wrapped = apply_lora(model, _make_recipe(["llm", "action_expert"]), _Meta())
+    wrapped = _prepare(model, _make_recipe(["llm", "action_expert"]), _Meta())
     assert isinstance(wrapped, _FakePeftModel)
 
-    merged = _merge_lora_adapters(wrapped)
+    merged = merge_lora_adapters(wrapped)
     assert merged is model, "top-level PeftModel merged back to its base model"
     assert not any(
         isinstance(m, _FakePeftModel) for m in merged.modules()
@@ -165,15 +177,11 @@ def test_merge_unwraps_whole_model_wrap():
 
 def test_merge_unwraps_subtree_wrap():
     """Subtree-LoRA: the PeftModel child is replaced by its merged base."""
-    if importlib.util.find_spec("transformers") is None:
-        pytest.skip("transformers not installed (train.py imports it at module top)")
-    from vla_factory.training.train import _merge_lora_adapters
-
     model = _FakePI0()
-    apply_lora(model, _make_recipe(["llm"]), _Meta())
+    _prepare(model, _make_recipe(["llm"]), _Meta())
     assert isinstance(model.paligemma_with_expert.paligemma, _FakePeftModel)
 
-    merged = _merge_lora_adapters(model)
+    merged = merge_lora_adapters(model)
     assert merged is model
     assert isinstance(model.paligemma_with_expert.paligemma, _FakePaliGemma)
     assert not any(isinstance(m, _FakePeftModel) for m in merged.modules())
@@ -181,32 +189,35 @@ def test_merge_unwraps_subtree_wrap():
 
 def test_empty_target_components_raises():
     recipe = TrainRecipe(
-        finetuning_strategy="lora",
-        lora_config=LoraConfig(r=16, lora_alpha=16, target_components=[]),
+        finetuning=FinetuningConfig(
+            strategy="lora",
+            config={"r": 16, "lora_alpha": 16, "target_components": []},
+        ),
     )
     with pytest.raises(ValueError):
-        apply_lora(_FakePI0(), recipe, _Meta())
+        _prepare(_FakePI0(), recipe, _Meta())
 
 
 def test_support_lora_false_raises():
     with pytest.raises(ValueError):
-        apply_lora(_FakePI0(), _make_recipe(["llm"]), _MetaNoLora())
+        _prepare(_FakePI0(), _make_recipe(["llm"]), _MetaNoLora())
 
 
-def test_legacy_rank_alpha_aliases_promoted():
+def test_unknown_lora_fields_are_rejected_by_strategy():
     recipe = parse_recipe_from_string(
         """
 model: {name: pi0}
 finetuning:
   strategy: lora
-  lora:
+  config:
     rank: 8
     alpha: 8
     target_components: [llm]
 """
     )
-    assert recipe.lora_config.r == 8
-    assert recipe.lora_config.lora_alpha == 8
+    strategy = get_strategy("lora")
+    with pytest.raises(ValueError, match="Unknown config field"):
+        strategy.parse_config(recipe.finetuning.config)
 
 
 def test_peft_field_names_forwarded():
@@ -215,17 +226,61 @@ def test_peft_field_names_forwarded():
 model: {name: pi0}
 finetuning:
   strategy: lora
-  lora:
+  config:
     r: 32
     lora_alpha: 32
     lora_dropout: 0.1
     target_components: [llm]
 """
     )
-    assert recipe.lora_config.r == 32
-    assert recipe.lora_config.lora_alpha == 32
-    assert recipe.lora_config.lora_dropout == 0.1
+    config = get_strategy("lora").parse_config(recipe.finetuning.config)
+    assert config.r == 32
+    assert config.lora_alpha == 32
+    assert config.lora_dropout == 0.1
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
+def test_save_final_model_falls_back_to_unmerged_state_on_merge_failure(tmp_path):
+    """A merge failure must not lose the run: unmerged weights are saved."""
+    import torch
+
+    from vla_factory.training.checkpoint import save_final_model
+    from vla_factory.training.strategies.base import FinetuningStrategy
+
+    class FailingMerge(FinetuningStrategy):
+        def finalize_model(self, model):
+            raise RuntimeError("merge exploded (e.g. OOM)")
+
+    model = nn.Linear(2, 1)
+    expected = dict(model.state_dict())
+
+    finalized = save_final_model(tmp_path, model, FailingMerge())
+
+    assert finalized is model, "fallback keeps the un-finalized model"
+    weights = tmp_path / "final" / "model.pt"
+    assert weights.is_file(), "final weights exist despite merge failure"
+    restored = torch.load(weights, map_location="cpu")
+    assert list(restored) == list(expected)
+    for key in expected:
+        assert torch.equal(restored[key], expected[key])
+
+
+def test_save_final_model_saves_finalized_state_when_merge_succeeds(tmp_path):
+    import torch
+
+    from vla_factory.training.checkpoint import save_final_model
+    from vla_factory.training.strategies.base import FinetuningStrategy
+
+    class Merging(FinetuningStrategy):
+        def finalize_model(self, model):
+            with torch.no_grad():
+                model.weight.fill_(1.0)
+            return model
+
+    finalized = save_final_model(tmp_path, nn.Linear(2, 1), Merging())
+
+    assert torch.allclose(
+        next(finalized.parameters()),
+        torch.ones_like(next(finalized.parameters())),
+    )
+    restored = torch.load(tmp_path / "final" / "model.pt", map_location="cpu")
+    assert torch.allclose(restored["weight"], torch.ones_like(restored["weight"]))

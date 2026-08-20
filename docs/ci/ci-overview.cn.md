@@ -85,12 +85,9 @@ GitCode PR API，覆盖**所有贡献者**的 PR，只需要出站 HTTPS。
 
 | 环境 | 依赖 | 跑哪些 tier | 覆盖的用例 |
 |------|------|------------|-----------|
-| **base** | core + `[dev]` | L0 | 全部 L0（162 例¹） |
+| **base** | core + `[dev]` | L0 | 全部框架契约测试 |
 | **act** | + lerobot | L1 + L2 | lerobot parity + 过拟合冒烟（计划中，见 §4） |
 | **pi** | + openpi | L1 | openpi parity（计划中，见 §4） |
-
-¹ 以 master 上 `pytest --collect-only` 实际统计为准：161 个测试函数 +
-parametrize 扩展 1 例。测试新增后此数字会漂移，更新文档时重新统计。
 
 L1 测试通过 `pytest.importorskip` 自动分流：act 环境跑 lerobot 相关用例，
 pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不报错。
@@ -115,49 +112,24 @@ master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `
 分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例——daemon 对
 「某环境所有 tier 都收集 0 例」判 FAIL 而非 pass，防止空跑误报绿。
 
-### L0 — 单元测试（162 例）
+### L0 — 框架测试
 
-验证**我们自己的代码**。不依赖任何模型 extra，base 环境即可全跑。
-当前 master `test/` 下共 13 个文件、161 个测试函数（parametrize 扩展后
-收集 162 例）：
+验证**我们自己的代码**。基础环境运行通用测试；需要可选模型依赖的用例在
+依赖缺失时明确 skip。测试按稳定的行为契约组织，不再为每个开发阶段保留
+独立的 phase 验证脚本，也不在文档中维护容易漂移的逐文件例数清单。
 
-**配置 / CLI**
+| 子系统 | 主要契约 |
+|--------|----------|
+| Data | reader / codec 注册与发现、语义推断、真实数据读取、transform、sample window 和 DataLoader |
+| Model | ModelMetadata 字段分类、内置声明、外部插件、可选 checkpoint 一致性检查、ACT / PI0 / PI05 adapter |
+| Assembly | 兼容性诊断、mapping、ModelIOSpec、TransformPipelinePlan、序列化和接口漂移拒绝 |
+| Training | strategy 注册与严格配置、LoRA 挂载、真实 train → checkpoint 产物 |
+| Inference / Deployment | 执行策略、双 action width、train → infer round trip、平台 adapter、PolicyRunner 和 RPC transport |
+| User Interface | Recipe 解析与拒绝路径、inspect 输出、CLI 命令注册和失败副作用边界 |
 
-| 文件 | 例数 | 覆盖 |
-|------|------|------|
-| `test_protocols_registry_config.py` | 4 | 协议契约（Observation/ActionSpec/VLA 层次/ModelMetadata）、注册表（注册/查找/重复/未知模型）、YAML→TrainRecipe 解析、`examples/*.yaml` 全部可解析 |
-| `test_cli_deploy.py` | 2 | `deploy` 命令注册/非法参数退出；`serve` 未注册 |
-
-**模型层 (model/)**
-
-| 文件 | 例数 | 覆盖 |
-|------|------|------|
-| `test_base_contract.py` | 7 | checkpoint config.json 解析、合法/非法 camera_mapping、缺失/多余相机、无 contract 时告警 |
-| `test_act_model.py` | 15 | ACT lerobot adapter：协议合规、注册集成、observation_to、factory wrapper（compute_loss/predict/多相机/save-load）、profile 默认值 & recipe 覆盖 |
-| `test_pi0_model.py` | 4 | pi0 adapter（fake openpi）：metadata、camera_mapping 翻译、loss/predict 委托、空相机占位 |
-| `test_pi05_model.py` | 13 | pi05 与 pi0 的差异：factory variant 构建、discrete-state prompt、task 回退链、quantile normalize/unnormalize roundtrip |
-| `test_lora_strategy.py` | 8 | LoRA 策略逻辑（fake peft）：单/多 subtree 包裹、merge unwrap、target-component 校验、legacy alias |
-
-**训练 (training/)**
-
-| 文件 | 例数 | 覆盖 |
-|------|------|------|
-| `test_phase4_engine.py` | 8 | 训练引擎：策略分发（full/freeze/selective + 未知 raises）、recipe→training-args 映射、CPU 3 步训练循环 |
-
-**数据管道 (data/)**
-
-| 文件 | 例数 | 覆盖 |
-|------|------|------|
-| `test_data_pipeline.py` | 43 | 端到端数据管道（bundled 3-episode lerobot 数据集）：LeRobotV3 reader、PyAV codec 解码、滑动窗口采样、manifest 构建（train/val 分割/无泄漏/确定性）、transforms、VLADataset、DataLoader 批处理 |
-| `test_robotwin_reader.py` | 7 | RoboTwin reader + codec 正常路径（合成数据集）：can_read、schema、episode 长度/范围、state/action 读取、帧解码、norm_stats |
-
-**部署 / 推理 (deploy/)**
-
-| 文件 | 例数 | 覆盖 |
-|------|------|------|
-| `test_inference_engine.py` | 31 | 推理引擎：ObsDict 构建/冻结、3 种执行策略（同步/receding-horizon/temporal-ensembling）、obs 归一化、训练↔推理一致性（30 函数 + 1 parametrize 扩展） |
-| `test_policy_runtime.py` | 7 | PolicyRunner 编排：fake transport+engine、predict/send、action-adapter、reset 控制 |
-| `test_robotwin_server.py` | 13 | RoboTwin 平台 adapter + 长度前缀传输：get_action roundtrip、obs 解析、numpy codec roundtrip |
+当前重构分支有 22 个测试模块；在完整开发环境中收集 365 例并全部通过。
+收集数会随 parametrization 和可选依赖变化，CI 以 pytest 结果而不是本文数字
+作为最终依据。
 
 ### L1 — parity 测试（计划中，尚未合入）
 

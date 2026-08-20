@@ -3,6 +3,27 @@
 # ║  每个字段都标注了含义、可选值和典型用法。                         ║
 # ║  复制此文件作为起点，删除不需要的部分即可。                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
+#
+# recipe 分三个区（架构 §3.1）：
+#   ① 组合选择：用哪份数据、哪个模型、哪台机器人 —— model / data / robot
+#   ② 组合调整：仅当解析器无法唯一确定关系时的受控 override —— overrides
+#   ③ 训练参数：怎么训练，与三者关系无关 —— finetuning / training / output
+#
+# 三者之间的关系（相机进哪个槽位、动作维度怎么 padding、chunk 多长、图像 resize
+# 到多大）**不写在 recipe 里**，由组合解析层从数据、模型、机器人三份描述推导。
+# 用 `vlafactory-cli resolve --config <recipe>` 可以先看一眼推导结果。
+#
+# ── 已删除的字段（现在会作为未知字段直接报错） ─────────────────────
+#   action_spec.*                → 数据集事实 / 模型声明 / 机器人 profile
+#   data.source.*                → 直接写在 data 下（少一层嵌套）
+#   data.sampler.*               → 模型的时序契约（观测帧数 / chunk 长度）
+#   data.split.*                 → 当前无训练期评估，全部 episode 用于训练
+#   training.augmentation.*      → 无（从未被任何 transform 应用过）
+#   training.inference_steps     → model.config.num_inference_steps
+#   model.config.camera_mapping  → overrides.camera_mapping
+#   model.config.default_task    → overrides.default_task
+#   composition: / assembly:     → overrides:
+# 这些键不再属于公共结构；强类型块可能直接拒绝，请从 recipe 中删除。
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 模型 ──────────────────────────────────────────────────────────────
@@ -11,6 +32,9 @@ model:
   name: act                    # [必填] 注册表中的模型名
                                #   可选值: act | pi0 | pi05 | openvla-7b | gr00t | octo | smolvla
                                #
+                               # 简写：`model: act`；若字符串含 `/`，完整字符串
+                               # 同时作为 checkpoint path，最后一段作为 name，
+                               # 例如 `model: lerobot/pi0`。
 
   path: null                   # [可选] 预训练权重路径
                                #   - 指向目录或文件，由模型的 factory 解读
@@ -18,56 +42,30 @@ model:
                                #   - pi0/pi05 仅支持微调，训练时必填 (如 "lerobot/pi0_base")
                                #   - 示例: "outputs/openpi/pi0.5", "openvla/openvla-7b"
 
-  # config:                    # [可选] 逐 run 的模型配置，深度合并到
-  #                            #   vla_factory/config/model/<name>.yaml 之上 (recipe 优先)
-  #   camera_mapping:          # [pi0/pi05 必填] {模型相机角色: 数据集相机名}
-  #     base_0_rgb: front      #   角色以 base checkpoint 的 config.json 为准，
-  #     left_wrist_0_rgb: wrist#   用 `vlafactory-cli list --config <recipe>` 查询/校验；
-  #                            #   未映射的角色自动用占位图 (mask=0)
-  #   default_task: "..."      # [可选] 任务文本兜底 (语言条件模型 pi0/pi05)。
-                               #   取值优先级: 帧级任务文本 (数据集/部署端 task 字段)
-                               #   > default_task > "" (空 prompt, 模型仍可运行)。
-                               #   部署时 prompt 由客户端 task 字段传入；数据集缺
-                               #   任务文本或部署端不发 task 时才用到这里的兜底。
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 动作空间 ─────────────────────────────────────────────────────────
-# 描述机器人动作向量的语义。框架据此做归一化、delta转换、padding。
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-action_spec:
-  action_dim: 6                # [必填] 机器人实际动作维度
-                               #   SO101 单臂 = 6, ALOHA 双臂 = 14, delta_eef = 7
-
-  action_horizon: 100          # [必填] 模型每次推理预测的未来步数
-                               #   也叫 chunk_size
-                               #   ACT = 100, PI0 = 50, OpenVLA = 7
-
-  action_type: joint_pos       # [必填] 动作语义类型
-                               #   ┌──────────────┬──────────────────────────────────┐
-                               #   │ 值            │ 含义                              │
-                               #   ├──────────────┼──────────────────────────────────┤
-                               #   │ joint_pos    │ 绝对关节位置 (ACT, 常见)          │
-                               #   │ delta_joint  │ 关节位置增量                       │
-                               #   │ delta_eef    │ 末端执行器位姿增量 (x,y,z,rx,ry,rz,gripper) │
-                               #   │ se3          │ SE(3) 末端位姿                     │
-                               #   │ tokenized    │ 离散化动作 token (OpenVLA)         │
-                               #   └──────────────┴──────────────────────────────────┘
-
-  bounds_low: null             # [可选] 每维最小值, 长度 = action_dim
-  bounds_high: null            # [可选] 每维最大值, 长度 = action_dim
-                               #   示例 (6维): [-1, -1, -1, -1, -1, -1]
+  # config:                    # [可选] 逐 run 的模型超参覆盖，深度合并到模型声明的
+  #                            #   ModelMetadata.params 之上 (recipe 优先)。
+  #                            #   可调键以 `vlafactory-cli inspect model --name <model>`
+  #                            #   为准，它同时显示每个键的生效值与来源；写了模型未
+  #                            #   声明的键会直接报错并提示最接近的候选。
+  #                            #   组合解析消费的事实 (图像值域、归一化方法、维度策略…)
+  #                            #   属于模型声明的具名字段，不可在此覆盖。
+  #   num_inference_steps: 10  # [可选] 去噪/flow-matching 步数 (pi0 默认 10, ACT 为 1)
+  #   pytorch_compile_mode: null  # [可选] pi0/pi05: 小显存或冒烟测试时设 null 走 eager
+  #   action_horizon: 100      # [仅 from_scratch 模型, 如 ACT] chunk 长度由用户选。
+                               #   pi0/pi05 是预训练固定长度 (家族事实)，不接受此键。
+  #   input_image_size: [224, 224]  # [仅 from_scratch 模型] 模型输入图像尺寸；
+                               #   不写则用数据集原生尺寸。固定槽位模型 (pi0) 的尺寸
+                               #   来自 ModelMetadata.vision_slots，不可在此覆盖。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 数据 ─────────────────────────────────────────────────────────────
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 data:
-  source:
-    path: ""                   # [必填] 数据集根路径
+  path: ""                     # [必填] 数据集根路径
                                #   示例: "outputs/lerobot_train_data_100"
 
-    format: auto               # [可选] 数据格式
+  format: auto                 # [可选] 数据格式
                                #   ┌──────────────┬──────────────────────────────┐
                                #   │ 值            │ 说明                         │
                                #   ├──────────────┼──────────────────────────────┤
@@ -78,27 +76,39 @@ data:
                                #   │ zarr         │ Zarr 数组 (BridgeData V2)    │
                                #   └──────────────┴──────────────────────────────┘
 
-  sampler:
-    type: sliding_window       # 采样策略 (当前仅支持 sliding_window)
+  # video_codec: auto          # [可选] 视频解码器 (auto 按格式选择)
 
-    n_obs_steps: 1             # 观测窗口帧数
-                               #   大多数模型 = 1; 时序堆叠 = 2-3
+  # 一个样本携带多少观测帧、多少未来动作，都是模型的时序契约
+  # (ModelMetadata.history_frames / action horizon)，由组合解析层给出；
+  # 当前没有训练期评估，全部 episode 都用于训练。真正实现 evaluation loop 时
+  # 再按 episode 恢复 split；这些都不是 recipe 需要复述的模型接口事实。
 
-    action_horizon: 100        # 每个样本包含的未来动作步数
-                               #   通常与 action_spec.action_horizon 一致
 
-  split:
-    strategy: episode          # 数据划分策略
-                               #   ┌──────────┬──────────────────────────────────────┐
-                               #   │ 值        │ 说明                                 │
-                               #   ├──────────┼──────────────────────────────────────┤
-                               #   │ episode  │ 按 episode 划分 (推荐, 防泄漏)        │
-                               #   │ random   │ 随机打乱划分 (暂未实现)                │
-                               #   │ task     │ 按 task 划分 (多任务数据集, 暂未实现)  │
-                               #   └──────────┴──────────────────────────────────────┘
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 组合选择 + 组合调整（可选） ───────────────────────────────────────
+#   ① robot 区只声明本体，不描述连接/transport；
+#   ② overrides 区只在解析器无法唯一确定、或想用非默认策略时显式写出，且不能
+#      改写客观事实（shape、checkpoint 槽位、关节拓扑、固定维度上限）。
+#   三者之间的默认对应关系由组合解析层自动推导；本区默认留空即可。
+#   目前由 `vlafactory-cli resolve --config <recipe>` dry-run 消费。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+robot:
+  name: ""                     # [可选] 机器人本体 profile 名 (见 vla_factory/robot/profiles/*.yaml)
+                               #   示例: "robotwin"。留空表示不绑定具体本体。
+                               #   写了之后解析器会把数据的逐维关节名嵌入机器人关节表
+                               #   (产出 JointMapping)，对不上就直接失败——这正是它的
+                               #   价值：错位的命令向量不会流到机器人上。
 
-    train_ratio: 0.9           # 训练集比例 (0.0 - 1.0); 剩余部分自动分配给验证集
-    seed: 42                   # 随机种子
+overrides:                     # [可选, 默认留空]
+  # camera_mapping:            # 模型视觉槽位 -> 数据集相机 (歧义时显式指定)
+  #   base_0_rgb: front        #   给了就是**完整声明**：没列出的槽位视为有意留空，
+  #   left_wrist_0_rgb: wrist  #   走占位图 + zero mask，不再对它做自动推断。
+  # default_task: "pick up the block"  # 语言兜底 (数据/部署无 task 时使用)。
+                               #   优先级: 帧级 task 文本 > default_task > 空 prompt。
+                               #
+                               # 本区只放解析器真正消费的 override —— 没有消费者的
+                               # 调整项等于"能写、但什么都不做"，因此频率/夹爪两项
+                               # 随它们的检查一起推迟，未提供。
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,25 +125,24 @@ finetuning:
                                #   │ selective  │ 只训练指定组件, 冻结其余             │
                                #   └────────────┴────────────────────────────────────┘
 
-  # ── strategy == "lora" 时需要 ──
+  # 每个 strategy 严格校验自己的 config；切换策略时只保留对应的字段。
+  # ── strategy == "lora" 时取消下面整块注释 ──
   # 字段名与 peft.LoraConfig 对齐（r/lora_alpha/lora_dropout/use_rslora/init_lora_weights
-  # 透传给 peft）；rank/alpha 作为向后兼容别名也接受。target_components 是 vla 自己的
-  # 抽象（component → subtree → peft target_modules），因为不同模型 module 名不同。
-  lora:
-    r: 16                      # LoRA 秩, 越大容量越大. 常用: 8, 16, 32 (peft 名; rank 也接受)
-    lora_alpha: 16             # 缩放因子, 等效 = lora_alpha / r. 通常设为与 r 相同 (alpha 也接受)
-    lora_dropout: 0.0         # adapter dropout, 透传 peft
-    use_rslora: false          # rank-stabilized LoRA, 透传 peft
-    init_lora_weights: gaussian # 初始化方案, 透传 peft (默认 gaussian, 对齐 RLinf openpi LoRA)
-    target_components:          # LoRA 应用到哪些组件 (引用 ModelMetadata.components 的 key)
-      - llm                    #   PI0 示例: ["llm"] (只 VLM) 或 ["llm", "action_expert"]
-      - action_expert          #   OpenVLA 示例: ["llm", "action_head"]
+  # 透传给 peft）。target_components 是 vla 自己的抽象（component → subtree → peft
+  # target_modules），因为不同模型 module 名不同。
+  # config:
+  #   r: 16                      # LoRA 秩, 越大容量越大. 常用: 8, 16, 32
+  #   lora_alpha: 16             # 缩放因子, 等效 = lora_alpha / r
+  #   lora_dropout: 0.0          # adapter dropout, 透传 peft
+  #   use_rslora: false          # rank-stabilized LoRA, 透传 peft
+  #   init_lora_weights: gaussian # 初始化方案, 透传 peft
+  #   target_components: [llm, action_expert]
 
   # ── strategy == "freeze" 时需要 ──
-  # freeze_components: ["vision_encoder"]   # 冻结视觉编码器
+  # config: {components: [vision_encoder]}   # 冻结视觉编码器
 
   # ── strategy == "selective" 时需要 ──
-  # trainable_components: ["action_head"]   # 只训练 action head
+  # config: {components: [action_head]}      # 只训练 action head
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -159,24 +168,15 @@ training:
   gradient_checkpointing: false # 梯度检查点: 省 ~40% 显存, 慢 ~30%
                                 #   大模型 (PI0, OpenVLA) 建议开启
 
-  inference_steps: 1           # 推理时的去噪/flow-matching 步数
-                               #   确定性 head (ACT, OpenVLA) = 1
-                               #   flow matching (PI0) = 10
-                               #   diffusion (Octo) = 10-20
-
   num_workers: 4               # DataLoader 子进程数
                                #   0 = 单进程 (调试用)
                                #   4~8 = 多进程并行加载 (推荐, 视频数据集建议 ≥4)
 
-  augmentation:
-    random_crop: true          # 随机裁剪
-    crop_scale: [0.9, 1.0]    # 裁剪面积比例范围
-    color_jitter: 0.1          # 颜色抖动强度 (0.0 = 关闭)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 输出 ─────────────────────────────────────────────────────────────
-# 注意: 输出字段必须嵌套在 output: 块下; 顶层的 output_dir: 会被解析器忽略。
+# 注意: 输出字段必须嵌套在 output: 块下; 顶层的 output_dir: 会直接报错。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 output:
   output_dir: outputs/act_aloha  # [必填] checkpoint、日志、最终权重的保存目录

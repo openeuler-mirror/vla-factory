@@ -30,10 +30,11 @@ pip install -e ".[robotwin]"
 
 ```yaml
 data:
-  source:
-    path: /path/to/dataset/<task>/<embodiment>_clean_50
-    format: robotwin
-    video_codec: hdf5_jpeg
+  path: /path/to/dataset/<task>/<embodiment>_clean_50
+  format: robotwin
+  video_codec: hdf5_jpeg
+robot:
+  name: robotwin
 ```
 
 ## 3. 启动模型服务（VLA Factory 环境）
@@ -60,7 +61,7 @@ export VLA_FACTORY_PATH=/path/to/vla-factory
 PYTHONPATH="$VLA_FACTORY_PATH${PYTHONPATH:+:$PYTHONPATH}" \
 python script/eval_policy_client.py \
   --port 9999 \
-  --config "$VLA_FACTORY_PATH/vla_factory/deploy/connectors/robotwin.yml" \
+  --config "$VLA_FACTORY_PATH/vla_factory/inference/connectors/robotwin.yml" \
   --overrides \
     task_name beat_block_hammer \
     task_config demo_randomized \
@@ -81,5 +82,5 @@ python script/eval_policy_client.py \
   不匹配时，服务端会在推理前报出所需值和实际值。
 - PI0/PI0.5 等语言条件模型会收到 `TASK_ENV.get_instruction()` 返回的指令；
   ACT 等不使用语言的模型会忽略该字段。
-- connector 位于 `vla_factory.deploy.connectors.robotwin`，自身不依赖 torch、
+- connector 位于 `vla_factory.inference.connectors.robotwin`，自身不依赖 torch、
   Transformers、OpenPI 或 LeRobot，因此可以由 RoboTwin 环境直接导入。

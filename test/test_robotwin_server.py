@@ -1,4 +1,4 @@
-"""RoboTwin platform adapter and length-prefixed transport tests.
+"""Deployment orchestration, RoboTwin adaptation, and RPC transport tests.
 
 Stands up the generic RPC transport with a fake engine and drives it over a
 socket using RoboTwin's exact wire protocol. Verifies transport framing,
@@ -18,15 +18,18 @@ import numpy as np
 import pytest
 import yaml
 
-from vla_factory.deploy.connectors import robotwin as robotwin_connector
-from vla_factory.deploy.infer import (
+from vla_factory.inference.connectors import robotwin as robotwin_connector
+from vla_factory.inference.execution import (
+    ActionCommand,
     ActionChunk,
     PolicyExecutor,
     build_execution_policy,
 )
-from vla_factory.deploy.platforms.robotwin import RoboTwinAdapter
-from vla_factory.deploy.policy_runtime import RemotePolicyModel
-from vla_factory.deploy.transports.length_prefixed_json import (
+from vla_factory.inference.platforms.simulator import SimulatorAdapter
+from vla_factory.inference.platforms.robotwin import RoboTwinAdapter
+from vla_factory.inference.deploy import PolicyRunner, RemotePolicyModel
+from vla_factory.inference.transports.base import PolicyClientTransport
+from vla_factory.inference.transports.length_prefixed_json import (
     LengthPrefixedJsonRpcServer,
     json_to_numpy,
     numpy_to_json,
@@ -348,3 +351,108 @@ def test_rpc_server_exposes_handler_only():
 
     assert server.handler is handler
     assert not hasattr(server, "model")
+
+
+class _RunnerEngine:
+    """Minimal engine for the client-shaped deployment loop."""
+
+    def __init__(self) -> None:
+        self.camera_keys = ("front",)
+        self.predict_calls = []
+        self.reset_count = 0
+
+    def predict(self, obsdict):
+        self.predict_calls.append(obsdict)
+        return ActionCommand(np.arange(4, dtype=np.float32)[None, :])
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+
+class _RunnerClient:
+    def __init__(self, script) -> None:
+        self.sent = []
+        self.closed = False
+        self._script = iter(script)
+
+    def wait_for_connection(self) -> None:
+        pass
+
+    def recv_observation(self):
+        item = next(self._script, KeyboardInterrupt)
+        if item is KeyboardInterrupt:
+            raise KeyboardInterrupt
+        return item
+
+    def send_action(self, action) -> None:
+        self.sent.append(action)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _run_policy(script, *, action_adapter=None, task=""):
+    engine = _RunnerEngine()
+    client = _RunnerClient(script)
+    runner = PolicyRunner(
+        engine,
+        SimulatorAdapter(("front",)),
+        action_adapter,
+        task=task,
+        max_loop_freq_hz=10000.0,
+    )
+    runner.run(client)
+    return engine, client
+
+
+def _runner_observation():
+    return {
+        "observation.images.front": np.zeros((4, 4, 3), dtype=np.uint8),
+        "observation.state": [0.1, 0.1, 0.1],
+    }
+
+
+def test_policy_runner_predicts_sends_and_releases_transport():
+    engine, client = _run_policy([_runner_observation()])
+
+    assert isinstance(client, PolicyClientTransport)
+    assert len(engine.predict_calls) == 1
+    np.testing.assert_allclose(
+        engine.predict_calls[0].state, np.full(3, 0.1, dtype=np.float32)
+    )
+    np.testing.assert_array_equal(client.sent[0], np.arange(4)[None, :])
+    assert client.closed
+
+
+def test_policy_runner_applies_action_adapter():
+    calls = []
+
+    def action_adapter(action):
+        calls.append(action)
+        return {"motor_0": float(action[0])}
+
+    _, client = _run_policy(
+        [_runner_observation()], action_adapter=action_adapter
+    )
+
+    assert len(calls) == 1
+    assert client.sent == [{"motor_0": 0.0}]
+
+
+def test_policy_runner_handles_reset_skip_and_task():
+    engine, client = _run_policy(
+        [None, {"__control__": "reset", "episode_index": 2}, _runner_observation()],
+        task="pick up the block",
+    )
+
+    assert engine.reset_count == 1
+    assert len(engine.predict_calls) == 1
+    assert engine.predict_calls[0].language == "pick up the block"
+    assert len(client.sent) == 1
+
+
+def test_policy_runner_rejects_nonpositive_loop_frequency():
+    with pytest.raises(ValueError, match="max_loop_freq_hz"):
+        PolicyRunner(
+            _RunnerEngine(), SimulatorAdapter(("front",)), max_loop_freq_hz=0.0
+        )

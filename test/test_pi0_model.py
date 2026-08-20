@@ -8,17 +8,15 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 import torch
 import torch.nn as nn
 
-import vla_factory.model.registry.entries.pi0 as pi0_mod
+import vla_factory.model.adapters.openpi as pi0_mod
 from vla_factory.model.registry import get_entry
-from vla_factory.model.protocols.observation import Observation
+from vla_factory.model.model_interface import Observation
 
 
 # ── Fake openpi (so _to_openpi_observation works without openpi installed) ──
@@ -48,8 +46,8 @@ class _FakePI0Pytorch(nn.Module):
 
 
 # Patch the entry's openpi handle BEFORE building wrappers. The factory caches
-# the import result on _try_import_openpi._cached, so patch that directly.
-pi0_mod._try_import_openpi._cached = (
+# the import result on try_import_openpi._cached, so patch that directly.
+pi0_mod.try_import_openpi._cached = (
     _FakePI0Pytorch,
     types.SimpleNamespace(action_dim=32),
     _FakeOpenpiObs,
@@ -126,7 +124,3 @@ def test_empty_camera_mapping_all_placeholders():
     assert set(openpi_obs.images.keys()) == {"base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"}
     assert all((t == -1.0).all() for t in openpi_obs.images.values())
     assert all((m == 0).all() for m in openpi_obs.image_masks.values())
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))

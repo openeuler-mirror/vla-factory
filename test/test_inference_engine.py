@@ -10,27 +10,23 @@ Run:
 """
 
 from __future__ import annotations
+from helpers import make_schema
 
-import json
-import sys
-import tempfile
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vla_factory.config.recipe import ActionSpecConfig, TrainRecipe
-from vla_factory.data.manifest import DataSchema, FeatureStats, NormStats, resolve_vector_keys
-from vla_factory.deploy.infer import (
+from vla_factory.data.data_schema import (
+    ActionDim, DataSchema, FeatureStats, NormStats, StateDim, resolve_vector_keys,
+)
+from vla_factory.inference.inference_engine import (
     InferenceEngine,
     ObsDict,
 )
-from vla_factory.deploy.infer import (
+from vla_factory.inference.execution import (
     ActionChunk,
     ActionCommand,
     PolicyExecutor,
@@ -39,38 +35,6 @@ from vla_factory.deploy.infer import (
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
-
-
-def _make_recipe(
-    action_dim: int = 6,
-    action_horizon: int = 10,
-    cameras: tuple[str, ...] = ("front",),
-    state_dim: int = 6,
-    has_language: bool = False,
-) -> TrainRecipe:
-    return TrainRecipe(
-        model_name="act",
-        action_spec=ActionSpecConfig(
-            action_dim=action_dim,
-            action_horizon=action_horizon,
-            action_type="joint_pos",
-        ),
-    )
-
-
-def _make_schema(
-    action_dim: int = 6,
-    state_dim: int = 6,
-    cameras: tuple[str, ...] = ("front",),
-    has_language: bool = False,
-) -> DataSchema:
-    return DataSchema(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        cameras=cameras,
-        image_sizes={cam: (224, 224) for cam in cameras},
-        has_language=has_language,
-    )
 
 
 def _make_norm_stats(action_dim: int = 6, state_dim: int = 6) -> NormStats:
@@ -146,68 +110,6 @@ class _MockModel:
 
     def __call__(self, *args, **kwargs):
         return self
-
-
-def _setup_checkpoint_dir(
-    tmpdir: Path,
-    recipe: TrainRecipe,
-    schema: DataSchema,
-    norm_stats: NormStats,
-    action_dim: int = 6,
-    action_horizon: int = 10,
-) -> Path:
-    """Create a minimal checkpoint directory with inference_metadata/."""
-    meta_dir = tmpdir / "inference_metadata"
-    meta_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save schema
-    schema_dict = {
-        "state_dim": schema.state_dim,
-        "action_dim": schema.action_dim,
-        "cameras": list(schema.cameras),
-        "has_language": schema.has_language,
-    }
-    with open(meta_dir / "schema.json", "w") as f:
-        json.dump(schema_dict, f)
-
-    # Save norm_stats
-    ns_dict = {
-        "state": {"mean": norm_stats.state.mean, "std": norm_stats.state.std} if norm_stats.state else None,
-        "action": {"mean": norm_stats.action.mean, "std": norm_stats.action.std} if norm_stats.action else None,
-        "method": "zscore",
-    }
-    with open(meta_dir / "norm_stats.json", "w") as f:
-        json.dump(ns_dict, f)
-
-    # Save recipe as YAML (manual serialization for test fixture)
-    import yaml
-    import dataclasses
-    recipe_dict = {}
-    for f_field in dataclasses.fields(recipe):
-        val = getattr(recipe, f_field.name)
-        if dataclasses.is_dataclass(val) and not isinstance(val, type):
-            val = dataclasses.asdict(val)
-        recipe_dict[f_field.name] = val
-    # Re-structure to match expected YAML layout
-    yaml_dict = {
-        "model": {"name": recipe.model_name, "path": recipe.model_path},
-        "action_spec": dataclasses.asdict(recipe.action_spec),
-        "training": {
-            "backend": recipe.backend,
-            "lr": recipe.lr,
-            "batch_size": recipe.batch_size,
-            "total_steps": recipe.total_steps,
-        },
-    }
-    with open(meta_dir / "recipe.yaml", "w") as f:
-        yaml.dump(yaml_dict, f)
-
-    # Save model weights (empty state dict is fine for mock)
-    final_dir = tmpdir / "final"
-    final_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({}, final_dir / "model.pt")
-
-    return tmpdir
 
 
 class TestExecutionPolicies:
@@ -321,7 +223,7 @@ class TestObsNormalization:
 
     def test_imagenet_normalization_values(self):
         """Verify ImageNet constants are correct."""
-        from vla_factory.data.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import IMAGENET_MEAN, IMAGENET_STD
         np.testing.assert_allclose(IMAGENET_MEAN, [0.485, 0.456, 0.406], atol=1e-6)
         np.testing.assert_allclose(IMAGENET_STD, [0.229, 0.224, 0.225], atol=1e-6)
 
@@ -362,7 +264,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_fallback_imagenet(self):
         """When norm_stats.images is None, both paths use ImageNet."""
-        from vla_factory.data.transforms.normalize import Normalize
+        from vla_factory.assembly.transform.normalize import Normalize
 
         norm_stats = NormStats(
             state=FeatureStats(mean=[0.0] * 6, std=[1.0] * 6),
@@ -379,7 +281,7 @@ class TestTrainInferNormalizationConsistency:
         train_result = sample_train["images.front"]
 
         # ── Inference path: _obs_to_observation logic (same code) ──
-        from vla_factory.data.transforms.normalize import IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import IMAGENET_MEAN, IMAGENET_STD
         img_inf = img_hwc.transpose(2, 0, 1).copy()
         infer_result = (img_inf - IMAGENET_MEAN[:, None, None]) / IMAGENET_STD[:, None, None]
 
@@ -387,7 +289,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_image_normalization_with_per_camera_stats(self):
         """use_imagenet_stats=False makes Normalize consume per-camera stats."""
-        from vla_factory.data.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         custom_mean = [0.3, 0.4, 0.5]
         custom_std = [0.2, 0.3, 0.4]
@@ -420,7 +322,7 @@ class TestTrainInferNormalizationConsistency:
 
     def test_state_normalization_uses_saved_stats(self):
         """Both paths use norm_stats.state for z-score."""
-        from vla_factory.data.transforms.normalize import Normalize
+        from vla_factory.assembly.transform.normalize import Normalize
 
         state_mean = [1.0, 2.0, 3.0]
         state_std = [0.5, 1.0, 1.5]
@@ -447,7 +349,7 @@ class TestTrainInferNormalizationConsistency:
         Default True → fixed ImageNet constants (the pretrained-backbone default).
         Explicit False → per-camera dataset stats from stats.images.
         """
-        from vla_factory.data.transforms.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
+        from vla_factory.assembly.transform.normalize import Normalize, IMAGENET_MEAN, IMAGENET_STD
 
         img_hwc = np.full((16, 16, 3), 0.5, dtype=np.float32)
         img = img_hwc.transpose(2, 0, 1).copy()
@@ -479,12 +381,58 @@ class TestTrainInferNormalizationConsistency:
         )
 
 
+class TestDataSchemaObservationBoundary:
+    """The engine rejects adapter output outside the checkpoint DataSchema."""
+
+    @staticmethod
+    def _engine():
+        from vla_factory.inference.inference_engine import InferenceEngine
+
+        engine = object.__new__(InferenceEngine)
+        engine.camera_keys = ("front", "wrist")
+        engine.schema = make_schema(
+            state_dim=3, action_dim=2, cameras=("front", "wrist"),
+        )
+        engine.preprocessor = lambda sample: sample
+        engine.device = torch.device("cpu")
+        return engine
+
+    def test_missing_dataschema_camera_fails_before_preprocessing(self):
+        engine = self._engine()
+        obs = ObsDict(
+            video={"front": np.zeros((8, 8, 3), dtype=np.uint8)},
+            state=np.zeros(3, dtype=np.float32),
+        )
+        with pytest.raises(ValueError, match="missing cameras.*wrist"):
+            engine._obs_to_observation(obs)
+
+    def test_missing_dataschema_state_fails_before_preprocessing(self):
+        engine = self._engine()
+        video = {
+            key: np.zeros((8, 8, 3), dtype=np.uint8)
+            for key in engine.camera_keys
+        }
+        with pytest.raises(ValueError, match="state is required with width 3"):
+            engine._obs_to_observation(ObsDict(video=video, state=None))
+
+    def test_wrong_dataschema_state_width_fails_before_preprocessing(self):
+        engine = self._engine()
+        video = {
+            key: np.zeros((8, 8, 3), dtype=np.uint8)
+            for key in engine.camera_keys
+        }
+        with pytest.raises(ValueError, match=r"expected state shape \(3,\)"):
+            engine._obs_to_observation(
+                ObsDict(video=video, state=np.zeros(2, dtype=np.float32))
+            )
+
+
 # ── Tests: ZMQObsAdapter ───────────────────────────────────────────
 
 
 class TestZMQObsAdapter:
     def test_basic_conversion(self):
-        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+        from vla_factory.inference.platforms.simulator import SimulatorAdapter
 
         adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
@@ -501,7 +449,7 @@ class TestZMQObsAdapter:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_missing_camera_raises(self):
-        from vla_factory.deploy.platforms.simulator import SimulatorAdapter
+        from vla_factory.inference.platforms.simulator import SimulatorAdapter
 
         adapter = SimulatorAdapter(camera_keys=("front", "wrist"))
         zmq_obs = {
@@ -517,7 +465,7 @@ class TestZMQObsAdapter:
 
 class TestReplayPolicy:
     def test_replay_sequence(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         data = [
             {"action": np.array([1.0, 2.0])},
@@ -532,7 +480,7 @@ class TestReplayPolicy:
         np.testing.assert_array_equal(policy.predict(obs).values, [[5.0, 6.0]])
 
     def test_replay_exhausted(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -541,7 +489,7 @@ class TestReplayPolicy:
             policy.predict(obs)
 
     def test_replay_reset(self):
-        from vla_factory.deploy.infer import ReplayPolicy
+        from vla_factory.inference.execution import ReplayPolicy
 
         policy = ReplayPolicy([{"action": np.array([1.0])}])
         obs = ObsDict(video={}, state=None)
@@ -557,14 +505,14 @@ class TestResolveVectorKeys:
     """The dimension→key order is a data/model contract.
 
     The checkpoint schema (populated from dataset ``names`` at train time) is
-    the sole source — the training dataset is never re-read. Resolution is
-    strict: every non-empty vector must carry exactly one key per dimension so
-    checkpoint metadata remains complete and self-contained.
+    the sole source — the training dataset is never re-read. With the per-entry
+    dim table, "one key per dim" is structural: every dim of a non-empty
+    vector must carry a canonical ``name``; an empty vector resolves to ().
     """
 
     def test_schema_keys_returned(self, caplog):
         """Dataset ``names`` (in schema) are returned when present."""
-        schema = DataSchema(
+        schema = make_schema(
             state_dim=3, action_dim=2,
             state_keys=("s0", "s1", "s2"), action_keys=("a0", "a1"),
         )
@@ -572,24 +520,38 @@ class TestResolveVectorKeys:
         assert sk == ("s0", "s1", "s2")
         assert ak == ("a0", "a1")
 
-    def test_raises_when_missing(self):
-        """A non-empty vector without keys violates the schema contract."""
-        schema = DataSchema(state_dim=3, action_dim=3)
-        with pytest.raises(ValueError, match=r"schema\.state_keys is empty"):
+    # A nameless dim is what a *broken reader* produces, so these build the
+    # schema directly: ``make_schema`` names every dim, exactly as every real
+    # reader does (and as the resolver's Validate stage now requires).
+
+    def test_raises_when_dim_has_no_name(self):
+        """A non-empty vector with a nameless dim violates the schema contract."""
+        schema = DataSchema(
+            state_dims=tuple(StateDim(name=None, source_field="observation.state") for _ in range(3)),
+            action_dims=tuple(ActionDim(name=None, source_field="action") for _ in range(3)),
+        )
+        with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)
 
-    def test_length_mismatch_raises(self):
-        """A resolved key count must agree exactly with the vector dimension."""
+    def test_partial_names_raises(self):
+        """A dim without a name (keys shorter than dim count) fails."""
         schema = DataSchema(
-            state_dim=3, action_dim=2,
-            state_keys=("a", "b"), action_keys=("x", "y"),  # state: 2 != 3; action: 2 == 2
+            state_dims=(
+                StateDim(name="a", source_field="observation.state"),
+                StateDim(name="b", source_field="observation.state"),
+                StateDim(name=None, source_field="observation.state"),   # 3rd dim unnamed
+            ),
+            action_dims=(
+                ActionDim(name="x", source_field="action"),
+                ActionDim(name="y", source_field="action"),
+            ),
         )
-        with pytest.raises(ValueError, match=r"schema\.state_keys has 2 entries"):
+        with pytest.raises(ValueError, match=r"canonical name"):
             resolve_vector_keys(schema)
 
     def test_dim_zero_returns_empty(self):
         """A stateless vector (dim 0) resolves to empty keys without warning."""
-        schema = DataSchema(state_dim=0, action_dim=2, action_keys=("x", "y"))
+        schema = make_schema(state_dim=0, action_dim=2, action_keys=("x", "y"))
         sk, ak = resolve_vector_keys(schema)
         assert sk == ()
         assert ak == ("x", "y")
@@ -603,7 +565,7 @@ class TestLerobotHostAdapters:
     sorting, no auto-detection (which would scramble dimensions)."""
 
     def test_obs_adapter_assembles_state_in_key_order(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         state_keys = ("shoulder", "elbow", "wrist")
         # Host dict deliberately in scrambled insertion order.
@@ -615,7 +577,7 @@ class TestLerobotHostAdapters:
         np.testing.assert_array_equal(obs.state, [1.0, 2.0, 3.0])
 
     def test_obs_adapter_missing_state_key_raises(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=(), state_keys=("a", "b"), state_dim=2,
@@ -625,7 +587,7 @@ class TestLerobotHostAdapters:
 
     def test_obs_adapter_count_mismatch_raises(self):
         """Contract check must be a real raise (survives `python -O`)."""
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         with pytest.raises(ValueError, match="state_keys count"):
             LerobotHostObsAdapter(
@@ -633,7 +595,7 @@ class TestLerobotHostAdapters:
             )
 
     def test_action_adapter_maps_each_dim(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostActionAdapter
 
         keys = ("shoulder", "elbow", "wrist")
         adapter = LerobotHostActionAdapter(action_dim=3, action_keys=keys)
@@ -642,23 +604,16 @@ class TestLerobotHostAdapters:
 
     def test_action_adapter_count_mismatch_raises(self):
         """Contract check must be a real raise (survives `python -O`)."""
-        from vla_factory.deploy.platforms.lerobot import LerobotHostActionAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostActionAdapter
 
         with pytest.raises(ValueError, match="action_keys count"):
             LerobotHostActionAdapter(action_dim=3, action_keys=("a", "b"))
 
     def test_obs_adapter_missing_camera_raises(self):
-        from vla_factory.deploy.platforms.lerobot import LerobotHostObsAdapter
+        from vla_factory.inference.platforms.lerobot import LerobotHostObsAdapter
 
         adapter = LerobotHostObsAdapter(
             camera_keys=("front",), state_keys=("a",), state_dim=1,
         )
         with pytest.raises(KeyError, match="front"):
             adapter({"a": 1.0})
-
-
-# ── Entry point ─────────────────────────────────────────────────────
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -1,0 +1,63 @@
+# LeKiwi robot profile (lerobot mobile manipulator).
+#
+# A wheeled base + 6-DoF arm. The 9-DoF action vector is the concatenation,
+# in robot-native order, of the 3 base commands and the 6 arm joints (the last
+# arm joint being the gripper). These are the stable body facts consumed by the
+# composition resolver; runtime transport / platform session info lives in the
+# inference module.
+
+name: lekiwi
+
+# Stable semantic camera names exposed by the body.
+cameras: [front, wrist]
+
+# Robot-native joint order — this is the *command* vector, not the URDF joint
+# list. base_x / base_y are planar translations and base_z is the heading; the
+# URDF models the base as three omni wheels (base_left_wheel / base_right_wheel
+# / base_back_wheel) that the platform derives from these three commands, so
+# they have no URDF counterpart. The 6-DoF arm follows so100 conventions and the
+# final entry is the gripper.
+#
+# Arm names are the lerobot motor keys (shoulder_pan, ...), which is what the
+# dataset's per-dim names carry; the URDF prefixes the same joints with `arm_`.
+# Keep the lerobot spelling — the resolver reconciles these against the data
+# side, not against the URDF.
+joints:
+  names: [base_x, base_y, base_z,
+          shoulder_pan, shoulder_lift, elbow_flex,
+          wrist_flex, wrist_roll, gripper]
+  units: radian
+  types: [prismatic, prismatic, continuous,
+          revolute, revolute, revolute,
+          revolute, revolute, prismatic]
+  # Still unspecified: the upstream URDF (see urdf_ref) declares all nine
+  # actuated joints as `continuous` and carries **zero** <limit> elements, so it
+  # cannot supply ranges — including for the gripper, which obviously cannot
+  # rotate freely. That is an exporter artifact, not a physical claim, which is
+  # also why the `types` above are not taken from it. Real ranges have to come
+  # from the STS3215 servo spec or a per-unit calibration file; until one of
+  # those is pinned down, leaving these empty is correct (do not guess).
+  limits_low: []
+  limits_high: []
+
+# Gripper DoF is the last joint of the arm vector; lerobot convention is
+# 0 = fully open, 1 = fully closed.
+gripper:
+  open_value: 0.0
+  close_value: 1.0
+  joint_index: 8
+
+control_modes: [joint_pos]
+native_action_type: joint_pos
+
+coordinate_frame: base_link
+urdf_ref: https://github.com/SIGRobotics-UIUC/LeKiwi/blob/main/URDF/LeKiwi.urdf
+
+# Static safety bounds on the action vector; unspecified for the same reason as
+# the joint limits above — the URDF carries no ranges. The resolver records
+# (not silently applies) bounds, so an empty pair means "no static bound
+# declared", not "unbounded is safe".
+safety_bounds_low: []
+safety_bounds_high: []
+
+recommended_control_hz: 30

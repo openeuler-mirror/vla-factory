@@ -1,0 +1,46 @@
+# RoboTwin robot profile (bimanual dual-arm simulator body).
+#
+# RoboTwin is a dual-arm manipulation simulator; the body facts below are its
+# joint topology — two 6-DoF arms each with a 1-DoF gripper (14 DoF total), in
+# the fixed concatenation order the RoboTwin reader produces. These are body
+# facts consumed by the composition resolver; the simulator transport / session
+# info lives in the inference module.
+
+name: robotwin
+
+cameras: [head_camera, left_camera, right_camera]
+
+# 14-DoF joint vector in reader order: left_arm(6) + left_gripper(1) +
+# right_arm(6) + right_gripper(1). Matches data/reader/robotwin.py _JOINT_ORDER
+# and the per-dim source_field the reader writes into the schema.
+joints:
+  names: [left_arm_0, left_arm_1, left_arm_2, left_arm_3, left_arm_4, left_arm_5,
+          left_gripper,
+          right_arm_0, right_arm_1, right_arm_2, right_arm_3, right_arm_4, right_arm_5,
+          right_gripper]
+  units: radian
+  types: [revolute, revolute, revolute, revolute, revolute, revolute,
+          prismatic,
+          revolute, revolute, revolute, revolute, revolute, revolute,
+          prismatic]
+  limits_low: []
+  limits_high: []
+
+# Two grippers (indices 6 and 13); the single gripper convention field carries
+# the shared open/close values. Per-gripper indexing arrives with structured
+# action segments (architecture §4.1.3 / data-module §8.3 EEF group).
+gripper:
+  open_value: 0.0
+  close_value: 1.0
+  joint_index: null
+
+control_modes: [joint_pos]
+native_action_type: joint_pos
+
+coordinate_frame: base_link
+urdf_ref: ""
+
+safety_bounds_low: []
+safety_bounds_high: []
+
+recommended_control_hz: 25
