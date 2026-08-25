@@ -23,6 +23,7 @@ import cv2  # noqa: E402 — after skip guard; cv2 is a core dep
 
 from vla_factory.data.codec import resolve_codec  # noqa: E402
 from vla_factory.data.reader import get_reader, RoboTwinReader  # noqa: E402
+from vla_factory.data.data_schema import VideoRef  # noqa: E402
 
 CAMERAS = ("head_camera", "left_camera", "right_camera")
 ARM_DIM = 6
@@ -166,3 +167,109 @@ def test_norm_stats(dataset):
 
     all_qpos = np.concatenate([qpos[0], qpos[1]], axis=0)
     np.testing.assert_allclose(stats.state.mean, all_qpos.mean(axis=0), rtol=1e-4)
+
+
+# ── Hdf5JpegCodec LRU ──────────────────────────────────────────────
+
+
+def _first_refs(root, episode: int) -> dict[str, VideoRef]:
+    """Per-camera VideoRefs of the first frame of an episode."""
+    reader = RoboTwinReader()
+    codec = resolve_codec("hdf5_jpeg")
+    frame = reader.read_episode(root, episode, codec).load_frames()[0]
+    return frame.images
+
+
+def test_lru_reuses_decoded_frame(dataset):
+    """Re-decoding the same (stream, index) must return identical pixels."""
+    from vla_factory.data.codec import resolve_codec
+
+    root, _ = dataset
+    codec = resolve_codec("hdf5_jpeg")
+    ref = _first_refs(root, 0)["head_camera"]
+
+    first = codec.decode_frame(ref)
+    # Served from the LRU, not a fresh JPEG decode
+    cache = codec._caches[ref.video_path]._cache
+    assert (ref.stream, ref.frame_index) in cache
+
+    second = codec.decode_frame(ref)
+    np.testing.assert_array_equal(first, second)
+
+
+def test_lru_eviction(dataset):
+    """Overflowing the per-file LRU evicts the least-recently-used frame."""
+    from vla_factory.data.codec.hdf5_jpeg import Hdf5JpegCodec
+
+    root, _ = dataset
+    codec = Hdf5JpegCodec(max_cached_per_video=3)
+    refs = [
+        RoboTwinReader().read_episode(root, 0, codec).load_frames()[t].images["head_camera"]
+        for t in range(4)
+    ]
+
+    for ref in refs:
+        codec.decode_frame(ref)
+
+    cache = codec._caches[refs[0].video_path]._cache
+    assert len(cache) == 3
+    # Oldest frame (index 0) was evicted; the newest three remain
+    assert ("head_camera", 0) not in cache
+    assert all(("head_camera", t) in cache for t in (1, 2, 3))
+
+
+def test_lru_key_includes_stream(dataset):
+    """Same frame_index under different cameras must not collide in the LRU."""
+    from vla_factory.data.codec.hdf5_jpeg import Hdf5JpegCodec
+
+    root, _ = dataset
+    codec = Hdf5JpegCodec()
+    refs = _first_refs(root, 0)  # one ref per camera, all frame_index 0
+
+    for ref in refs.values():
+        codec.decode_frame(ref)
+
+    cache = codec._caches[next(iter(refs.values())).video_path]._cache
+    # Three distinct (stream, 0) keys coexist — same index, different cameras
+    assert len(cache) == len(CAMERAS)
+    for cam in CAMERAS:
+        assert (cam, 0) in cache
+
+
+def test_codec_default_max_cached(dataset, tmp_path):
+    """resolve_codec must default to a *working* 32-frame LRU like PyAV."""
+    from vla_factory.data.codec import resolve_codec
+
+    root, _ = dataset
+    codec = resolve_codec("hdf5_jpeg")
+    assert codec._max_cached == 32
+
+    # The cache is keyed per hdf5 file, so overflow must happen within a
+    # single file (the shared fixture tops out at 7x3=21 keys < 32 per file).
+    # Build one episode with T=12 timesteps x 3 cameras = 36 distinct
+    # (stream, frame_index) keys > the default cap, so the eviction path
+    # genuinely runs under default settings.
+    big_root = tmp_path / "big" / "task" / "config"
+    data_dir = big_root / "data"
+    data_dir.mkdir(parents=True)
+    _make_episode(data_dir / "episode0.hdf5", T=12, seed=2)
+
+    reader = RoboTwinReader()
+    episode = reader.read_episode(big_root, 0, codec).load_frames()
+    assert len(episode) == 12
+    for frame in episode:
+        for ref in frame.images.values():
+            assert codec.decode_frame(ref).shape == (H, W, 3)
+    # 36 inserts into one file-level cache -> evicted down to exactly 32.
+    caches = [c for c in codec._caches.values() if c.path.name == "episode0.hdf5"]
+    assert len(caches) == 1
+    assert len(caches[0]._cache) == 32
+
+    # Decoding other episodes through the same codec still works and every
+    # file-level cache stays within the default bound.
+    for ep in range(2):  # fixture lengths 5 + 7 -> 15 / 21 keys per file
+        ep_frames = reader.read_episode(root, ep, codec).load_frames()
+        for frame in ep_frames:
+            for ref in frame.images.values():
+                codec.decode_frame(ref)
+    assert all(len(c._cache) <= c.max_cached for c in codec._caches.values())
