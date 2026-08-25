@@ -67,14 +67,6 @@ vlafactory-cli list
 #   act                  backend=pytorch  head=...
 ```
 
-### 1. 预处理视频（可选，但推荐）
-
-把数据集的视频帧解码到 `.npy` 磁盘缓存，避免训练时反复解码：
-
-```bash
-vlafactory-cli preprocess --config examples/act_lekiwi_banana.yaml
-```
-
 ### 2. 训练
 
 ```bash

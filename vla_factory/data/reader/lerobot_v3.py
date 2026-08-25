@@ -4,16 +4,20 @@ Handles:
   1. ``meta/info.json`` → DataSchema
   2. ``meta/stats.json`` → NormStats
   3. ``data/*.parquet`` → episode lengths / ranges
-  4. ``videos/{cam_key}/chunk-*/episode_*.mp4`` or ``file-*.mp4`` → Episode with VideoRef
+  4. ``videos/{cam_key}/chunk-*/episode_*.mp4`` or ``file-*.mp4`` → Episode with
+     VideoRef (dataset global ``index`` mapped to the correct video file + its
+     within-file offset via per-file cumulative global ranges)
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
+import av
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
@@ -93,6 +97,74 @@ def _load_tasks(path: Path) -> dict[int, str]:
     return {}
 
 
+
+@dataclass(frozen=True)
+class _VideoFileSpan:
+    """One multi-episode video file and the dataset-global range it covers."""
+
+    video_path: Path
+    global_start: int  # inclusive
+    global_end: int  # inclusive (global_start + frame_count - 1)
+    frame_count: int
+
+
+def _video_frame_count(video_path: Path) -> int:
+    """Return a video file's frame count, preferring container metadata.
+
+    ``av`` exposes ``stream.frames`` for most muxers (O(1) header read). When the
+    metadata reports 0/None, fall back to an exact decode-count; that path is slow
+    but runs once per file (cached upstream by the reader).
+    """
+    container = av.open(str(video_path))
+    try:
+        streams = container.streams.video
+        if not streams:
+            raise ValueError(f"No video stream in {video_path}")
+        n = streams[0].frames
+        if n is not None and n > 0:
+            return int(n)
+        return sum(1 for _ in container.decode(streams[0]))
+    finally:
+        container.close()
+
+
+def _build_video_spans(dataset_path: Path, cam_key: str) -> list[_VideoFileSpan]:
+    """Map each multi-episode video file to its dataset-global index range.
+
+    ``file-NNN.mp4`` files are sorted by path so filename order equals global
+    order; each file's frame count extends a running global cursor. Per-episode
+    files (``episode_*.mp4``) are excluded — they have no global-range meaning and
+    are handled by the per-episode path.
+    """
+    videos_dir = dataset_path / "videos" / cam_key
+    if not videos_dir.exists():
+        return []
+    mp4s = sorted(
+        p for p in videos_dir.rglob("*.mp4") if not p.stem.startswith("episode_")
+    )
+    spans: list[_VideoFileSpan] = []
+    cursor = 0
+    for mp4 in mp4s:
+        n = _video_frame_count(mp4)
+        if n <= 0:
+            raise ValueError(f"Video file has 0 decodable frames: {mp4}")
+        spans.append(_VideoFileSpan(mp4, cursor, cursor + n - 1, n))
+        cursor += n
+    return spans
+
+
+def _span_error(g: int, cam_key: str, spans: list[_VideoFileSpan]) -> ValueError:
+    """Build an actionable error when a global index matches no video span."""
+    details = ", ".join(
+        f"{s.video_path.name}[{s.global_start}-{s.global_end}]" for s in spans
+    )
+    return ValueError(
+        f"Global frame index {g} (camera '{cam_key}') is not covered by any video "
+        f"file; available spans: {details}. Likely a parquet/video frame-count "
+        "mismatch or a missing/corrupt video file."
+    )
+
+
 @ReaderRegistry.register("lerobot-v3", aliases=("lerobot_v3",))
 class LeRobotV3Reader:
     """Read LeRobot v3 datasets (parquet + MP4)."""
@@ -101,6 +173,9 @@ class LeRobotV3Reader:
         # tasks is a dataset-level static table; cache it per dataset path so
         # per-episode reads don't re-parse meta/tasks.* (N+1 I/O otherwise).
         self._tasks_cache: dict[Path, dict[int, str]] = {}
+        # Video file→global-range spans are dataset-level too; cache per
+        # (dataset_path, cam_key) so per-episode reads don't re-open every mp4.
+        self._video_spans_cache: dict[tuple[Path, str], list[_VideoFileSpan]] = {}
 
     def can_read(self, path: Path) -> bool:
         """Check for ``meta/info.json`` with ``codebase_version >= 3.0``."""
@@ -274,6 +349,66 @@ class LeRobotV3Reader:
 
     # ── Episode reading (parquet + video) ─────────────────────────
 
+    def _video_spans(self, dataset_path: Path, cam_key: str) -> list[_VideoFileSpan]:
+        """Cached per-(dataset, camera) multi-episode video global ranges."""
+        key = (dataset_path, cam_key)
+        spans = self._video_spans_cache.get(key)
+        if spans is None:
+            spans = _build_video_spans(dataset_path, cam_key)
+            self._video_spans_cache[key] = spans
+        return spans
+
+    def _make_video_resolver(
+        self,
+        dataset_path: Path,
+        cam_key: str,
+        ep_idx: int,
+        ep_global_start: int,
+        ep_global_end: int,
+    ) -> Callable[[Any], tuple[Path, int]] | None:
+        """Build a ``row -> (video_path, within_file_index)`` resolver for one episode.
+
+        Returns ``None`` when the camera has no video files. Per-episode videos
+        (``episode_{ep_idx:06d}.mp4``) map via ``frame_index``. Multi-episode
+        files (``file-*.mp4``) resolve to the file whose global range contains
+        the episode's first frame; every frame in the episode then maps via
+        ``index - file_global_start`` (codecs treat ``VideoRef.frame_index`` as a
+        0-based within-file ordinal). An episode must fit entirely inside one
+        multi-episode video file; if it crosses a file boundary we fail fast
+        rather than silently decoding black/wrong frames.
+        """
+        videos_dir = dataset_path / "videos" / cam_key
+        if not videos_dir.exists():
+            return None
+
+        # Pattern 1: per-episode video file → within-file index is frame_index.
+        per_episode = None
+        for mp4 in sorted(videos_dir.rglob(f"episode_{ep_idx:06d}.mp4")):
+            per_episode = mp4
+            break
+        if per_episode is not None:
+            def _per_episode(row: Any) -> tuple[Path, int]:
+                return per_episode, int(row["frame_index"])
+
+            return _per_episode
+
+        # Patterns 2 & 3: multi-episode / flat files → cumulative global ranges.
+        spans = self._video_spans(dataset_path, cam_key)
+        if not spans:
+            return None
+        chosen = None
+        for span in spans:
+            if span.global_start <= ep_global_start <= span.global_end:
+                chosen = span
+                break
+        if chosen is None or ep_global_end > chosen.global_end:
+            raise _span_error(ep_global_start, cam_key, spans)
+
+        def _multi_episode(row: Any) -> tuple[Path, int]:
+            return chosen.video_path, int(row["index"]) - chosen.global_start
+
+        return _multi_episode
+
     def read_episode(
         self, path: Path, episode_index: int, codec: VideoCodec
     ) -> Episode:
@@ -322,12 +457,17 @@ class LeRobotV3Reader:
             tasks = _load_tasks(path)
             self._tasks_cache[path] = tasks
 
-        # Build video path map: cam_key → video_path
-        video_paths = _resolve_video_paths(path, camera_keys, rows)
-
-        # Compute global frame offset for each video file
-        # (for multi-episode videos, frame_index in video = global `index`)
-        global_offset = int(rows["index"].iloc[0])
+        # Per camera, a row → (video_path, within-file index) resolver.
+        ep_idx = int(rows["episode_index"].iloc[0])
+        ep_global_start = int(rows["index"].iloc[0])
+        ep_global_end = int(rows["index"].iloc[-1])
+        video_resolvers: dict[str, Callable[[Any], tuple[Path, int]]] = {}
+        for cam_key in camera_keys:
+            resolver = self._make_video_resolver(
+                path, cam_key, ep_idx, ep_global_start, ep_global_end
+            )
+            if resolver is not None:
+                video_resolvers[cam_key] = resolver
 
         # Build frame loader closure
         def frame_loader() -> Iterator[Frame]:
@@ -335,14 +475,10 @@ class LeRobotV3Reader:
                 images: dict[str, VideoRef] = {}
                 for cam_key, meta in camera_keys.items():
                     cam_name = cam_key.split(".")[-1]
-                    vpath = video_paths.get(cam_key)
-                    if vpath is None:
+                    resolver = video_resolvers.get(cam_key)
+                    if resolver is None:
                         continue
-                    # For multi-episode video: use global `index` as video frame index
-                    # For per-episode video: use `frame_index` as video frame index
-                    vid_frame_idx = _compute_video_frame_index(
-                        row, vpath, path, cam_key
-                    )
+                    vpath, vid_frame_idx = resolver(row)
                     images[cam_name] = VideoRef(
                         video_path=vpath,
                         frame_index=vid_frame_idx,
@@ -402,58 +538,3 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _concat_rows(a: Any, b: Any) -> Any:
     return pd.concat([a, b], ignore_index=True)
-
-
-def _resolve_video_paths(
-    dataset_path: Path,
-    camera_keys: dict[str, dict[str, Any]],
-    rows: Any,
-) -> dict[str, Path]:
-    """Resolve video file paths for each camera key.
-
-    Tries these patterns in order:
-      1. ``videos/{cam_key}/chunk-{chunk}/episode_{ep_idx:06d}.mp4`` (per-episode)
-      2. ``videos/{cam_key}/chunk-{chunk}/{any_file}.mp4`` (multi-episode)
-      3. ``videos/{cam_key}/{any_file}.mp4`` (flat structure)
-    """
-    result: dict[str, Path] = {}
-    ep_idx = int(rows["episode_index"].iloc[0])
-
-    for cam_key in camera_keys:
-        videos_dir = dataset_path / "videos" / cam_key
-        if not videos_dir.exists():
-            continue
-
-        # Pattern 1: per-episode video file
-        for mp4 in sorted(videos_dir.rglob(f"episode_{ep_idx:06d}.mp4")):
-            result[cam_key] = mp4
-            break
-
-        if cam_key in result:
-            continue
-
-        # Pattern 2 & 3: any mp4 file (multi-episode or flat)
-        mp4_files = sorted(videos_dir.rglob("*.mp4"))
-        if mp4_files:
-            result[cam_key] = mp4_files[0]
-
-    return result
-
-
-def _compute_video_frame_index(
-    row: Any,
-    video_path: Path,
-    dataset_path: Path,
-    cam_key: str,
-) -> int:
-    """Compute the frame index within the video file.
-
-    For per-episode videos: use ``frame_index``.
-    For multi-episode videos: use ``index`` (global position).
-    """
-    # Check if the video filename contains "episode_XXXXXX"
-    name = video_path.stem
-    if name.startswith("episode_"):
-        return int(row["frame_index"])
-    # Multi-episode video: use global index
-    return int(row["index"])
