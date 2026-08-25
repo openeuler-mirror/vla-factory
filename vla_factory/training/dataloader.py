@@ -59,7 +59,7 @@ def create_dataloader(
 
     # 1. Reader + codec (frame access; the descriptions come from the assembly)
     reader = get_reader(data_cfg.format, path=path)
-    codec = resolve_codec(data_cfg.video_codec)
+    codec = resolve_codec(data_cfg.video_codec, data_cfg.format)
 
     schema = assembly.schema
     norm_stats = assembly.norm_stats

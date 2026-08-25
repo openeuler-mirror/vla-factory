@@ -86,6 +86,31 @@ have_module() {  # <python> <module>
   "$1" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$2') else 1)" 2>/dev/null
 }
 
+install_torchcodec_for_python() {  # <python>
+  local python_bin="$1" torch_version tc_version
+  if have_module "$python_bin" torchcodec; then
+    return
+  fi
+  torch_version="$("$python_bin" -c 'import torch; print(torch.__version__)')"
+  tc_version=""
+  case "$torch_version" in
+    2.7.*)  tc_version="0.4.0" ;;
+    2.8.*)  tc_version="0.7.0" ;;
+    2.9.*)  tc_version="0.9.0" ;;
+    2.10.*) tc_version="0.10.0" ;;
+    2.11.*) tc_version="0.11.0" ;;
+    2.12.*) tc_version="0.15.0" ;;
+    *)      tc_version="" ;;
+  esac
+  if [ -n "$tc_version" ]; then
+    echo "== base: installing torchcodec==$tc_version for torch ${torch_version%%+*} =="
+    "$UV" pip install --python "$python_bin" --quiet --no-sources "torchcodec==$tc_version"
+  else
+    echo "== base: installing latest torchcodec =="
+    "$UV" pip install --python "$python_bin" --quiet --no-sources "torchcodec>=0.4.0"
+  fi
+}
+
 provision_venv() {  # <label> <marker module> <extra pip args...>
   local label="$1" marker="$2"; shift 2
   local env_dir="$ENV_PREFIX/$label"
@@ -163,7 +188,10 @@ _upgrade_flags=()
 
 for target in "${targets[@]}"; do
   case "$target" in
-    base) provision_venv base pytest -e ".[dev]" ;;
+    base)
+      provision_venv base pytest -e ".[dev]"
+      install_torchcodec_for_python "$ENV_PREFIX/base/bin/python"
+      ;;
     act)  provision_via_install act act lerobot ;;
     pi)   provision_via_install pi  pi0 openpi ;;
     *)    echo "provision: unknown environment '$target' (expected base|act|pi)" >&2; exit 1 ;;
