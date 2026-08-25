@@ -12,6 +12,7 @@ from helpers import make_assembly, make_schema
 
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -172,6 +173,84 @@ class TestPyAVCodec(unittest.TestCase):
             )
             img = self.codec.decode_frame(ref)
             self.assertEqual(img.shape, (IMAGE_H, IMAGE_W, 3))
+
+    def test_backward_random_access(self):
+        """Backward (out-of-order) access must return the exact target frame
+        without re-decoding the whole video prefix.
+
+        Regression: ``_seek_to`` passed the bare frame ordinal as the av seek
+        timestamp. In a 1/15360 time_base the ordinal is ~512x too small, so
+        every backward access sought to (nearly) the start and re-decoded
+        O(frame_idx) frames (~80 ms for a late frame here). The seek must be
+        expressed in the stream's time_base units.
+        """
+        from vla_factory.data.codec.pyav import PyAVCodec
+        from vla_factory.data.data_schema import VideoRef
+
+        # disk_cache=False isolates the decoder seek from .npy disk I/O.
+        codec = PyAVCodec(disk_cache=False)
+
+        def ref(i: int) -> VideoRef:
+            return VideoRef(
+                video_path=self.video_path,
+                frame_index=i,
+                height=IMAGE_H,
+                width=IMAGE_W,
+                channels=3,
+            )
+
+        target = 1100
+        expected = codec.decode_frame(ref(target))  # forward-decoded reference
+        # Overflow the 32-entry LRU so ``target`` is evicted from the in-memory
+        # cache — otherwise the access below is a cache hit and never reaches
+        # the backward ``_seek_to`` path this test is meant to exercise.
+        for i in range(1, 40):
+            codec.decode_frame(ref(target + i))
+        t0 = time.perf_counter()
+        img = codec.decode_frame(ref(target))        # backward -> _seek_to(target)
+        dt_ms = (time.perf_counter() - t0) * 1000
+
+        self.assertTrue(
+            np.array_equal(img, expected),
+            "backward access must return the exact target frame",
+        )
+        # The buggy seek re-decoded ~target frames (~80 ms); the fixed seek
+        # lands on a nearby keyframe and decodes a handful of frames. 50 ms is
+        # a generous bound the fixed path never approaches.
+        self.assertLess(
+            dt_ms, 50.0, f"backward seek took {dt_ms:.1f} ms"
+        )
+
+    def test_seek_lands_near_target(self):
+        """A backward seek must land on a keyframe near the target frame.
+
+        Regression: the seek timestamp was the bare frame ordinal, which lands
+        at the very start for a 1/15360 time_base. A correct PTS-based seek
+        lands within a few frames of the target on this dense-keyframe dataset.
+        """
+        from vla_factory.data.codec.pyav import PyAVCodec
+
+        codec = PyAVCodec(disk_cache=False)
+        cache = codec._get_cache(self.video_path)
+        cache._ensure_open()
+
+        target = 1100
+        pts = cache._frame_to_pts(target)
+        cache._container.seek(pts, stream=cache._stream)
+        first = next(cache._container.decode(cache._stream))
+        span = cache._stream.time_base.denominator / float(
+            cache._stream.average_rate
+        )
+        landed = int(round(first.pts / span))
+
+        # The correct seek lands at (or just before) the target; the buggy
+        # frame-ordinal seek landed at frame ~0, so a late-landing assertion
+        # deterministically catches the regression regardless of machine speed.
+        self.assertGreater(
+            landed,
+            target * 3 // 4,
+            f"seek to frame {target} landed at frame {landed}",
+        )
 
 
 class TestEpisodeLoad(unittest.TestCase):
