@@ -110,7 +110,8 @@ class PI0ModelWrapper(nn.Module):
     def predict_actions(self, observation, **kwargs):
         obs = self._to_openpi_observation(observation)
         device = next(self.model.parameters()).device
-        return self.model.sample_actions(device, obs, num_steps=kwargs.get("num_steps"))
+        num_steps = kwargs.get("num_steps") or OPENPI_PARAMS["num_inference_steps"]
+        return self.model.sample_actions(device, obs, num_steps=num_steps)
 
     # ── vla Observation → openpi Observation ────────────────────────
 
