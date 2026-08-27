@@ -31,9 +31,12 @@ outputs/
 .venv*/
 venv/
 
-# Vendored third-party skills checkout: a separate git repo, not a submodule.
-# Tracking it would record a dangling gitlink into an unrelated repository.
-/skills/
+# skills/ is a git submodule (github.com/2012geek/skills) — tracked as a
+# gitlink; its per-user leftovers like node_modules stay untracked below.
+/skills/node_modules/
+
+# code-review pipeline scratch dir (prompts/issues per PR, created in cwd)
+/.tmp/
 
 # Claude Code: shared project config (.claude/settings.json, CLAUDE.md, skills/)
 # stays tracked; per-user state and atomic-write leftovers do not.

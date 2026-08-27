@@ -14,11 +14,26 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
 CONF_FILE = Path.home() / ".vlaf_ci.conf"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Known headless agent CLIs and the command template each one needs.
+# The template is executed via sh -c by the daemon; {prompt} is the
+# generated review prompt file, {output} the JSON the agent must produce.
+# zcode is deliberately absent: it is an Electron desktop app with no
+# headless mode — invoking it just opens a window and never produces output.
+# The only supported agent for now — others are being verified one by
+# one and can be wired manually via VLAF_AGENT_CMD.
+AGENT_CHOICES: dict[str, str] = {
+    # stdin, not argv: prompts embed the full PR diff and blow past the
+    # ~128KB single-argument kernel limit ("argument list too long").
+    "claude": ('claude -p --no-session-persistence '
+               '--disable-slash-commands --tools "" < {prompt} > {output}'),
+}
 
 
 # ── Auto-detect defaults ─────────────────────────────────────────────
@@ -41,6 +56,40 @@ def detect_env_default(label: str) -> str:
     return str(p) if p.exists() else ""
 
 
+def ask_agent_cmd() -> str:
+    """Pick the headless agent command for /vla-factory review.
+
+    Offers the known CLIs (marking any found on PATH), an OpenAI-compatible
+    API adapter, manual entry, or skip. Returns the filled-in template for
+    conf['VLAF_AGENT_CMD'].
+    """
+    detected = next((n for n in AGENT_CHOICES if shutil.which(n.split()[0])), "")
+    names = list(AGENT_CHOICES)
+    print("\n  无头 agent 命令 — /vla-factory review 用它执行检视提示词")
+    if not detected and shutil.which("zcode"):
+        print("  注意: 检测到 zcode, 但它是桌面应用、没有无头模式, 不能用于 review")
+    print("  （模板经 shell 执行；{prompt}=提示词文件路径, {output}=结果 JSON 路径）")
+    for i, n in enumerate(names, 1):
+        mark = "  ← 已检测到" if n == detected else ""
+        print(f"    {i}) {n}{mark}")
+    print(f"    {len(names) + 1}) 其他（手动输入完整命令模板）")
+    if detected:
+        print(f"    回车 = 采用 {detected}")
+    else:
+        print("    回车 = 跳过（/vla-factory review 将不可用, help/retest 不受影响）")
+    while True:
+        c = input(f"  选择 [1-{len(names) + 1}]: ").strip().lower()
+        if not c:
+            return AGENT_CHOICES[detected] if detected else ""
+        if c.isdigit() and 1 <= int(c) <= len(names):
+            return AGENT_CHOICES[names[int(c) - 1]]
+        if c == str(len(names) + 1):
+            return ask("完整命令模板", "")
+        if c in AGENT_CHOICES:
+            return AGENT_CHOICES[c]
+        print("    无效选择，请输入编号或名称")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def load_conf() -> dict[str, str]:
@@ -55,10 +104,51 @@ def load_conf() -> dict[str, str]:
 
 
 def save_conf(conf: dict[str, str]) -> None:
-    lines = ["# vla-factory CI daemon configuration (auto-generated)",
-             "# Edit or delete this file to reconfigure.\n"]
-    for k, v in conf.items():
-        lines.append(f"{k}={v}")
+    """Write ~/.vlaf_ci.conf as a fully annotated template.
+
+    The file doubles as the documentation of every supported knob: keys
+    the operator configured keep their values, the rest are written with
+    their defaults (or commented out when optional).
+    """
+    def val(k: str, default: str = "") -> str:
+        return conf.get(k, default)
+
+    lines = [
+        "# vla-factory CI daemon 配置（由 run_ci.sh 生成；可直接编辑，",
+        "# 删除本文件后重新运行 scripts/run_ci.sh 可重新配置）。格式: k=v。",
+        "",
+        "# ── 必填 ──",
+        f"VLAF_GITCODE_TOKEN={val('VLAF_GITCODE_TOKEN')}",
+        f"VLAF_ENV_BASE={val('VLAF_ENV_BASE')}",
+        "",
+        "# ── CI 行为（默认值如下，按需修改）──",
+        f"VLAF_BASE_DIR={val('VLAF_BASE_DIR', str(Path.home() / 'vla-factory-ci'))}",
+        f"VLAF_POLL_INTERVAL={val('VLAF_POLL_INTERVAL', '30')}",
+        f"VLAF_CI_WORKERS={val('VLAF_CI_WORKERS', '5')}",
+        f"VLAF_CMD_WORKERS={val('VLAF_CMD_WORKERS', '5')}",
+        f"VLAF_TIER_TIMEOUT={val('VLAF_TIER_TIMEOUT', '1200')}",
+        f"VLAF_MAX_RETRIES={val('VLAF_MAX_RETRIES', '3')}",
+        f"VLAF_CHECKOUT_TTL_DAYS={val('VLAF_CHECKOUT_TTL_DAYS', '7')}",
+        "",
+        "# ── /vla-factory review ──",
+        "# 无头 agent 命令模板：占位符 {prompt}=检视提示词文件、{output}=结果 JSON",
+        "# 路径，经 shell 执行（可用重定向/$(...)）。检视提示词由 skills 的",
+        "# vlafactory-code-review 技能根据 PR diff 自动生成，无需手写。",
+        f"VLAF_AGENT_CMD={val('VLAF_AGENT_CMD', AGENT_CHOICES['claude'])}",
+        f"VLAF_REVIEW_LANG={val('VLAF_REVIEW_LANG', 'zh')}",
+        f"VLAF_AGENT_TIMEOUT={val('VLAF_AGENT_TIMEOUT', '600')}",
+        f"VLAF_REVIEW_WORKERS={val('VLAF_REVIEW_WORKERS', '1')}",
+        f"VLAF_REVIEW_GLOBAL_WORKERS={val('VLAF_REVIEW_GLOBAL_WORKERS', '4')}",
+        f"VLAF_REVIEW_STEP_TIMEOUT={val('VLAF_REVIEW_STEP_TIMEOUT', '180')}",
+        "# VLAF_REVIEW_GUIDE=              # 缺省使用新技能内置的 VLA Factory policy",
+        "# VLAF_SKILL_DIR=                # 缺省使用仓库内 skills 子模块并自动同步最新 main",
+        "# VLAF_NODE_BIN=                 # node 不在 daemon PATH 时显式指定",
+        "",
+        "# ── 可选测试环境（留空则跳过该环境）──",
+        f"VLAF_ENV_ACT={val('VLAF_ENV_ACT')}",
+        f"VLAF_ENV_PI={val('VLAF_ENV_PI')}",
+        "",
+    ]
     CONF_FILE.write_text("\n".join(lines) + "\n")
     print(f"  saved → {CONF_FILE}")
 
@@ -117,6 +207,7 @@ def interactive_setup() -> dict[str, str]:
         "VLAF_ENV_BASE": old.get("VLAF_ENV_BASE") or detect_env_default("base") or sys.executable,
         "VLAF_ENV_ACT": old.get("VLAF_ENV_ACT") or detect_env_default("act"),
         "VLAF_ENV_PI": old.get("VLAF_ENV_PI") or detect_env_default("pi"),
+        "VLAF_AGENT_CMD": old.get("VLAF_AGENT_CMD", ""),
     }
 
     print("\n" + "=" * 60)
@@ -150,6 +241,7 @@ def interactive_setup() -> dict[str, str]:
         validate=validate_python)
 
     print()
+    conf["VLAF_AGENT_CMD"] = ask_agent_cmd()
     save_conf(conf)
     return conf
 
@@ -172,6 +264,8 @@ def print_summary(conf: dict[str, str]) -> None:
     print(f"  envs:")
     for e in envs:
         print(f"    {e:6s} → {tier_map.get(e, '?'):8s}  ({conf[f'VLAF_ENV_{e.upper()}']})")
+    agent = conf.get("VLAF_AGENT_CMD", "")
+    print(f"  review agent: {'configured' if agent else 'NOT set — /vla-factory review will refuse'}")
     print("=" * 60 + "\n")
 
 

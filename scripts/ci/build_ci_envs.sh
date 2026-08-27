@@ -2,10 +2,21 @@
 # Build the three CI test environments in one shot.
 #
 # Usage:
-#   bash ci/build_ci_envs.sh [base|act|pi]...      # default: all three
+#   bash scripts/ci/build_ci_envs.sh [-u|--upgrade] [base|act|pi]...
+#                                       # default: all three
 #
 # Idempotent: an environment that already has its marker package installed is
-# left alone. Delete the environment directory to force a rebuild.
+# left alone (with a hint on how to resync it). Delete the environment
+# directory to force a rebuild from scratch.
+#
+#   --upgrade  resync existing environments to the CURRENT REPO-DECLARED deps
+#              instead of skipping them — run this after PRs changed
+#              dependencies. Only unsatisfied requirements are installed, so
+#              it downloads just the delta (fast, cache-friendly).
+#   --latest   with --upgrade: additionally bump every dependency to the
+#              newest allowed upstream release (-U). Big downloads: torch-
+#              sized wheels re-download whenever upstream shipped a newer
+#              point release, regardless of what any PR changed.
 #
 # After installation, the python paths are printed — paste them into run_ci.py
 # (or just press Enter there, the defaults already point here).
@@ -69,6 +80,7 @@ mkdir -p "$ENV_PREFIX"
 # Report the exact interpreter paths at the end — these are what go into
 # ci/remote_gate.sh, and guessing them wrong is the most likely setup mistake.
 declare -a SUMMARY=()
+SKIPPED=0
 
 have_module() {  # <python> <module>
   "$1" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$2') else 1)" 2>/dev/null
@@ -79,19 +91,37 @@ provision_venv() {  # <label> <marker module> <extra pip args...>
   local env_dir="$ENV_PREFIX/$label"
   local python_bin="$env_dir/bin/python"
 
-  if [[ -x "$python_bin" ]] && have_module "$python_bin" "$marker"; then
+  if [[ -x "$python_bin" ]] && have_module "$python_bin" "$marker" && [[ "$UPGRADE" -eq 0 ]]; then
     echo "== $label: already provisioned, skipping =="
+    SKIPPED=$((SKIPPED + 1))
   else
-    echo "== $label: creating $env_dir =="
+    if [[ "$UPGRADE" -eq 1 ]]; then
+      echo "== $label: upgrading in place =="
+    [[ "$FULL" -eq 1 ]] && echo "   (--latest: bumping all packages to newest allowed — expect big downloads)"
+    else
+      echo "== $label: creating $env_dir =="
+    fi
     [[ -x "$python_bin" ]] || "$UV" venv --python "$PY_VERSION" "$env_dir"
     # --no-sources is load-bearing: pyproject routes torch/torchvision to the
     # cu126 index via [tool.uv.sources] so that a GPU install resolves without
     # extra flags. base and act want the CPU build, and that routing overrides
     # a plain --index-url — without --no-sources these environments silently
     # pull ~3 GB of CUDA libraries that neither tier ever executes.
-    "$UV" pip install --python "$python_bin" --quiet --no-sources \
+    #
+    # Fresh builds stay quiet; upgrades show uv's download/install progress —
+    # -U re-downloads torch-sized wheels and a silent multi-minute download
+    # is indistinguishable from a hang.
+    local quiet=(--quiet)
+    [[ "$UPGRADE" -eq 1 ]] && quiet=()
+    echo "  -> torch/torchvision (CPU) ..."
+    "$UV" pip install --python "$python_bin" --no-sources \
+        ${quiet[@]+"${quiet[@]}"} \
+        ${_upgrade_flags[@]+"${_upgrade_flags[@]}"} \
         --index-url "$CPU_TORCH_INDEX" torch torchvision
-    "$UV" pip install --python "$python_bin" --quiet --no-sources "$@"
+    echo "  -> project dependencies ..."
+    "$UV" pip install --python "$python_bin" --no-sources \
+        ${quiet[@]+"${quiet[@]}"} \
+        ${_upgrade_flags[@]+"${_upgrade_flags[@]}"} "$@"
   fi
   SUMMARY+=("$label $python_bin")
 }
@@ -101,17 +131,35 @@ provision_via_install() {  # <label> <model> <marker module>
   local env_dir="$ENV_PREFIX/$label"
   local python_bin="$env_dir/bin/python"
 
-  if [[ -x "$python_bin" ]] && have_module "$python_bin" "$marker"; then
+  if [[ -x "$python_bin" ]] && have_module "$python_bin" "$marker" && [[ "$UPGRADE" -eq 0 ]]; then
     echo "== $label: already provisioned, skipping =="
+    SKIPPED=$((SKIPPED + 1))
   else
     echo "== $label: installing via scripts/install.sh --model $model =="
-    bash "$REPO_ROOT/scripts/install.sh" --model "$model" --venv "$env_dir"
+    # VLA_UPGRADE: 1 = resync repo deps (no -U), 2 = also bump to newest (-U)
+    VLA_UPGRADE="$((UPGRADE + FULL))" bash "$REPO_ROOT/scripts/install.sh" --model "$model" --venv "$env_dir"
   fi
   SUMMARY+=("$label $python_bin")
 }
 
-targets=("$@")
+UPGRADE=0
+FULL=0
+targets=()
+for arg in "$@"; do
+  case "$arg" in
+    -u|--upgrade) UPGRADE=1 ;;
+    --latest)     UPGRADE=1; FULL=1 ;;
+    base|act|pi)  targets+=("$arg") ;;
+    *) echo "provision: unknown environment '$arg' (expected base|act|pi, --upgrade, --latest)" >&2; exit 1 ;;
+  esac
+done
 [[ ${#targets[@]} -eq 0 ]] && targets=(base act pi)
+
+# Safe empty-array expansion for set -u (bash < 4.4 would treat "" as unbound).
+# Light sync (default): no -U — uv installs only unsatisfied requirements.
+# --latest adds -U: everything moves to newest allowed, cache misses abound.
+_upgrade_flags=()
+[[ "$UPGRADE" -eq 1 && "$FULL" -eq 1 ]] && _upgrade_flags=(-U)
 
 for target in "${targets[@]}"; do
   case "$target" in
@@ -134,4 +182,12 @@ for entry in "${SUMMARY[@]}"; do
    read -r label python_bin <<<"$entry"
    printf "    VLAF_ENV_%-5s %s\n" "${label^^}" "$python_bin"
 done
+
+if [[ "$SKIPPED" -gt 0 ]]; then
+  echo
+  echo "  已跳过 $SKIPPED 个已存在的环境；如需同步依赖（新合入 PR 后环境可能有变化），执行:"
+  echo "    bash scripts/ci/build_ci_envs.sh --upgrade          # 同步项目声明的依赖（快，只装增量）"
+  echo "    bash scripts/ci/build_ci_envs.sh --upgrade --latest # 连同允许范围内的新版本全部刷新（慢，大下载）"
+  echo "    （以上命令均可追加 base / act / pi 只处理指定环境）"
+fi
 echo
