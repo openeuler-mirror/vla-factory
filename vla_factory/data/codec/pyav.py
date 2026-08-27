@@ -11,7 +11,9 @@ On subsequent runs, frames are loaded from disk instead of re-decoding.
 from __future__ import annotations
 
 import logging
+import itertools
 from collections import OrderedDict
+from fractions import Fraction
 from pathlib import Path
 
 import av
@@ -39,6 +41,7 @@ class _VideoFrameCache:
         self._stream = None
         self._decoder = None
         self._current_pos = 0
+        self._first_pts = 0
         self._cache: OrderedDict[int, NDArray] = OrderedDict()
 
     def _ensure_open(self) -> None:
@@ -57,24 +60,98 @@ class _VideoFrameCache:
         self._stream.codec_context.skip_frame = "DEFAULT"
         self._decoder = self._container.decode(self._stream)
         self._current_pos = 0
+        # Record the real first-frame PTS as the zero-point for frame-number
+        # arithmetic (some streams have a non-zero start PTS). Consume the first
+        # frame, then chain it back so _current_pos=0 still means "next() yields frame 0".
+        try:
+            first_frame = next(self._decoder)
+            self._first_pts = first_frame.pts if first_frame.pts is not None else 0
+            self._decoder = itertools.chain([first_frame], self._decoder)
+        except StopIteration:
+            pass
+
+    def _frame_to_pts(self, frame_idx: int) -> int:
+        """Convert a frame ordinal to the PTS (stream time_base units) of that frame.
+
+        ``av`` seeks by timestamp in the stream's ``time_base`` (e.g. 1/15360),
+        not by frame ordinal. Passing the bare frame index as the timestamp is
+        orders of magnitude too small — it lands at (nearly) the start of the
+        video, forcing the forward-skip loop in ``_seek_to`` to re-decode the
+        whole prefix on every backward access (O(frame_idx) per seek). With
+        time_base=1/N at F frames per second, each frame spans N/F time units.
+        """
+        rate = self._stream.average_rate
+        if rate is not None:
+            span = Fraction(self._stream.time_base.denominator) / rate
+            # Floor division: never overshoots the target frame's true PTS, so
+            # av's keyframe-aligned backward seek always lands at or before it.
+            pts = (frame_idx * span.numerator) // span.denominator
+            return pts + self._first_pts
+        # Streams without an average rate: infer the per-frame duration from
+        # the stream duration (in time_base units) and the frame count.
+        duration = self._stream.duration
+        n_frames = self._stream.frames
+        if duration and n_frames:
+            return int(frame_idx * duration / n_frames) + self._first_pts
+        # Last resort: no timing info available — fall back to a frame-ordinal
+        # seek (acceptable for timestamp-less streams where a PTS-based seek is
+        # impossible anyway).
+        return frame_idx + self._first_pts
+
+    def _pts_per_frame(self) -> float:
+        """Average number of time_base units spanned by one frame."""
+        rate = self._stream.average_rate
+        if rate is not None:
+            return self._stream.time_base.denominator / float(rate)
+        duration = self._stream.duration
+        n_frames = self._stream.frames
+        if duration and n_frames:
+            return duration / n_frames
+        return 1.0
 
     def _seek_to(self, frame_idx: int) -> None:
-        """Seek to a target frame index."""
+        """Seek to a target frame index.
+
+        On return the decoder is positioned so the caller's next ``next()``
+        yields frame ``frame_idx``.
+        """
         self._ensure_open()
         # Flush existing decoder state
         if self._current_pos > frame_idx or self._current_pos == 0:
-            # Seek backward or initial seek
-            target_ts = frame_idx
+            # Seek backward or initial seek. av's seek is keyframe-aligned, so
+            # it lands at some frame L <= target. Read the landing frame to
+            # learn L, then skip only the remaining frames before the target —
+            # skipping frame_idx frames from the landing position would overshoot
+            # the target (and the video end).
+            target_ts = self._frame_to_pts(frame_idx)
             self._container.seek(target_ts, stream=self._stream)
             self._decoder = self._container.decode(self._stream)
             self._current_pos = 0
-            # Skip frames up to target
-            while self._current_pos < frame_idx:
-                try:
-                    frame = next(self._decoder)
-                    self._current_pos += 1
-                except StopIteration:
-                    break
+            span = self._pts_per_frame()
+            try:
+                landing = next(self._decoder)
+            except StopIteration:
+                return
+            if landing.pts is not None and span:
+                # Round absorbs small PTS offsets from the nominal index*span.
+                land = int(round((landing.pts - self._first_pts) / span))
+            else:
+                land = 0
+            if land == frame_idx:
+                # Keyframe-aligned seek landed exactly on the target. The
+                # landing frame has already been consumed to learn its index,
+                # so chain it back in front; otherwise the caller's next()
+                # would yield frame_idx + 1 instead of frame_idx.
+                self._decoder = itertools.chain([landing], self._decoder)
+                self._current_pos = frame_idx
+            else:
+                self._current_pos = land + 1
+                while self._current_pos < frame_idx:
+                    try:
+                        next(self._decoder)
+                        self._current_pos += 1
+                    except StopIteration:
+                        break
 
     def get_frame(self, frame_idx: int, dims: tuple[int, ...]) -> NDArray:
         """Get a decoded frame as numpy HWC uint8.
