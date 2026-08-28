@@ -39,7 +39,9 @@ class Frame:
     timestamp: float | None = None
     is_first: bool = False
     is_last: bool = False
-    language: str | None = None
+    # Readers may expose several equivalent prompts for one episode. Training
+    # samples one so all official instruction variants contribute supervision.
+    language: str | tuple[str, ...] | None = None
 
 
 @dataclass

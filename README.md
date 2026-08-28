@@ -131,6 +131,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 |---------|-------------|
 | `examples/act_lekiwi.yaml` | Train lekiwi from scratch |
 | `examples/pi0.yaml` | openpi pi0 family smoke — pi0 LoRA by default; commented switches for pi05 and full finetune |
+| `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA reference protocol |
 | `examples/reference.yaml` | Fully annotated template |
 
 ---

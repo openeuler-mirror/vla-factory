@@ -165,6 +165,14 @@ training:
 
   total_steps: 50000           # 总训练步数 (optimizer steps)
 
+  gradient_accumulation_steps: 1 # 梯度累积步数；有效 batch = batch_size × 此值
+
+  lr_scheduler_type: constant  # HuggingFace 学习率调度器，如 constant | cosine | linear
+
+  warmup_steps: 0              # 学习率 warmup 步数
+
+  max_grad_norm: 10.0          # 梯度裁剪上限
+
   gradient_checkpointing: false # 梯度检查点: 省 ~40% 显存, 慢 ~30%
                                 #   大模型 (PI0, OpenVLA) 建议开启
 

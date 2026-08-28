@@ -129,6 +129,7 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 |------|------|
 | `examples/act_lekiwi.yaml` | lekiwi 从零训练 |
 | `examples/pi0.yaml` | openpi pi0 系列 smoke —— 默认 pi0 LoRA;注释里给出切 pi05 与全量微调的开关 |
+| `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA 参考训练协议 |
 | `examples/reference.yaml` | 全字段注释模板 |
 
 ---

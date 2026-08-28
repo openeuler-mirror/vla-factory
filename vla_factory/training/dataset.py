@@ -20,6 +20,7 @@ Use :func:`collate_fn` to assemble a batch back into
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -182,7 +183,11 @@ class VLADataset(torch.utils.data.Dataset):
         # Language / task instruction (language-conditioned models: pi0, pi05).
         # A downstream `task_tokenize` transform turns this into tokenized_prompt.
         if obs_frame.language is not None:
-            sample["task"] = obs_frame.language
+            sample["task"] = (
+                random.choice(obs_frame.language)
+                if isinstance(obs_frame.language, (tuple, list))
+                else obs_frame.language
+            )
 
         # ── Action frames ─────────────────────────────────────────
         # Action chunk starts from the last observation frame (delta=0),

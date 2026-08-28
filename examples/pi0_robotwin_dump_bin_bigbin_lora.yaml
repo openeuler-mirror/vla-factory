@@ -1,0 +1,50 @@
+# PI0 LoRA protocol aligned with RoboTwin/OpenPI for Aloha-AgileX clean 50.
+model:
+  name: pi0
+  path: lerobot/pi0_base
+  config:
+    num_inference_steps: 10
+    # Eager inference avoids max-autotune's high first-call VRAM demand.
+    pytorch_compile_mode: null
+
+overrides:
+  # RoboTwin's front_camera is intentionally not mapped into PI0's slots.
+  camera_mapping:
+    base_0_rgb: head_camera
+    left_wrist_0_rgb: left_camera
+    right_wrist_0_rgb: right_camera
+  default_task: "Pick up the small trash bin and pour the balls into the big bin."
+
+data:
+  path: data/robotwin_raw/dataset/dump_bin_bigbin/aloha-agilex_clean_50
+  format: robotwin
+  video_codec: hdf5_jpeg
+
+robot: robotwin
+
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    lora_dropout: 0.0
+    init_lora_weights: gaussian
+    target_components: [llm]
+
+training:
+  lr: 2.5e-5
+  batch_size: 32
+  total_steps: 30000
+  lr_scheduler_type: cosine
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  num_workers: 4
+
+output:
+  output_dir: outputs/pi0_robotwin_dump_bin_bigbin_lora
+  report_to: tensorboard
+  logging_steps: 50
+  save_steps: 5000
+  save_total_limit: 6
+  overwrite_output_dir: true
