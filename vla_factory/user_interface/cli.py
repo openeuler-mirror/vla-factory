@@ -112,13 +112,6 @@ def main():
     train_parser.add_argument("--batch-size", type=int, default=None, help="Override batch_size.")
     train_parser.add_argument("--output-dir", type=str, default=None, help="Override output_dir.")
 
-    # ── preprocess ──
-    preproc_parser = subparsers.add_parser(
-        "preprocess",
-        help="Preprocess dataset videos to .npy disk cache.",
-    )
-    preproc_parser.add_argument("--config", required=True, help="Path to YAML recipe file.")
-
     # ── list ──
     list_parser = subparsers.add_parser(
         "list",
@@ -295,13 +288,6 @@ def main():
             override_output_dir=args.output_dir,
         )
         print(f"Training complete. Final metrics: {metrics}")
-
-    elif args.command == "preprocess":
-        from vla_factory.data.codec.pyav import preprocess_dataset
-        recipe = parse_recipe(args.config)
-        data_path = Path(recipe.data.path)
-        preprocess_dataset(data_path)
-        print("Preprocessing complete.")
 
     elif args.command == "list":
         if args.config:

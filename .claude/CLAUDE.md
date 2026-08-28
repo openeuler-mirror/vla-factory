@@ -59,7 +59,7 @@ execute. Do not infer robot camera/joint bindings from names.
 
 - **`vla_factory/frontend/`** — user-facing entry points and their shared input
   contract. `recipe.py` owns `TrainRecipe`, strict YAML parsing, and model
-  tunable merging. `cli.py` organizes `train`, `preprocess`, `list`, `resolve`,
+  tunable merging. `cli.py` organizes `train`, `list`, `resolve`,
   `inspect`, `evaluate`, `infer`, and `deploy`; future WebUI or Agent frontends
   live beside it rather than at package root. Entry: `vlafactory-cli`
   (installed) or `python -m vla_factory` (from source). `resolve` and `inspect`

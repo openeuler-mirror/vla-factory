@@ -68,14 +68,6 @@ vlafactory-cli list
 #   act                  backend=pytorch  head=...
 ```
 
-### 1. Preprocess videos (optional but recommended)
-
-Decode dataset video frames into a `.npy` disk cache to avoid repeated decoding during training:
-
-```bash
-vlafactory-cli preprocess --config examples/act_lekiwi_banana.yaml
-```
-
 ### 2. Train
 
 ```bash
