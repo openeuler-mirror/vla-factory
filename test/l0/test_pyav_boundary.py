@@ -250,3 +250,29 @@ def test_disk_cache_roundtrip():
         codec2 = PyAVCodec(disk_cache=True)
         second = codec2.decode_frame(ref)
         assert np.array_equal(first, second)
+
+
+def test_lru_hit_returns_owned_copy():
+    """A cache hit must hand out an owned copy, not the stored array.
+
+    Guard against aliasing: if the codec ever returned the cached object
+    itself, any in-place mutation by a caller would silently corrupt every
+    future read of that frame.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "distinct.mp4"
+        _write_distinct_mp4(path)
+
+        ref = _ref(path, 1, height=32, width=32)
+        codec = PyAVCodec(disk_cache=False)
+        miss = codec.decode_frame(ref)
+        hit1 = codec.decode_frame(ref)  # LRU hit
+        hit2 = codec.decode_frame(ref)  # LRU hit
+        assert hit1 is not miss
+        assert hit2 is not hit1
+
+        # Mutating any returned frame must not corrupt the cache.
+        baseline = hit2.copy()
+        miss[:] = 0
+        hit1[:] = 0
+        assert np.array_equal(codec.decode_frame(ref), baseline)

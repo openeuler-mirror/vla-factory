@@ -161,7 +161,9 @@ class _VideoFrameCache:
         # Check cache first
         if frame_idx in self._cache:
             self._cache.move_to_end(frame_idx)
-            return self._cache[frame_idx]
+            # Hand out a copy: the cached array is shared across all future
+            # reads, so callers must never be able to mutate it in place.
+            return self._cache[frame_idx].copy()
 
         self._ensure_open()
 
@@ -202,7 +204,9 @@ class _VideoFrameCache:
             img = cv2.resize(img, (w, h))
 
         # Cache
-        self._cache[frame_idx] = img
+        # Store a private copy and return the freshly decoded array: callers
+        # own their result and cannot corrupt the LRU by mutating it.
+        self._cache[frame_idx] = img.copy()
         if len(self._cache) > self.max_cached:
             self._cache.popitem(last=False)  # FIFO eviction
 
