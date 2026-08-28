@@ -20,6 +20,7 @@ from vla_factory.inference.checkpoint import (
 from vla_factory.inference.execution import ActionChunk
 from vla_factory.model.model_interface import Observation
 from vla_factory.model.registry import get_entry
+from vla_factory.training.strategies import get_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,26 @@ class ObsDict:
 
     video: dict[str, np.ndarray]
     state: np.ndarray | None = None
-    language: str | None = None
+    # Dataset frames may carry several equivalent prompts for one episode
+    # (e.g. RoboTwin `seen` instructions). Training samples one per step;
+    # inference deterministically resolves the first at the boundary below.
+    language: str | tuple[str, ...] | None = None
+
+
+def resolve_inference_language(
+    language: str | tuple[str, ...] | None,
+) -> str | None:
+    """Deterministically pick the prompt for the inference boundary.
+
+    Training samples one prompt per step from multi-instruction episodes;
+    inference and offline evaluation always use the first so results stay
+    comparable and reproducible (and the container is never stringified).
+    """
+    if language is None:
+        return None
+    if isinstance(language, (tuple, list)):
+        return language[0] if language else None
+    return language
 
 
 class InferenceEngine:
@@ -79,6 +99,18 @@ class InferenceEngine:
         assembly.check_model_compatibility(entry.metadata)
         model = entry.factory(recipe=recipe, assembly=assembly)
         checkpoint_file = resolve_checkpoint_path(checkpoint_path)
+        # Trainer checkpoints retain strategy-owned wrappers so training can
+        # resume. Recreate those wrappers before loading intermediate weights;
+        # final/model.pt has already been finalized for the bare model.
+        if (
+            recipe.finetuning.strategy == "lora"
+            and checkpoint_file.parent.name.startswith("checkpoint-")
+        ):
+            strategy = get_strategy(recipe.finetuning.strategy)
+            strategy_config = strategy.parse_config(recipe.finetuning.config)
+            model = strategy.prepare_model(
+                model, strategy_config, entry.metadata
+            )
         state_dict = load_checkpoint_state_dict(checkpoint_file)
         model.load_state_dict(state_dict, strict=True)
         model.to(self.device)
@@ -165,8 +197,9 @@ class InferenceEngine:
         }
         if observation.state is not None:
             sample["state"] = observation.state.astype(np.float32)
-        if observation.language is not None:
-            sample["task"] = observation.language
+        task = resolve_inference_language(observation.language)
+        if task is not None:
+            sample["task"] = task
 
         transformed = self.preprocessor(sample)
         images: dict[str, torch.Tensor] = {}

@@ -102,24 +102,25 @@ class VLATrainer(Trainer):
 
 def build_training_args(recipe: TrainRecipe) -> TrainingArguments:
     """Map the framework training recipe onto HuggingFace arguments."""
+    training = recipe.training
     ta_kwargs = dict(
         output_dir=recipe.output.output_dir,
         num_train_epochs=1,
-        max_steps=recipe.training.total_steps,
-        per_device_train_batch_size=recipe.training.batch_size,
-        learning_rate=recipe.training.lr,
-        lr_scheduler_type="constant",
-        warmup_steps=0,
+        max_steps=training.total_steps,
+        per_device_train_batch_size=training.batch_size,
+        learning_rate=training.lr,
+        lr_scheduler_type=training.lr_scheduler_type,
+        warmup_steps=training.warmup_steps,
         weight_decay=1e-4,
-        gradient_accumulation_steps=1,
-        max_grad_norm=10.0,
-        gradient_checkpointing=recipe.training.gradient_checkpointing,
+        gradient_accumulation_steps=training.gradient_accumulation_steps,
+        max_grad_norm=training.max_grad_norm,
+        gradient_checkpointing=training.gradient_checkpointing,
         logging_steps=recipe.output.logging_steps,
         save_steps=recipe.output.save_steps,
         save_total_limit=recipe.output.save_total_limit,
         eval_strategy="no",
         dataloader_drop_last=True,
-        dataloader_num_workers=recipe.training.num_workers,
+        dataloader_num_workers=training.num_workers,
         remove_unused_columns=False,
         report_to=_resolve_report_to(recipe.output.report_to),
         logging_nan_inf_filter=False,
@@ -130,7 +131,7 @@ def build_training_args(recipe: TrainRecipe) -> TrainingArguments:
         ta_kwargs["save_safetensors"] = False
 
     args = TrainingArguments(**ta_kwargs)
-    args.lr_backbone = recipe.training.lr_backbone
+    args.lr_backbone = training.lr_backbone
     return args
 
 

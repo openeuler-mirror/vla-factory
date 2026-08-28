@@ -63,7 +63,11 @@ class TrainingConfig:
     lr_backbone: float | None = None
     batch_size: int = 8
     total_steps: int = 10000
+    gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
+    lr_scheduler_type: str = "constant"
+    warmup_steps: int = 0
+    max_grad_norm: float = 10.0
     num_workers: int = 4
 
 
@@ -264,9 +268,23 @@ def _parse_training(value: Any) -> TrainingConfig:
         total_steps=_integer(
             block.get("total_steps", 10000), "training.total_steps"
         ),
+        gradient_accumulation_steps=_integer(
+            block.get("gradient_accumulation_steps", 1),
+            "training.gradient_accumulation_steps",
+        ),
         gradient_checkpointing=_boolean(
             block.get("gradient_checkpointing", False),
             "training.gradient_checkpointing",
+        ),
+        lr_scheduler_type=_string(
+            block.get("lr_scheduler_type", "constant"),
+            "training.lr_scheduler_type",
+        ),
+        warmup_steps=_integer(
+            block.get("warmup_steps", 0), "training.warmup_steps"
+        ),
+        max_grad_norm=_float(
+            block.get("max_grad_norm", 10.0), "training.max_grad_norm"
         ),
         num_workers=_integer(
             block.get("num_workers", 4), "training.num_workers"

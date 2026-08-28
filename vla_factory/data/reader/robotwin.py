@@ -149,31 +149,31 @@ def _decode_hw(f: Any, cam: str) -> tuple[int, int]:
     return int(img.shape[0]), int(img.shape[1])
 
 
-def _load_instruction(path: Path, ep_idx: int) -> str | None:
-    """Best-effort load of an episode's language instruction.
+def _load_instructions(path: Path, ep_idx: int) -> tuple[str, ...]:
+    """Best-effort load of all available episode language instructions.
 
     RoboTwin stores instructions separately under ``instructions/`` (used by
     language-conditioned policies such as pi0; ACT ignores it). The exact JSON
     schema varies across RoboTwin releases, so this is intentionally lenient:
-    it returns the first available instruction string, or ``None``.
+    ``seen`` is preferred because it is the official training prompt set.
     """
     instr = path / "instructions" / f"episode{ep_idx}.json"
     if not instr.exists():
-        return None
+        return ()
     try:
         data = json.loads(instr.read_text())
     except (json.JSONDecodeError, OSError):
-        return None
+        return ()
     if isinstance(data, str):
-        return data
+        return (data,)
     if isinstance(data, dict):
         for key in ("seen", "unseen", "instruction", "instructions"):
             val = data.get(key)
             if isinstance(val, str):
-                return val
+                return (val,)
             if isinstance(val, list) and val:
-                return str(val[0])
-    return None
+                return tuple(str(item) for item in val if str(item))
+    return ()
 
 
 @ReaderRegistry.register("robotwin")
@@ -331,7 +331,8 @@ class RoboTwinReader:
             cameras = _camera_names(f)
             cam_hw = {cam: _decode_hw(f, cam) for cam in cameras}
         num_frames = qpos.shape[0]
-        language = _load_instruction(path, episode_index)
+        instructions = _load_instructions(path, episode_index)
+        language = instructions or None
 
         def frame_loader() -> Iterator[Frame]:
             for t in range(num_frames):

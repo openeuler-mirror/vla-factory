@@ -68,6 +68,7 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
     candidates = [
         path / FINAL_DIR / MODEL_WEIGHTS_FILE,
         path / MODEL_WEIGHTS_FILE,
+        path / "pytorch_model.bin",
         path / "model.safetensors",
     ]
     for checkpoint_dir in sorted(
@@ -76,6 +77,7 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
         candidates.extend(
             [
                 checkpoint_dir / MODEL_WEIGHTS_FILE,
+                checkpoint_dir / "pytorch_model.bin",
                 checkpoint_dir / "model.safetensors",
             ]
         )
@@ -87,7 +89,7 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
     raise FileNotFoundError(
         f"No model weights found under {path}. Expected "
         f"{FINAL_DIR}/{MODEL_WEIGHTS_FILE}, {MODEL_WEIGHTS_FILE}, "
-        "model.safetensors, or checkpoint-*/model.safetensors."
+        "or Trainer checkpoint weights."
     )
 
 
