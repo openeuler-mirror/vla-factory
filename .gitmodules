@@ -1,0 +1,4 @@
+[submodule "skills"]
+	path = skills
+	url = https://github.com/2012geek/skills.git
+	branch = main

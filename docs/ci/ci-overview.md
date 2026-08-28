@@ -119,9 +119,10 @@ Tests are layered by **what they verify**, isolated with pytest markers.
 The markers are registered under `[tool.pytest.ini_options] markers` in
 `pyproject.toml`. No test on master currently carries `l1`/`l2` (the parity
 and smoke tests live on the `dev_ci-backup` branch, see below), so **for now
-L0 equals the full suite** and the L1/L2 tiers collect zero tests — the
-daemon reports FAIL, not pass, for an environment whose tiers all collect
-zero, so an empty run can never show up green.
+L0 equals the full suite** and the L1/L2 tiers collect zero tests. A tier
+that collects zero tests (junit `tests=0`, pytest exit 5) is a **skip**,
+not a FAIL; an environment only FAILs when its report directory is missing
+entirely (the env never ran — crash / misconfiguration).
 
 ### L0 — framework tests
 
@@ -150,7 +151,7 @@ document—as the source of truth.
 > The L1 parity files (`test/parity/*.py`) currently live on the
 > `dev_ci-backup` branch and are **not yet merged into master**. Running
 > `pytest -m l1` on master collects zero tests; the tier shows `— (skip)`
-> and its environment is reported FAIL (see §3) — so do not configure
+> without failing its environment (see §3) — still, configure
 > act/pi environments for the daemon until the parity files land. The
 > table below is the plan that takes effect once they merge.
 
@@ -264,6 +265,34 @@ sudo systemctl enable --now vlaf-ci
 | `VLAF_ENV_BASE_TIERS` | tiers for base env (override) | `l0` |
 | `VLAF_ENV_ACT_TIERS` | tiers for act env (override) | `l1,l2` |
 | `VLAF_ENV_PI_TIERS` | tiers for pi env (override) | `l1` |
+| `VLAF_CI_WORKERS` | CI task pool concurrency | 5 |
+| `VLAF_CMD_WORKERS` | comment-command pool concurrency | 5 |
+| `VLAF_TIER_TIMEOUT` | per-tier pytest timeout (s) | 1200 |
+| `VLAF_MAX_RETRIES` | crash retry cap per (pr, sha) | 3 |
+| `VLAF_CHECKOUT_TTL_DAYS` | per-PR checkout GC (days) | 7 |
+
+### /vla-factory comment commands (review knobs)
+
+Anyone can trigger these by a whole-line comment on an open PR (auth and
+rate limiting below):
+
+- `/vla-factory help` — list commands
+- `/vla-factory retest` — re-run CI on the current head (refused while running)
+- `/vla-factory review` — run the vlafactory-code-review skill from the
+  skills submodule; findings are posted as inline comments
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VLAF_AGENT_CMD` | headless agent template (`{prompt}`/`{output}` shell-quoted on substitution) | claude headless (tools and slash commands disabled) |
+| `VLAF_AGENT_TIMEOUT` | per-reviewer execution timeout (s) | 600 |
+| `VLAF_REVIEW_STEP_TIMEOUT` | prompt-gen / collect+post timeout (s) | 180 |
+| `VLAF_REVIEW_WORKERS` | reviewers per PR | 1 |
+| `VLAF_REVIEW_GLOBAL_WORKERS` | daemon-wide reviewer cap | 4 |
+| `VLAF_REVIEW_COOLDOWN_MIN` | per-PR review cooldown in minutes (0 = off) | 30 |
+| `VLAF_REVIEW_ALLOWLIST` | logins allowed to trigger review (comma-separated, empty = anyone) | empty |
+| `VLAF_REVIEW_LANG` | review comment language (en/zh) | zh |
+| `VLAF_SKILL_DIR` | skill dir override (default: skills submodule, synced to latest main) | empty |
+| `VLAF_NODE_BIN` | explicit node binary path | auto-detected |
 
 ### PR comment format
 
@@ -292,7 +321,7 @@ the table grows to multiple environments and tiers.
 
 ```
 scripts/
-  install.sh               model environment install (pi0/pi05)
+  install.sh               model env install (--model optional; all+confirm)
   run_ci.sh                CI daemon entry (thin shell → ci/run_ci.py)
   ci/
     run_ci.py              interactive launcher (configure → save → start daemon)
@@ -302,26 +331,32 @@ scripts/
     build_ci_envs.sh       one command to build the base/act/pi venvs
 ```
 
-**Core daemon loop**:
+**Core daemon loop** (the main loop only polls and dispatches; tasks run
+asynchronously on two thread pools):
 
 ```python
 while True:
-    prs = fetch_open_prs()              # GET /pulls?state=open (all authors)
+    gc_old_checkouts()                          # TTL-reclaim merged PRs' dirs
+    prs = fetch_open_prs()                      # GET /pulls?state=open (all authors)
     for pr in prs:
-        if is_seen(pr.number, pr.sha):  # SQLite dedup
+        poll_commands(pr.number)                # comment commands → cmd pool
+    for pr in prs:
+        if is_seen(pr.number, pr.sha):          # done/failed/running all count
             continue
-        process_pr(pr)                  # fetch → pytest → comment
-        mark_seen(pr.number, pr.sha)    # record as processed
+        mark_seen(pr.number, pr.sha, "running") # claim before dispatch
+        ci_pool.submit(ci_task, pr)             # fetch → pytest → comment
     sleep(30)
 ```
 
-`process_pr` executes the environment × tier assignment: base runs L0, act
-runs L1+L2, pi runs L1. Each tier calls `pytest --junitxml` directly and
-does not depend on scripts from the PR branch (which may be out of sync).
-A single tier exiting 5 (nothing collected) is not a failure, but **an
-environment whose tiers all collect zero tests is reported FAIL** — empty
-summaries must never pass, so a misconfigured environment cannot be
-silently swallowed.
+`ci_task` runs in a dedicated checkout (`pr-<N>-<sha8>`; concurrent runs
+never share a worktree) with the environment × tier assignment: base runs
+L0, act runs L1+L2, pi runs L1. Each tier calls `pytest --junitxml`
+directly and does not depend on scripts from the PR branch (which may be
+out of sync). A single tier exiting 5 (nothing collected) is not a
+failure — zero-collected tiers are skips; an environment only FAILs when
+its report directory is missing entirely. A tier that exceeds its timeout
+writes a synthetic failed test (`tier-timeout`) instead of retrying
+forever, and an SHA that keeps crashing stops after the retry cap.
 
 ---
 

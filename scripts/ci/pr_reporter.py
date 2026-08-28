@@ -105,6 +105,21 @@ def format_result(
             f"| {r.get('l2', '—')} | {r.get('time', '—')} |\n"
         )
 
+    # Failed test details: names + first message line, capped per env.
+    MAX_LISTED = 25
+    for r in results:
+        failed = r.get("failed_tests") or []
+        if not failed:
+            continue
+        status += f"\n**{r['env']} 失败用例（{len(failed)}）**\n\n"
+        for t in failed[:MAX_LISTED]:
+            line = f"- `{t['name']}`"
+            if t.get("msg"):
+                line += f" — {t['msg']}"
+            status += line + "\n"
+        if len(failed) > MAX_LISTED:
+            status += f"- …其余 {len(failed) - MAX_LISTED} 条见 CI 机器 junit 报告\n"
+
     return status
 
 

@@ -109,8 +109,9 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 
 marker 已在 `pyproject.toml` `[tool.pytest.ini_options] markers` 注册。当前
 master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `dev_ci-backup`
-分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例——daemon 对
-「某环境所有 tier 都收集 0 例」判 FAIL 而非 pass，防止空跑误报绿。
+分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例。tier 收集
+0 例（junit `tests=0`，pytest exit 5）视为 **skip** 而非 FAIL；只有某环境的
+junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）才判 FAIL。
 
 ### L0 — 框架测试
 
@@ -135,8 +136,9 @@ master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `
 
 > L1 parity 测试文件（`test/parity/*.py`）目前在 `dev_ci-backup` 分支，
 > **尚未合入 master**。daemon 在 master 上跑 `pytest -m l1` 收集 0 例，
-> 该 tier 显示 `— (skip)` 且所在环境判 FAIL（见 §3），因此在 parity
-> 文件合入前不要给 daemon 配置 act/pi 环境。以下为合入后生效的计划清单。
+> 该 tier 显示 `— (skip)`、环境整体不因此判 FAIL（见 §3）；但为了让 tier
+> 真正发挥防回归作用，建议在 parity 文件合入后再给 daemon 配置 act/pi 环境。
+> 以下为合入后生效的计划清单。
 
 验证**引进的上游语义**与官方实现一致。golden 值内嵌在测试代码中（常量/参考实现），
 不依赖外部 `.npz`。每个上游契约 pin 到源码 commit，缺依赖时 `importorskip` 自动 skip。
@@ -242,6 +244,33 @@ sudo systemctl enable --now vlaf-ci
 | `VLAF_ENV_BASE_TIERS` | base 环境跑哪些 tier（覆盖） | `l0` |
 | `VLAF_ENV_ACT_TIERS` | act 环境跑哪些 tier（覆盖） | `l1,l2` |
 | `VLAF_ENV_PI_TIERS` | pi 环境跑哪些 tier（覆盖） | `l1` |
+| `VLAF_CI_WORKERS` | CI 任务线程池并发数 | 5 |
+| `VLAF_CMD_WORKERS` | 评论命令任务线程池并发数 | 5 |
+| `VLAF_TIER_TIMEOUT` | 单 tier pytest 超时（秒） | 1200 |
+| `VLAF_MAX_RETRIES` | 同一 (pr, sha) crash 重试上限 | 3 |
+| `VLAF_CHECKOUT_TTL_DAYS` | per-PR 检出目录 GC 天数 | 7 |
+
+### /vla-factory 评论命令（review 相关配置）
+
+任何人在 open PR 评论整行输入即可触发（作者鉴权与频控见下）：
+
+- `/vla-factory help` — 列出命令
+- `/vla-factory retest` — 对当前 head 重新触发 CI（运行中会拒绝）
+- `/vla-factory review` — 调用 skills 子模块的 vlafactory-code-review
+  技能检视本 PR，问题以行内评论贴出
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `VLAF_AGENT_CMD` | 无头 agent 命令模板（`{prompt}`/`{output}` 经 shell 引用代入） | claude 无头模板（禁用工具与斜杠命令） |
+| `VLAF_AGENT_TIMEOUT` | 单个 reviewer 执行超时（秒） | 600 |
+| `VLAF_REVIEW_STEP_TIMEOUT` | 生成 prompts / 汇总发布步骤超时（秒） | 180 |
+| `VLAF_REVIEW_WORKERS` | 单 PR 内 reviewer 并发 | 1 |
+| `VLAF_REVIEW_GLOBAL_WORKERS` | 全 daemon reviewer 并发上限 | 4 |
+| `VLAF_REVIEW_COOLDOWN_MIN` | 同一 PR 两次 review 的冷却分钟数（0 关闭） | 30 |
+| `VLAF_REVIEW_ALLOWLIST` | 允许触发 review 的登录名白名单（逗号分隔，空 = 任何人） | 空 |
+| `VLAF_REVIEW_LANG` | 检视评论语言（en/zh） | zh |
+| `VLAF_SKILL_DIR` | 技能目录（缺省用 skills 子模块并同步最新 main） | 空 |
+| `VLAF_NODE_BIN` | 显式指定 node 路径 | 自动探测 |
 
 ### PR 评论格式
 
@@ -267,7 +296,7 @@ parity / 冒烟测试合入并配置 act/pi 环境后，表格会扩展为多环
 
 ```
 scripts/
-  install.sh               模型环境安装 (pi0/pi05)
+  install.sh               模型环境安装（--model 可选；缺省装全部并需确认）
   run_ci.sh                CI daemon 入口（薄壳, 转发到 ci/run_ci.py）
   ci/
     run_ci.py              交互式启动器（配置 → 存盘 → 启动 daemon）
@@ -277,23 +306,28 @@ scripts/
     build_ci_envs.sh       一条命令建 base/act/pi 三个 venv
 ```
 
-**核心 daemon 循环**：
+**核心 daemon 循环**（主循环只轮询与派发，任务在双线程池上异步执行）：
 
 ```python
 while True:
-    prs = fetch_open_prs()              # GET /pulls?state=open（所有作者）
+    gc_old_checkouts()                          # TTL 回收已合并 PR 的检出目录
+    prs = fetch_open_prs()                      # GET /pulls?state=open（所有作者）
     for pr in prs:
-        if is_seen(pr.number, pr.sha):  # SQLite 去重
+        poll_commands(pr.number)                # 评论命令 → cmd 线程池（水位去重）
+    for pr in prs:
+        if is_seen(pr.number, pr.sha):          # done/failed/running 均视为已处理
             continue
-        process_pr(pr)                  # fetch → pytest → comment
-        mark_seen(pr.number, pr.sha)    # 记录已处理
+        mark_seen(pr.number, pr.sha, "running") # 派发前占位，防止重复提交
+        ci_pool.submit(ci_task, pr)             # fetch → pytest → comment
     sleep(30)
 ```
 
-`process_pr` 内部按环境 × tier 分配执行：base 跑 L0，act 跑 L1+L2，pi 跑 L1。
-每个 tier 直接调 `pytest --junitxml`，不依赖 PR 分支上的脚本（版本可能不一致）。
-单个 tier exit 5（无测试收集）不算失败，但**某环境所有 tier 都收集 0 例时该
-环境判 FAIL**——空 summaries 不允许报 pass，防止环境配置错误被静默吞掉。
+`ci_task` 在独立检出目录（`pr-<N>-<sha8>`，互不干扰）按环境 × tier 执行：
+base 跑 L0，act 跑 L1+L2，pi 跑 L1。每个 tier 直接调 `pytest --junitxml`，
+不依赖 PR 分支上的脚本（版本可能不一致）。单个 tier exit 5（无测试收集）不
+算失败，tier 收集 0 例视为 skip；**某环境的报告目录整个缺失（一个 junit 都
+没产出）才判 FAIL**。tier 超时写一条合成失败用例（`tier-timeout`），不会
+无限重试；同一 (pr, sha) 连续 crash 超过重试上限后放弃。
 
 ---
 

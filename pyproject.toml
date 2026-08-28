@@ -89,6 +89,9 @@ dev = [
     "pytest>=7",
     "pytest-cov",
     "tensorboard>=2.14",
+    # scripts/ci/daemon.py (imported by test_ci_commands_and_report) polls the
+    # GitCode API with requests; the CI base env is built from this extra.
+    "requests>=2.28",
 ]
 
 # uv: route torch/torchvision through the PyTorch CUDA wheel index. The

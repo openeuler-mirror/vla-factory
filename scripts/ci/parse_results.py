@@ -46,6 +46,7 @@ def parse_junit(path: str | Path) -> dict:
             "tier": path.stem,
             "total": 0, "passed": 0, "failed": 0, "skipped": 0, "errors": 0,
             "time": 0.0, "ok": True, "summary": f"(not found: {path.name})",
+            "failed_tests": [],
         }
 
     tree = ET.parse(path)
@@ -62,6 +63,18 @@ def parse_junit(path: str | Path) -> dict:
     skipped = int(suite.get("skipped", 0))
     passed = total - failures - errors - skipped
     time = float(suite.get("time", 0))
+
+    # Which tests failed (for the PR report): nodeid + first line of the
+    # failure message, so "19 failed" is actionable without SSH-ing the
+    # CI machine to read the junit xml.
+    failed_tests = []
+    for tc in suite.iter("testcase"):
+        problem = tc.find("failure") if tc.find("failure") is not None else tc.find("error")
+        if problem is None:
+            continue
+        nodeid = f"{tc.get('classname', '')}::{tc.get('name', '')}".strip(":")
+        msg = (problem.get("message") or problem.text or "").strip().splitlines()
+        failed_tests.append({"name": nodeid, "msg": msg[0][:120] if msg else ""})
 
     # Build a human-readable one-liner.
     parts = []
@@ -82,6 +95,7 @@ def parse_junit(path: str | Path) -> dict:
         "time": time,
         "ok": failures == 0 and errors == 0,
         "summary": summary,
+        "failed_tests": failed_tests,
     }
 
 
