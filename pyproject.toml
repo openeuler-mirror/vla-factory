@@ -79,6 +79,15 @@ pi05 = [
 # Only h5py is needed to read the data; the RoboTwin simulator itself runs in
 # its own environment and is not a dependency of the framework.
 robotwin = ["h5py>=3.0"]
+# Optional video decoder (PyAV alternative). torchcodec wheels are ABI-locked
+# to a specific torch version (1:1 pairing until 0.12) and none declare a torch
+# dependency in their METADATA, so pip/uv always installs the newest wheel and a
+# mismatch only fails at import (undefined-symbol or missing CPU kernels).
+# Pairing: torch 2.7 -> 0.4.0, 2.8 -> 0.7.0, 2.9 -> 0.8/0.9, 2.10 -> 0.10.0,
+# 2.11 -> 0.11.x, 2.11+ -> 0.15.0. The >=0.4.0 bound keeps the extra
+# installable across that range; on an older torch, pin the matching row
+# explicitly on top (e.g. `pip install torchcodec==0.4.0`).
+torchcodec = ["torchcodec>=0.4.0"]
 all = [
     "lerobot>=0.5",
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
@@ -105,6 +114,9 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
 torchvision = { index = "pytorch-cu126" }
+# torchcodec stays on the default (PyPI) index: the CUDA index only hosts the
+# old 0.2.x builds, and the CPU wheels for every current pairing (0.4.0 for
+# torch 2.7, 0.11.x for torch 2.11, 0.15.0 for torch 2.11+) live on PyPI.
 
 [project.urls]
 Homepage = "https://gitcode.com/openeuler/vla-factory"

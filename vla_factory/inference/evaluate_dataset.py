@@ -29,7 +29,7 @@ def infer_dataset_sample(
 
     data_path = Path(recipe.data.path)
     reader = get_reader(recipe.data.format, path=data_path)
-    codec = resolve_codec(recipe.data.video_codec)
+    codec = resolve_codec(recipe.data.video_codec, recipe.data.format)
 
     episode_lengths = reader.get_episode_lengths(data_path)
     sorted_episodes = sorted(episode_lengths.items())
@@ -100,7 +100,7 @@ def evaluate_dataset(
     data_path = Path(dataset)
     engine = InferenceEngine(checkpoint_path=checkpoint, device=device)
     reader = get_reader(engine.recipe.data.format, path=data_path)
-    codec = resolve_codec(engine.recipe.data.video_codec)
+    codec = resolve_codec(engine.recipe.data.video_codec, engine.recipe.data.format)
     episode_lengths = reader.get_episode_lengths(data_path)
     selected = episode_indices or sorted(episode_lengths)
 

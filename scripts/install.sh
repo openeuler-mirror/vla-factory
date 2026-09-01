@@ -158,6 +158,32 @@ detect_cuda_index() {
   else echo "cu126"; fi
 }
 
+# ── Install torchcodec (default video decoder for lerobot) ──────────
+# torchcodec is ABI-locked to the installed torch version. Its wheels do not
+# declare a torch dependency in METADATA, so pip/uv would otherwise install a
+# mismatched latest wheel. Pin the matching row explicitly.
+install_torchcodec() {
+  local torch_version tc_version
+  torch_version="$(python -c 'import torch; print(torch.__version__)')"
+  tc_version=""
+  case "$torch_version" in
+    2.7.*)  tc_version="0.4.0" ;;
+    2.8.*)  tc_version="0.7.0" ;;
+    2.9.*)  tc_version="0.9.0" ;;
+    2.10.*) tc_version="0.10.0" ;;
+    2.11.*) tc_version="0.11.0" ;;
+    2.12.*) tc_version="0.15.0" ;;
+    *)      tc_version="" ;;
+  esac
+  if [ -n "$tc_version" ]; then
+    echo "Installing torchcodec==$tc_version for torch ${torch_version%%+*}"
+    retry_uv pip install --default-index "$UV_DEFAULT_INDEX" "torchcodec==$tc_version"
+  else
+    echo "Installing latest torchcodec for torch ${torch_version%%+*}"
+    retry_uv pip install --default-index "$UV_DEFAULT_INDEX" "torchcodec>=0.4.0"
+  fi
+}
+
 # ── Per-model install ────────────────────────────────────────────────
 # Runs in a subshell (see main loop) so each venv activation is contained.
 
@@ -189,6 +215,8 @@ install_one_model() {
       --no-sources-package torchvision \
       ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
       -e ".[act,dev]"
+
+    install_torchcodec
 
     echo ""
     echo "Done."
@@ -292,6 +320,8 @@ install_one_model() {
 
   # Install vla-factory itself (editable).
   retry_uv pip install "${uv_pip_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} -e ".[dev]"
+
+  install_torchcodec
 
   # Optional: faster HF downloads for the multi-GB base weights.
   retry_uv pip install --default-index "$UV_DEFAULT_INDEX" -q hf_transfer || true
