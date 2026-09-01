@@ -65,6 +65,42 @@ def extract_checkpoint_observations(config: dict[str, Any]) -> dict[str, Any]:
     """
     camera_roles: dict[str, tuple[int, ...]] | None = None
     state_dim: int | None = None
+
+    # ── Prismatic / OpenVLA checkpoint format ──────────────────────
+    # Prismatic checkpoints have no input_features/output_features; they declare
+    # model_type == "openvla" and carry norm_stats. Extract what we can so the
+    # compatibility check still runs; a missing fact is ignored (None).
+    model_type = str(config.get("model_type") or "")
+    architectures = config.get("architectures") or []
+    is_prismatic = (
+        model_type == "openvla"
+        or any("openvla" in str(a).lower() for a in architectures)
+        or config.get("model_family") == "openvla"
+    )
+
+    if is_prismatic:
+        # image_sizes: [H, W] (e.g. [224, 224])
+        img_res = config.get("image_sizes")
+        if isinstance(img_res, (list, tuple)) and len(img_res) == 2:
+            image_resolution = (int(img_res[0]), int(img_res[1]))
+        else:
+            resolution = config.get("image_resolution")
+            image_resolution = (
+                tuple(int(v) for v in resolution)
+                if isinstance(resolution, (list, tuple)) and len(resolution) == 2
+                else None
+            )
+        # action_dim derived from norm_stats[first_dataset]["action"]["q01"] length
+        action_dim = _prismatic_action_dim(config)
+        return {
+            "camera_roles": {"primary": (3, *image_resolution)} if image_resolution else None,
+            "state_dim": None,             # OpenVLA has no proprio state input
+            "action_dim": action_dim,
+            "max_action_dim": action_dim,
+            "image_resolution": image_resolution,
+        }
+
+    # ── Lerobot / openpi checkpoint format ─────────────────────────
     inputs = config.get("input_features")
     if isinstance(inputs, dict):
         for key, feature in inputs.items():
@@ -99,6 +135,17 @@ def extract_checkpoint_observations(config: dict[str, Any]) -> dict[str, Any]:
         "max_action_dim": config.get("max_action_dim"),
         "image_resolution": image_resolution,
     }
+
+
+def _prismatic_action_dim(cfg: dict[str, Any]) -> int | None:
+    """Derive OpenVLA's action dim from ``norm_stats[*]["action"]["q01"]``."""
+    norm_stats = cfg.get("norm_stats") or {}
+    for dataset_stats in norm_stats.values():
+        action = (dataset_stats or {}).get("action") or {}
+        q01 = action.get("q01")
+        if isinstance(q01, (list, tuple)):
+            return len(q01)
+    return None
 
 
 def checkpoint_compatibility_issues(

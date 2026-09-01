@@ -75,6 +75,14 @@ class ModelMetadata:
         "from_scratch",
     ] = "pretrained_finetune"
 
+    # ── Inference / checkpoint contract ──
+    # True when the adapter must read model structure + processors from the
+    # base checkpoint at inference time (HF AutoModel/AutoProcessor — OpenVLA),
+    # i.e. the saved final/model.pt alone cannot reconstruct the model.
+    # InferenceEngine keeps recipe.model.path in that case; other adapters get
+    # path=None (checkpoint state_dict is complete) per its default contract.
+    inference_needs_base_checkpoint: bool = False
+
     # ── Trainable components (name → parameter-name patterns) ──
     components: dict[str, list[str]] = field(default_factory=dict)
 
@@ -85,8 +93,6 @@ class ModelMetadata:
     support_lora: bool = True
     support_full: bool = True
     support_freeze: bool = True
-
-
 
     # ── Dependencies / install ──
     install_hint: str = ""   # e.g. 'pip install -e ".[act]"'; "" = no extra needed
@@ -166,6 +172,10 @@ class Observation(Generic[T]):
     images: dict[str, T]
     image_masks: dict[str, T]
     state: T | None = None
+    # Raw per-sample task instruction text (list[str], one per batch element).
+    # Carried for models that construct their own prompt (OpenVLA), instead of
+    # the tokenized_prompt produced by the `task_tokenize` transform.
+    task: list[str] | None = None
     tokenized_prompt: T | None = None
     tokenized_prompt_mask: T | None = None
     token_ar_mask: T | None = None
@@ -180,6 +190,7 @@ class Observation(Generic[T]):
                 for key, value in self.image_masks.items()
             },
             state=self.state.to(*args, **kwargs) if self.state is not None else None,
+            task=self.task,
             tokenized_prompt=(
                 self.tokenized_prompt.to(*args, **kwargs)
                 if self.tokenized_prompt is not None else None

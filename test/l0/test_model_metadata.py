@@ -58,6 +58,7 @@ def test_every_model_metadata_field_is_classified():
         "support_freeze",
         "install_hint",
         "params",
+        "inference_needs_base_checkpoint",
     }
     interface_fields = set(ModelMetadata.INTERFACE_FIELDS)
     declared_fields = {item.name for item in fields(ModelMetadata)}
