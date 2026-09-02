@@ -39,7 +39,6 @@ import torch.nn as nn
 
 from vla_factory.training.strategies.lora import (
     LoraConfig as VlaLoraConfig,
-    _DEFAULT_TARGET_MODULES,
     apply_lora,
 )
 
@@ -102,11 +101,13 @@ class _Metadata:
     }
 
 
-def _recipe(targets=("llm",)) -> VlaLoraConfig:
+def _recipe(targets=("llm",), freeze=()) -> VlaLoraConfig:
+    """targets=None 表示不传 components（走默认 'all'）。"""
     return VlaLoraConfig(
         r=_RANK,
         lora_alpha=_ALPHA,
-        target_components=list(targets),
+        components="all" if targets is None else list(targets),
+        freeze_components=list(freeze),
         init_lora_weights="gaussian",
     )
 
@@ -114,8 +115,9 @@ def _recipe(targets=("llm",)) -> VlaLoraConfig:
 def _peft_config():
     """手写参照用的 LoraConfig，字段与 apply_lora 构造的一致。
 
-    ``_DEFAULT_TARGET_MODULES`` 是**输入**（声明要挂哪些层）而非被测对象，直接复用；
-    被测的是 apply_lora 如何找到子树并把包裹结果挂回去。
+    target_modules 取 apply_lora 的默认值 ``"all-linear"``（vla 的 LoraConfig
+    默认），使手写参照与被测路径匹配同样的线性层集合；被测的是 apply_lora
+    如何找到子树并把包裹结果挂回去。
     """
     from peft import LoraConfig
 
@@ -125,7 +127,7 @@ def _peft_config():
         lora_dropout=0.0,
         use_rslora=False,
         init_lora_weights="gaussian",
-        target_modules=_DEFAULT_TARGET_MODULES,
+        target_modules="all-linear",
     )
 
 
@@ -174,7 +176,7 @@ def test_apply_lora_returns_the_same_top_level_object():
 
 
 def test_adapters_land_only_on_the_targeted_subtree():
-    """target_components=["llm"] 时，action expert 与子树外的投影层不得有 adapter。"""
+    """components=["llm"] 时，action expert 与子树外的投影层不得有 adapter。"""
     model = apply_lora(_FakePI0(), _recipe(), _Metadata())
 
     adapter_names = [n for n, _ in model.named_parameters() if "lora_" in n]
@@ -182,6 +184,78 @@ def test_adapters_land_only_on_the_targeted_subtree():
     assert all("paligemma_with_expert.paligemma." in n for n in adapter_names), \
         f"adapter 落到了目标子树之外: {adapter_names[:4]}"
     assert summarize_lora_parameters(model).adapter_modules == {"q_proj", "o_proj"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  1b. 多组件 / 默认 all 的边界（MR #25 评审修复的回归守卫）
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_all_components_keeps_outside_linears_untouched():
+    """默认 all：每个声明子树各注入一次；子树外线性层零参与。
+
+    旧实现对多子树（含默认 all）走整模型 ``get_peft_model(model,
+    "all-linear")``：``state_proj`` 也被注入 rank-16 LoRA 且基座全冻结 ——
+    与"组件外保持全参"契约相反，而默认 all 让最简 recipe 必然踩中这条路径。
+    """
+    model = apply_lora(_FakePI0(), _recipe(targets=None), _Metadata())
+
+    params = dict(model.named_parameters())
+    outside = [n for n in params if n.startswith("state_proj.")]
+    assert outside, "替身必须带子树外投影层"
+    assert all("lora_" not in n for n in outside), "state_proj 不得被注入 lora"
+    assert all(params[n].requires_grad for n in outside), \
+        "state_proj 必须保持全参可训练"
+
+    # 两个声明子树都拿到了 adapter
+    assert any("lora_" in n and ".paligemma." in n for n in params)
+    assert any("lora_" in n and ".gemma_expert." in n for n in params)
+
+
+def test_multi_target_matches_hand_written_per_subtree_wraps():
+    """apply_lora 的多子树编排必须与"逐子树手写 get_peft_model"逐张量一致。"""
+    from peft import get_peft_model
+
+    base = _FakePI0()
+
+    torch.manual_seed(0)
+    ours = apply_lora(copy.deepcopy(base), _recipe(targets=None), _Metadata())
+
+    torch.manual_seed(0)
+    reference = copy.deepcopy(base)
+    cfg = _peft_config()  # 一个 config 包两个子树 —— 与 apply_lora 的共享方式一致
+    reference.paligemma_with_expert.paligemma = get_peft_model(
+        reference.paligemma_with_expert.paligemma, cfg
+    )
+    reference.paligemma_with_expert.gemma_expert = get_peft_model(
+        reference.paligemma_with_expert.gemma_expert, cfg
+    )
+
+    assert_state_dict_parity(
+        ours.state_dict(), reference.state_dict(),
+        label="apply_lora(all) vs 手写逐子树 peft",
+    )
+
+
+def test_freeze_components_with_real_peft():
+    """components=[llm] + freeze_components=[action_expert]：冻结必须生效。
+
+    旧实现的冻结发生在包装之后：peft 给子树内参数名加上 ``base_model.model.``
+    前缀后，``_match_prefix`` 的 startswith 匹配不到 → 冻结静默 no-op，
+    action_expert 照旧全参训练。
+    """
+    model = apply_lora(_FakePI0(), _recipe(freeze=["action_expert"]), _Metadata())
+
+    params = dict(model.named_parameters())
+    expert = [n for n in params if ".gemma_expert." in n]
+    assert expert, "替身必须带 action expert"
+    assert all("lora_" not in n for n in expert), "冻结组件不应被注入 lora"
+    assert all(not params[n].requires_grad for n in expert), \
+        "freeze_components 必须真的冻结 action_expert"
+
+    # 子树外投影层与 llm 的 adapter 保持可训练
+    assert all(params[n].requires_grad for n in params if n.startswith("state_proj."))
+    assert any("lora_" in n and params[n].requires_grad for n in params)
 
 
 # ══════════════════════════════════════════════════════════════════════

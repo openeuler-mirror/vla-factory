@@ -226,7 +226,10 @@ finetuning:
   strategy: lora                # full | lora | freeze | selective
   config:                       # strictly parsed by the selected strategy
     r: 16
-    target_components: [llm]    # references keys of ModelMetadata.components
+    # Bare config defaults: components="all" (LoRA every component),
+    # freeze_components=[], target_modules="all-linear" (peft: all Linear/Conv1D).
+    # Below overrides components to LoRA just the VLM subtree.
+    components: [llm]    # references keys of ModelMetadata.components
 training:
   lr: 2.5e-5
   batch_size: 8
@@ -715,6 +718,14 @@ The fine-tuning strategy decides which parameters are trainable. It should opera
 - `lora`: for models that support LoRA.
 
 ACT trained from scratch usually uses `full`; pretrained VLA models may use full, freeze, selective, or LoRA.
+
+**LoRA default behavior contract.** A bare `finetuning: {strategy: lora, config: {r, lora_alpha}}` recipe — no `components`, no `freeze_components`, no `target_modules` — gets LoRA on every declared component. The boundary this contract draws: **LoRA only ever lands inside declared component subtrees; linear layers outside them (for pi0: the state/action/time projections) are never touched by peft and stay full-parameter trained** — including under the default `"all"`, which simply runs the same per-subtree path for every declared component. The three fields have defaults that make this the simplest sensible behavior:
+
+- `components` defaults to `"all"` (a string): expands to every key of `ModelMetadata.components` at apply time, i.e. LoRA on every declared subtree (for pi0: both the VLM and the action expert), each wrapped in place by its own `get_peft_model` call. A list (`["llm"]`) restricts LoRA to those subtrees only.
+- `freeze_components` defaults to `[]`: subtrees outside `components` keep `requires_grad=True` and are fully fine-tuned. Listing a subtree here freezes it instead, closing the one gap subtree-LoRA could not cover ("action_expert frozen + llm LoRA"). A component must not appear in both `components` and `freeze_components` (validated at config parse for lists, and again after `"all"` expansion at apply time; the freeze itself runs before any peft wrapping so component prefixes match clean parameter names).
+- `target_modules` defaults to `"all-linear"`: peft's special string matching every `Linear`/`Conv1D` inside the wrapped scope. It is forwarded to peft verbatim, so a regex string or an explicit list (`["q_proj","v_proj"]`) also works. It is a per-run training decision, not a `ModelMetadata` fact.
+
+This default is parameter-equivalent to openpi's low-mem configs (`gemma_2b_lora` + `gemma_300m_lora` — both VLM and action expert get LoRA) and aligns with llamafactory's `lora_target="all"`. The known limitation: a single `peft_config` is shared across every subtree's wrap, so `r`/`lora_alpha`/`target_modules` are uniform across all wrapped subtrees — per-component different LoRA configs are not expressible until a recipe needs it.
 
 Strategies register through `@register_strategy(name)` and strictly parse their
 own `finetuning.config`. `prepare_model()` owns freezing/wrapping, while

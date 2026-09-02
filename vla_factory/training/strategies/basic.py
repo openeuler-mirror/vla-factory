@@ -129,9 +129,25 @@ def _freeze_components(
             "would be frozen."
         )
 
+    matched = 0
     for name, param in model.named_parameters():
         if _match_prefix(name, patterns):
             param.requires_grad_(False)
+            matched += 1
+
+    if matched == 0:
+        # Zero matches = the prefixes align with no parameter name — the
+        # component paths have drifted from the model structure, or the model
+        # was already re-wrapped (peft prepends "base_model.model." to the
+        # names its scopes own). Freezing nothing would silently train the
+        # whole model, the same "runs fine but trains wrong" failure the
+        # unknown-name raise above guards against.
+        raise ValueError(
+            f"freeze: components {freeze_names} matched no parameters on "
+            f"{type(model).__name__} (prefixes {patterns}). Check that the "
+            "component paths in ModelMetadata.components match this model's "
+            "parameter names."
+        )
 
 
 def _selective_train(
