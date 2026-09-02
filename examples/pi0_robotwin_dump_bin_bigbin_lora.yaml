@@ -29,7 +29,7 @@ finetuning:
     lora_alpha: 16
     lora_dropout: 0.0
     init_lora_weights: gaussian
-    target_components: [llm]
+    components: [llm]
 
 training:
   lr: 2.5e-5

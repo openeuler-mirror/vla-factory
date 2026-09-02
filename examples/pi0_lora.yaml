@@ -54,7 +54,12 @@ finetuning:
     lora_alpha: 16                # peft-aligned
     lora_dropout: 0.0             # forwarded to peft
     init_lora_weights: gaussian   # forwarded to peft (gaussian matches RLinf's openpi LoRA)
-    target_components: ["llm"]    # vla abstraction: LoRA on the PaliGemma VLM subtree
+    components: ["llm"]    # LoRA on the PaliGemma VLM subtree (key of ModelMetadata.components).
+                           # Default is "all" (LoRA on every component); "llm" restricts to the
+                           # VLM so the action expert keeps full-FT, like openpi's gemma_2b_lora.
+    # freeze_components: ["action_expert"]  # optional: freeze (not full-FT) other subtrees
+    # target_modules: all-linear  # default: peft special string matching all Linear/Conv1D.
+                                  # Override e.g. [q_proj, v_proj] to match openpi's exact set.
 
 training:
   backend: pytorch

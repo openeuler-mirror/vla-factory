@@ -4,26 +4,65 @@ Injects PEFT LoRA adapters into the model's trainable components. Unlike
 freeze/selective (which toggle ``requires_grad``), LoRA wraps linear layers
 with low-rank adapters; the base weights stay frozen.
 
+Default behavior (the contract a bare recipe gets)
+--------------------------------------------------
+A recipe that only sets ``type: lora`` + ``r`` + ``lora_alpha`` gets LoRA on
+the *whole* model: ``components`` defaults to ``"all"`` (every key of
+``metadata.components``), ``freeze_components`` defaults to ``[]`` (nothing
+extra frozen), and ``target_modules`` defaults to ``"all-linear"`` (peft's
+special string matching every Linear/Conv1D). This is the simplest
+"LoRA everything" and is parameter-equivalent to openpi's low-mem configs
+(``gemma_2b_lora`` + ``gemma_300m_lora`` — both VLM and action expert get
+LoRA) and to llamafactory's ``lora_target="all"`` default.
+
 Design
 ------
-``finetuning.config.target_components`` (e.g. ``["llm"]``) names components
-declared in ``ModelMetadata.components`` (e.g. ``"llm" ->
-["paligemma_with_expert.paligemma."]``). Each prefix locates a subtree to wrap;
-only those subtrees get adapters, so LoRA can target just the VLM (openpi's
-convention) or the action expert too.
+``finetuning.config.components`` names components declared in
+``ModelMetadata.components`` (e.g. ``"llm" ->
+["paligemma_with_expert.paligemma."]``). The field is named ``components`` —
+not ``target_components`` — to match freeze/selective: every strategy names
+its subject the same way (the keys of ``metadata.components``), and the
+``target_`` prefix carried no extra meaning (freeze's/components are equally
+"targets"). Each prefix locates a subtree to wrap; only those subtrees get
+adapters.
 
-Freeze semantics (matches openpi's ``get_freeze_filter``): peft freezes the
-base weights INSIDE the wrapped subtree; parameters OUTSIDE it (for pi0:
-action expert, state/action/time projections) keep ``requires_grad=True`` and
-are fully fine-tuned. So ``target_components: ["llm"]`` means "LoRA adapters
-on the VLM + full FT of everything else", exactly like openpi's
-``paligemma_variant="gemma_2b_lora"`` with a non-lora action expert — NOT
-adapter-only training. The stats log below splits the two so the numbers
-aren't misread as adapter size.
+The default ``"all"`` (a string, not an empty list) expands to every key of
+``metadata.components`` — i.e. whole-model LoRA. A list (e.g. ``["llm"]``)
+restricts LoRA to those subtrees only.
 
-``target_modules`` (the linear-layer names peft matches, e.g. ``q_proj``) are
-not per-model config — they're the standard attention/MLP projections shared
-across Gemma/PaliGemma-style backbones. Verified against RLinf's openpi LoRA.
+Freeze semantics: peft freezes the base weights INSIDE the wrapped subtree;
+parameters OUTSIDE it (for pi0 with ``components: ["llm"]``: action expert,
+state/action/time projections) keep ``requires_grad=True`` and are fully
+fine-tuned. So ``components: ["llm"]`` means "LoRA adapters on the VLM + full
+FT of everything else", like openpi's ``paligemma_variant="gemma_2b_lora"``
+paired with a non-lora action expert. The stats log below splits the two so
+the numbers aren't misread as adapter size.
+
+``finetuning.config.freeze_components`` (default ``[]``) names subtrees to
+freeze (``requires_grad=False``) instead of full-FT. This closes the one gap
+``_wrap_subtree`` could not cover on its own: it only knows "LoRA inside the
+selected subtree, full-FT outside", so a recipe could not express "action_expert
+frozen + llm LoRA". With ``freeze_components: ["action_expert"]`` that combo
+is expressible; empty (the default) keeps the original full-FT-outside
+behavior. A component must not appear in both ``components`` and
+``freeze_components`` (validated at config parse). The freeze itself reuses
+``basic._freeze_components`` so the freeze strategy and the lora-with-freeze
+path share one implementation.
+
+``finetuning.config.target_modules`` (default ``"all-linear"``) is the
+linear-layer-name set peft matches inside the wrapped subtree. It is forwarded
+to peft verbatim — so any peft special string (``"all-linear"`` matches every
+Linear/Conv1D), a regex string, or an explicit list (``["q_proj","v_proj"]``)
+works. It is *not* a model-level fact: different backbones share the same
+peft matching semantics, and a recipe's choice of which linear layers to
+adapt is a per-run training decision, not a model-interface declaration.
+
+What this design CANNOT express (known limitation): per-component different
+LoRA configs (e.g. rank 16 on the VLM and rank 32 on the action expert). A
+single peft_config wraps the whole selected scope, so r/alpha/target_modules
+are uniform across all wrapped subtrees. openpi achieves per-component
+differences by giving each variant its own config; that is out of scope here
+until a recipe needs it.
 
 Adapter storage: the strategy finalizes by merging adapters into the base model
 and returns a clean inference state dict. Checkpoint persistence itself remains
@@ -40,23 +79,17 @@ import torch.nn as nn
 
 from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.training.strategies.base import FinetuningStrategy
+from vla_factory.training.strategies.basic import _freeze_components
 from vla_factory.training.strategies.registry import register_strategy
 from vla_factory.utils.format import human_count
 
 logger = logging.getLogger(__name__)
 
-# Linear-layer names peft matches inside the wrapped subtree. Standard
-# Gemma/PaliGemma attention + MLP projections (matches RLinf's openpi set).
-# lm_head is deliberately NOT here: pi0/pi05's flow-matching forward never
-# calls it (no logits), so its adapter would get no gradients and only waste
-# optimizer state — and it is weight-tied to embed_tokens, which makes peft
-# emit tied-weight warnings at wrap/merge time. Add it per-model when a
-# variant actually trains the token head (e.g. a future pi-fast).
-_DEFAULT_TARGET_MODULES = [
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
-    "proj", "qkv", "fc1", "fc2", "fc3", "out_proj",
-]
+# peft's "all-linear" special string selects every Linear/Conv1D layer
+# inside the wrapped subtree. This is the default for target_modules and
+# aligns with llamafactory's lora_target="all" and openpi's LoRA-on-attention
+# +ffn behavior. A recipe may override it per-run (e.g. ["q_proj","v_proj"]).
+_DEFAULT_TARGET_MODULES = "all-linear"
 
 
 @dataclass(frozen=True)
@@ -68,7 +101,31 @@ class LoraConfig:
     lora_dropout: float = 0.0
     use_rslora: bool = False
     init_lora_weights: object = "gaussian"
-    target_components: list[str] = field(default_factory=list)
+    # Renamed from ``target_components`` to align with freeze/selective: every
+    # strategy names its subject the same way (keys of metadata.components).
+    # The "target_" prefix carried no extra meaning.
+    #
+    # Default "all" (the string) wraps every key of metadata.components, i.e.
+    # LoRA on the whole model — matching llamafactory's lora_target="all"
+    # behavior and openpi's low-mem configs (gemma_2b_lora + gemma_300m_lora,
+    # i.e. both VLM and action expert get LoRA). Empty list/None is NOT a
+    # valid value; the default is "all", not "nothing". The string form is
+    # used so the default survives round-trip and reads like what it is.
+    components: list[str] | str = "all"
+    # Subtrees to freeze (requires_grad=False) instead of full-FT. Lets a
+    # recipe express "action_expert frozen + llm LoRA" — the one gap
+    # _wrap_subtree could not cover (it only knows "LoRA inside, full-FT
+    # outside"). Empty (the default) keeps the original full-FT-outside
+    # behavior. A component may appear in `components` OR `freeze_components`,
+    # but never both (raising an overlap error is the validation's job).
+    freeze_components: list[str] = field(default_factory=list)
+    # peft target_modules: linear-layer names peft matches inside the wrapped
+    # subtree. Default "all-linear" (peft special string selecting every
+    # Linear/Conv1D), aligning with llamafactory's lora_target="all" and
+    # openpi's attention+ffn LoRA. Override per-run, e.g. ["q_proj","v_proj"]
+    # to match openpi's LoRA target set exactly. A list[str] or another peft
+    # special string ("all-linear", a regex) is forwarded to peft verbatim.
+    target_modules: list[str] | str = _DEFAULT_TARGET_MODULES
 
     def __post_init__(self) -> None:
         if isinstance(self.r, bool) or not isinstance(self.r, int) or self.r <= 0:
@@ -89,13 +146,74 @@ class LoraConfig:
             )
         if not isinstance(self.use_rslora, bool):
             raise TypeError("finetuning.config.use_rslora must be a boolean")
-        if not isinstance(self.target_components, list) or any(
-            not isinstance(name, str) or not name
-            for name in self.target_components
+        # components: "all" (default) or a non-empty list[str]. An empty list
+        # is rejected so "forgot to set it" doesn't silently mean "no LoRA".
+        # An empty list is a value error (the type list[str] is fine, it just
+        # names nothing); a non-str/empty-str element is a type error.
+        if isinstance(self.components, str):
+            if self.components != "all":
+                raise ValueError(
+                    "finetuning.config.components as a string must be 'all'; "
+                    f"got {self.components!r}"
+                )
+        elif not isinstance(self.components, list):
+            raise TypeError(
+                "finetuning.config.components must be 'all' or a list of names"
+            )
+        elif not self.components:
+            raise ValueError(
+                "finetuning.config.components must not be empty "
+                f"(use 'all' for whole-model LoRA; known: {[]})"
+            )
+        elif any(
+            not isinstance(name, str) or not name for name in self.components
         ):
             raise TypeError(
-                "finetuning.config.target_components must be a list of names"
+                "finetuning.config.components must be a list of non-empty "
+                "strings"
             )
+        if not isinstance(self.freeze_components, list) or any(
+            not isinstance(name, str) or not name
+            for name in self.freeze_components
+        ):
+            raise TypeError(
+                "finetuning.config.freeze_components must be a list of names"
+            )
+        # target_modules: "all-linear" (default), another non-empty string
+        # (treated by peft as a regex/special), or a non-empty list[str].
+        # An empty list is rejected so "forgot to set it" ≠ "match nothing".
+        if isinstance(self.target_modules, str):
+            if not self.target_modules:
+                raise ValueError(
+                    "finetuning.config.target_modules must be a non-empty "
+                    "string (e.g. 'all-linear') or a non-empty list"
+                )
+        elif (
+            not isinstance(self.target_modules, list)
+            or not self.target_modules
+            or any(
+                not isinstance(name, str) or not name
+                for name in self.target_modules
+            )
+        ):
+            raise TypeError(
+                "finetuning.config.target_modules must be 'all-linear', a "
+                "non-empty string, or a non-empty list of names"
+            )
+        # A component in BOTH components and freeze_components is a
+        # contradiction (LoRA a subtree AND freeze it) — catch it here so the
+        # failure is a clear config error, not "peft wrapped it then freeze
+        # froze the adapters too".
+        if (
+            isinstance(self.components, list)
+            and self.freeze_components
+        ):
+            overlap = set(self.components) & set(self.freeze_components)
+            if overlap:
+                raise ValueError(
+                    "finetuning.config: components and freeze_components must "
+                    f"not overlap; got {sorted(overlap)} in both"
+                )
 
 
 @register_strategy("lora")
@@ -117,13 +235,13 @@ def apply_lora(
     config: LoraConfig,
     metadata: ModelMetadata,
 ) -> nn.Module:
-    """Inject LoRA adapters into the model's target components.
+    """Inject LoRA adapters into the model's components.
 
     Returns the (possibly re-wrapped) model — peft may replace subtrees in
     place, so callers should use the returned object.
 
-    Raises ``ValueError`` if the model doesn't support LoRA or no target
-    component resolves to a real subtree.
+    Raises ``ValueError`` if the model doesn't support LoRA or no component
+    resolves to a real subtree.
     """
     from peft import LoraConfig as PeftLoraConfig
 
@@ -133,25 +251,39 @@ def apply_lora(
             f"(support_lora=False). Use a different finetuning strategy."
         )
 
-    targets = config.target_components or []
-    if not targets:
-        raise ValueError(
-            "LoRA: finetuning.config.target_components is empty. "
-            f"Known components for {metadata.name!r}: {list(metadata.components)}."
-        )
+    # Resolve components: "all" (the default) expands to every key of
+    # metadata.components so a bare `finetuning: {type: lora, config: {r, lora_alpha}}`
+    # recipe LoRAs the whole model. A list is taken verbatim. An empty
+    # list is rejected by LoraConfig.__post_init__, so we never reach here
+    # with nothing-to-wrap silently.
+    if config.components == "all":
+        targets = list(metadata.components.keys())
+        if not targets:
+            raise ValueError(
+                f"LoRA: components='all' but {metadata.name!r} declares no "
+                f"components (metadata.components is empty)."
+            )
+    else:
+        targets = list(config.components)
+        if not targets:
+            raise ValueError(
+                "LoRA: finetuning.config.components is empty. "
+                f"Known components for {metadata.name!r}: {list(metadata.components)}."
+            )
 
     # Forward peft-aligned fields to peft.LoraConfig as-is; vla only adds the
-    # target_components → subtree → target_modules mapping below.
+    # components → subtree → target_modules mapping below. target_modules is
+    # forwarded verbatim (the "all-linear" default or a recipe override).
     peft_config = PeftLoraConfig(
         r=config.r,
         lora_alpha=config.lora_alpha,
         lora_dropout=config.lora_dropout,
         use_rslora=config.use_rslora,
         init_lora_weights=config.init_lora_weights,
-        target_modules=_DEFAULT_TARGET_MODULES,
+        target_modules=config.target_modules,
     )
 
-    # Resolve target_components → subtree paths via metadata.components.
+    # Resolve components → subtree paths via metadata.components.
     subtree_paths: list[str] = []
     for comp in targets:
         if comp not in metadata.components:
@@ -159,7 +291,7 @@ def apply_lora(
             # succeeds, trains fewer layers than the recipe asked for, and only
             # a log line records it. Fail instead (same rule as full.py).
             raise ValueError(
-                f"LoRA: target_components entry {comp!r} is not declared in "
+                f"LoRA: components entry {comp!r} is not declared in "
                 f"ModelMetadata.components for model {metadata.name!r}. "
                 f"Available components: {list(metadata.components)}."
             )
@@ -167,7 +299,7 @@ def apply_lora(
 
     if not subtree_paths:
         raise ValueError(
-            f"LoRA: target_components {targets} resolved to no subtree paths. "
+            f"LoRA: components {targets} resolved to no subtree paths. "
             f"metadata.components={metadata.components}"
         )
 
@@ -177,6 +309,15 @@ def apply_lora(
     # stay requires_grad=True and train fully, same as openpi's freeze filter).
     # For multiple subtrees or a whole-model target, wrap the whole model.
     wrapped = _wrap_subtree(model, subtree_paths, peft_config)
+
+    # Freeze extra subtrees that should NOT full-FT (requires_grad=False).
+    # _wrap_subtree alone only knows "LoRA inside, full-FT outside"; this
+    # branch is what lets a recipe express "action_expert frozen + llm LoRA".
+    # Reuses basic._freeze_components so the freeze strategy and this path
+    # share one implementation.
+    if config.freeze_components:
+        _freeze_components(wrapped, config.freeze_components, metadata)
+
     _log_lora_stats(
         wrapped, label=f"lora(r={config.r}, α={config.lora_alpha}, {targets})",
     )

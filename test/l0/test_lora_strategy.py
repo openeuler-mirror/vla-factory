@@ -1,4 +1,4 @@
-"""Tests for the LoRA strategy (peft injection, target_components → subtree).
+"""Tests for the LoRA strategy (peft injection, components → subtree).
 
 Patches peft with a fake module so tests run without peft installed (the
 strategy imports peft lazily inside apply_lora). Also runnable directly via
@@ -131,7 +131,7 @@ def _make_recipe(targets):
             config={
                 "r": 16,
                 "lora_alpha": 16,
-                "target_components": list(targets),
+                "components": list(targets),
             },
         ),
     )
@@ -187,11 +187,11 @@ def test_merge_unwraps_subtree_wrap():
     assert not any(isinstance(m, _FakePeftModel) for m in merged.modules())
 
 
-def test_empty_target_components_raises():
+def test_empty_components_raises():
     recipe = TrainRecipe(
         finetuning=FinetuningConfig(
             strategy="lora",
-            config={"r": 16, "lora_alpha": 16, "target_components": []},
+            config={"r": 16, "lora_alpha": 16, "components": []},
         ),
     )
     with pytest.raises(ValueError):
@@ -204,7 +204,7 @@ def test_support_lora_false_raises():
 
 
 def test_unknown_target_component_raises_and_lists_available():
-    """A typo in target_components must fail, not silently shrink the mount surface.
+    """A typo in components must fail, not silently shrink the mount surface.
 
     Skipping the unknown name and carrying on used to leave the run training
     fewer layers than the recipe asked for, with only a log line to show it.
@@ -235,7 +235,46 @@ def test_missing_subtree_raises_instead_of_whole_model_fallback():
     assert not _injected, "no adapter may be injected when the subtree is missing"
 
 
-def test_legacy_rank_alpha_aliases_are_rejected():
+def test_freeze_components_freezes_non_target_subtree():
+    """freeze_components expresses "action_expert frozen + llm LoRA".
+
+    The gap _wrap_subtree alone could not cover: it only knows "LoRA inside,
+    full-FT outside". With freeze_components the outside subtree is frozen
+    instead of full-FT. action_expert's q_proj must be requires_grad=False.
+    """
+    recipe = TrainRecipe(
+        finetuning=FinetuningConfig(
+            strategy="lora",
+            config={
+                "r": 16,
+                "lora_alpha": 16,
+                "components": ["llm"],
+                "freeze_components": ["action_expert"],
+            },
+        ),
+    )
+    model = _FakePI0()
+    _prepare(model, recipe, _Meta())
+    # action_expert subtree frozen by freeze_components
+    assert not model.paligemma_with_expert.gemma_expert.q_proj.weight.requires_grad, \
+        "freeze_components must freeze action_expert"
+    # llm subtree got peft-wrapped (LoRA adapters)
+    assert isinstance(model.paligemma_with_expert.paligemma, _FakePeftModel)
+
+
+def test_no_freeze_components_keeps_outside_full_ft():
+    """Default (empty freeze_components): outside subtree stays full-FT.
+
+    Confirms the new field is backward compatible — not setting it keeps the
+    original "subtree outside = full-FT" behavior, action_expert trainable.
+    """
+    model = _FakePI0()
+    _prepare(model, _make_recipe(["llm"]), _Meta())
+    assert model.paligemma_with_expert.gemma_expert.q_proj.weight.requires_grad, \
+        "action_expert must stay trainable when freeze_components is unset"
+
+
+def test_unknown_lora_fields_are_rejected_by_strategy():
     recipe = parse_recipe_from_string(
         """
 model: {name: pi0}
@@ -244,7 +283,7 @@ finetuning:
   config:
     rank: 8
     alpha: 8
-    target_components: [llm]
+    components: [llm]
 """
     )
     strategy = get_strategy("lora")
@@ -262,13 +301,169 @@ finetuning:
     r: 32
     lora_alpha: 32
     lora_dropout: 0.1
-    target_components: [llm]
+    components: [llm]
 """
     )
     config = get_strategy("lora").parse_config(recipe.finetuning.config)
     assert config.r == 32
     assert config.lora_alpha == 32
     assert config.lora_dropout == 0.1
+
+
+# ── Default behavior: bare recipe gets whole-model LoRA ──
+
+def test_default_components_is_all_string():
+    """Bare config (no components) defaults to the string 'all', not an empty
+    list — so 'forgot to set it' means 'LoRA everything', not 'LoRA nothing'."""
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+"""
+    )
+    config = get_strategy("lora").parse_config(recipe.finetuning.config)
+    assert config.components == "all"
+
+
+def test_default_target_modules_is_all_linear():
+    """Bare config defaults target_modules to 'all-linear' (peft special string
+    matching every Linear/Conv1D), aligning with llamafactory's lora_target."""
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+"""
+    )
+    config = get_strategy("lora").parse_config(recipe.finetuning.config)
+    assert config.target_modules == "all-linear"
+
+
+def test_default_components_all_expands_to_all_keys():
+    """components='all' expands to every key of metadata.components at
+    apply time — LoRA the whole model (matches openpi's gemma_2b_lora +
+    gemma_300m_lora low-mem config)."""
+    model = _FakePI0()
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+"""
+    )
+    out = _prepare(model, recipe, _Meta())
+    # 'all' = [llm, action_expert] → multi-subtree → whole-model wrap
+    assert isinstance(out, _FakePeftModel), (
+        "components='all' must wrap the whole model, not a single subtree"
+    )
+    assert len(_injected) == 1, "single whole-model get_peft_model call"
+
+
+def test_target_modules_forwarded_to_peft():
+    """An explicit target_modules list is forwarded to peft.LoraConfig
+    verbatim (not swallowed by a hardcoded default)."""
+    model = _FakePI0()
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    components: [llm]
+    target_modules: [q_proj, v_proj]
+"""
+    )
+    _prepare(model, recipe, _Meta())
+    assert len(_injected) == 1
+    peft_cfg = _injected[0][1]
+    assert peft_cfg.kw["target_modules"] == ["q_proj", "v_proj"]
+
+
+def test_default_target_modules_forwarded_to_peft():
+    """The 'all-linear' default is forwarded to peft verbatim (not a custom
+    expansion in the strategy)."""
+    model = _FakePI0()
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    components: [llm]
+"""
+    )
+    _prepare(model, recipe, _Meta())
+    assert len(_injected) == 1
+    peft_cfg = _injected[0][1]
+    assert peft_cfg.kw["target_modules"] == "all-linear"
+
+
+def test_components_and_freeze_components_overlap_raises():
+    """A component in both components and freeze_components is a
+    contradiction (LoRA it AND freeze it) — must raise at config parse."""
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    components: [llm, action_expert]
+    freeze_components: [action_expert]
+"""
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        get_strategy("lora").parse_config(recipe.finetuning.config)
+
+
+def test_components_all_string_rejects_non_all_strings():
+    """A string components value that isn't 'all' is a clear error, not a
+    silent single-component lookup."""
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    components: llm
+"""
+    )
+    with pytest.raises(ValueError, match="must be 'all'"):
+        get_strategy("lora").parse_config(recipe.finetuning.config)
+
+
+def test_target_modules_empty_list_raises():
+    """An empty target_modules list would match nothing → reject at parse."""
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    target_modules: []
+"""
+    )
+    with pytest.raises((ValueError, TypeError)):
+        get_strategy("lora").parse_config(recipe.finetuning.config)
 
 
 def test_save_final_model_falls_back_to_unmerged_state_on_merge_failure(tmp_path):

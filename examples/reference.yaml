@@ -128,15 +128,23 @@ finetuning:
   # 每个 strategy 严格校验自己的 config；切换策略时只保留对应的字段。
   # ── strategy == "lora" 时取消下面整块注释 ──
   # 字段名与 peft.LoraConfig 对齐（r/lora_alpha/lora_dropout/use_rslora/init_lora_weights
-  # 透传给 peft）。target_components 是 vla 自己的抽象（component → subtree → peft
-  # target_modules），因为不同模型 module 名不同。
+  # 透传给 peft）。components 是 vla 自己的抽象（component → subtree → peft
+  # target_modules），因为不同模型 module 名不同；它与 freeze/selective 同名，
+  # 都取 ModelMetadata.components 的 key。freeze_components 可选，冻死而非全训
+  # 选定子树之外的某些子树（如 "action_expert 冻结 + llm LoRA"）。
+  # 默认行为（只写 r/lora_alpha 即可）：components 默认 "all"（对全部组件打
+  # LoRA，等价 openpi 低显存 gemma_2b_lora+gemma_300m_lora / llamafactory
+  # lora_target=all）；freeze_components 默认 []；target_modules 默认
+  # "all-linear"（peft 特殊串，匹配所有 Linear/Conv1D）。
   # config:
   #   r: 16                      # LoRA 秩, 越大容量越大. 常用: 8, 16, 32
   #   lora_alpha: 16             # 缩放因子, 等效 = lora_alpha / r
   #   lora_dropout: 0.0          # adapter dropout, 透传 peft
   #   use_rslora: false          # rank-stabilized LoRA, 透传 peft
   #   init_lora_weights: gaussian # 初始化方案, 透传 peft
-  #   target_components: [llm, action_expert]
+  #   components: [llm]           # 打 LoRA 的子树; 默认 "all" = 全部组件
+  #   freeze_components: [action_expert]  # 冻死而非全训的子树 (可选), 默认 []
+  #   target_modules: all-linear  # peft 线性层名; 默认 "all-linear", 或列表如 [q_proj, v_proj]
 
   # ── strategy == "freeze" 时需要 ──
   # config: {components: [vision_encoder]}   # 冻结视觉编码器

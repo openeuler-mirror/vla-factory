@@ -225,7 +225,10 @@ finetuning:
   strategy: lora                # full | lora | freeze | selective
   config:                       # 由选中的策略严格解析
     r: 16
-    target_components: [llm]    # 引用 ModelMetadata.components 的 key
+    # 只写 r 即可：components 默认 "all"（对所有组件打 LoRA）、
+    # freeze_components 默认 []、target_modules 默认 "all-linear"。
+    # 下面显式把 components 限定为只对 VLM 子树打 LoRA。
+    components: [llm]    # 引用 ModelMetadata.components 的 key
 training:
   lr: 2.5e-5
   batch_size: 8
@@ -729,6 +732,14 @@ parse recipe
 - `lora`：面向支持 LoRA 的模型扩展。
 
 ACT 从零训练通常使用 `full`；预训练 VLA 模型可使用 full、freeze、selective 或 LoRA。
+
+**LoRA 默认行为契约。** 一份只写了 `finetuning: {strategy: lora, config: {r, lora_alpha}}` 的 recipe——不写 `components`、不写 `freeze_components`、不写 `target_modules`——得到的是「对整个模型打 LoRA」。三个字段都有默认值，使这成为最简且合理的行为：
+
+- `components` 默认 `"all"`（字符串）：apply 时展开为 `ModelMetadata.components` 的全部 key，即对每个已声明子树都打 LoRA（pi0 即 VLM 与 action_expert 都打）。列表（如 `["llm"]`）则只对所列子树打 LoRA。
+- `freeze_components` 默认 `[]`：`components` 之外的子树保持 `requires_grad=True`、全参微调。在此列出某个子树则改为冻结它，补上了「子树 LoRA 原本覆盖不到」的一处空缺（"action_expert 冻结 + llm LoRA"）。同一组件不得同时出现在 `components` 与 `freeze_components` 中（config 解析时校验）。
+- `target_modules` 默认 `"all-linear"`：peft 特殊串，匹配被包装范围内所有 `Linear`/`Conv1D`。它原样透传给 peft，因此正则串或显式列表（如 `["q_proj","v_proj"]`）也可用。它是单次训练的决策，不是 `ModelMetadata` 的事实。
+
+该默认值与 openpi 低显存配置（`gemma_2b_lora` + `gemma_300m_lora`——VLM 与 action_expert 都打 LoRA）参数等价，并与 llamafactory 的 `lora_target="all"` 对齐。已知局限：单一 `peft_config` 包装整个所选范围，故 `r`/`lora_alpha`/`target_modules` 在所有被包装子树间统一——暂无法表达「各组件不同的 LoRA 配置」，除非有 recipe 真有此需求。
 
 策略通过 `@register_strategy(name)` 注册，并严格解析自己的 `finetuning.config`。
 `prepare_model()` 负责冻结/包装，`finalize_model()` 与 `state_dict()` 负责保存前收口；
