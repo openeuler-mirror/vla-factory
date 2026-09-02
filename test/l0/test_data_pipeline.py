@@ -604,6 +604,44 @@ class TestDataLoaderBatching(unittest.TestCase):
         self.assertEqual(is_pad.dtype, torch.bool)
 
 
+def test_collate_tasks_stay_batch_aligned():
+    """Review fix #6: mixed language batches must keep len(task) == batch.
+
+    The old collate filtered None task entries, so a batch with some annotated
+    and some unannotated frames produced len(tasks) < batch and OpenVLA's
+    observation.task[i] indexed out of range.
+    """
+    import numpy as np
+
+    from vla_factory.training.dataset import collate_fn
+
+    def sample(task):
+        return {
+            "images.top": np.zeros((1, 8, 8, 3), dtype=np.uint8),
+            "image_masks.top": np.ones(1, dtype=bool),
+            "state": np.zeros(6, dtype=np.float32),
+            "actions": np.zeros((1, 7), dtype=np.float32),
+            "action_is_pad": np.zeros(1, dtype=bool),
+            **({"task": task} if task is not None else {}),
+        }
+
+    # All annotated -> tasks == batch size.
+    batch = collate_fn([sample("pick A"), sample("pick B")])
+    assert batch["observation"].task == ["pick A", "pick B"]
+
+    # Mixed: one annotated, one not -> entries kept as None, length == batch.
+    batch = collate_fn([sample("pick A"), sample(None)])
+    assert batch["observation"].task == ["pick A", None]
+
+    # None first then annotated -> same alignment regardless of position.
+    batch = collate_fn([sample(None), sample("pick B")])
+    assert batch["observation"].task == [None, "pick B"]
+
+    # All unannotated -> task becomes None (list of Nones collapses).
+    batch = collate_fn([sample(None), sample(None)])
+    assert batch["observation"].task is None
+
+
 class TestPlanInstantiation(unittest.TestCase):
     """A resolved plan becomes exactly the pipeline it describes.
 

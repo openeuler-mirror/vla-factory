@@ -158,9 +158,16 @@ class OpenVLAModelWrapper(nn.Module):
 
         instances = []
         for i in range(actions.shape[0]):
+            # Per-item fallback: batch-aligned task list may hold None for
+            # frames without language (mixed datasets); truthiness of the list
+            # only covers the all-None case.
             task = (
                 observation.task[i]
-                if observation.task
+                if (
+                    observation.task
+                    and i < len(observation.task)
+                    and observation.task[i]
+                )
                 else (self._default_task or "")
             )
             # ActionTokenizer uses np.clip internally; must pass CPU numpy.
@@ -205,7 +212,10 @@ class OpenVLAModelWrapper(nn.Module):
     def predict_actions(self, observation, **kwargs):
         task = (
             observation.task[0]
-            if observation.task
+            if (
+                observation.task
+                and observation.task[0]
+            )
             else (self._default_task or "")
         )
         prompt_builder = self._prompt_builder_fn("openvla")
