@@ -21,6 +21,7 @@ from vla_factory.user_interface import (
 )
 from vla_factory.training.strategies import get_strategy
 from vla_factory.training.strategies.lora import (
+    apply_lora,
     merge_lora_adapters,
 )
 
@@ -155,24 +156,53 @@ def test_single_subtree_target_wraps_only_that_subtree():
     assert not isinstance(model.paligemma_with_expert.gemma_expert, _FakePeftModel)
 
 
-def test_multi_target_wraps_whole_model():
+def test_multi_target_wraps_each_subtree():
+    """Multi-component: each subtree is wrapped individually, never the
+    whole model.
+
+    The old whole-model path ran get_peft_model(model, "all-linear") — which
+    also injects LoRA into linears OUTSIDE the selected components (pi0:
+    state/action projections) and freezes the whole base, inverting the
+    "outside stays full-FT" contract.
+    """
     model = _FakePI0()
     out = _prepare(model, _make_recipe(["llm", "action_expert"]), _Meta())
-    assert isinstance(out, _FakePeftModel), "multi-target → whole-model wrap"
-    assert len(_injected) == 1, "single get_peft_model call on the whole model"
+    assert out is model, "per-subtree wrap must keep the top-level object"
+    assert len(_injected) == 2, "one get_peft_model call per subtree"
+    assert isinstance(_injected[0][0], _FakePaliGemma)
+    assert isinstance(_injected[1][0], _FakeExpert)
+    assert isinstance(model.paligemma_with_expert.paligemma, _FakePeftModel)
+    assert isinstance(model.paligemma_with_expert.gemma_expert, _FakePeftModel)
 
 
 def test_merge_unwraps_whole_model_wrap():
-    """Whole-model LoRA: the top-level PeftModel itself must be merged away."""
+    """A manually/legacy-constructed top-level PeftModel is merged away.
+
+    apply_lora no longer produces whole-model wraps, but merge keeps the
+    top-level branch for hand-built or old-checkpoint shapes.
+    """
     model = _FakePI0()
-    wrapped = _prepare(model, _make_recipe(["llm", "action_expert"]), _Meta())
-    assert isinstance(wrapped, _FakePeftModel)
+    wrapped = _FakePeftModel(model)
 
     merged = merge_lora_adapters(wrapped)
     assert merged is model, "top-level PeftModel merged back to its base model"
     assert not any(
         isinstance(m, _FakePeftModel) for m in merged.modules()
     ), "no PeftModel wrapper may survive the merge"
+
+
+def test_merge_unwraps_each_subtree_wrap():
+    """Multi-subtree LoRA: every wrapped subtree is merged back to its base."""
+    model = _FakePI0()
+    _prepare(model, _make_recipe(["llm", "action_expert"]), _Meta())
+    assert isinstance(model.paligemma_with_expert.paligemma, _FakePeftModel)
+    assert isinstance(model.paligemma_with_expert.gemma_expert, _FakePeftModel)
+
+    merged = merge_lora_adapters(model)
+    assert merged is model
+    assert isinstance(model.paligemma_with_expert.paligemma, _FakePaliGemma)
+    assert isinstance(model.paligemma_with_expert.gemma_expert, _FakeExpert)
+    assert not any(isinstance(m, _FakePeftModel) for m in merged.modules())
 
 
 def test_merge_unwraps_subtree_wrap():
@@ -348,8 +378,9 @@ finetuning:
 
 def test_default_components_all_expands_to_all_keys():
     """components='all' expands to every key of metadata.components at
-    apply time — LoRA the whole model (matches openpi's gemma_2b_lora +
-    gemma_300m_lora low-mem config)."""
+    apply time — each declared subtree wrapped in place, so the simplest
+    recipe LoRAs every component without touching anything outside them
+    (matches openpi's gemma_2b_lora + gemma_300m_lora low-mem config)."""
     model = _FakePI0()
     recipe = parse_recipe_from_string(
         """
@@ -362,11 +393,40 @@ finetuning:
 """
     )
     out = _prepare(model, recipe, _Meta())
-    # 'all' = [llm, action_expert] → multi-subtree → whole-model wrap
-    assert isinstance(out, _FakePeftModel), (
-        "components='all' must wrap the whole model, not a single subtree"
+    # 'all' = [llm, action_expert] → each subtree wrapped individually
+    assert out is model, "'all' must not swap the top-level object"
+    assert len(_injected) == 2, "one get_peft_model call per declared subtree"
+    assert isinstance(_injected[0][0], _FakePaliGemma)
+    assert isinstance(_injected[1][0], _FakeExpert)
+    assert isinstance(model.paligemma_with_expert.paligemma, _FakePeftModel)
+    assert isinstance(model.paligemma_with_expert.gemma_expert, _FakePeftModel)
+
+
+def test_all_plus_freeze_components_raises():
+    """components='all' + freeze_components is the overlap the parse-time
+    check cannot see ('all' is a string, not a list).
+
+    apply_lora must raise after expansion — before the fix, 'all' slipped
+    through and the freeze silently no-oped: whole-model wrapping renamed
+    parameters under 'base_model.model.', so the freeze prefixes matched
+    nothing.
+    """
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    freeze_components: [action_expert]
+"""
     )
-    assert len(_injected) == 1, "single whole-model get_peft_model call"
+    config = get_strategy("lora").parse_config(recipe.finetuning.config)
+    assert config.components == "all", "parse passes; the clash is apply-time"
+    with pytest.raises(ValueError, match="overlap"):
+        apply_lora(_FakePI0(), config, _Meta())
+    assert not _injected, "no adapter may be injected on the overlap error"
 
 
 def test_target_modules_forwarded_to_peft():
