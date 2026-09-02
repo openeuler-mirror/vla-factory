@@ -77,12 +77,30 @@ def _load_tasks(path: Path) -> dict[int, str]:
     LeRobot v3 stores the task table separately; each frame carries a
     ``task_index`` column that indexes into it. Returns ``{}`` when no task
     file is present (non-language-conditioned datasets).
+
+    Two on-disk layouts exist and both must be read. Some writers emit a
+    ``task`` column; others (the ones lerobot itself produces) put the task
+    text in the DataFrame *index* and ship ``task_index`` as the only column::
+
+        schema: task_index: int64, __index_level_0__: large_string
+
+    Only handling the first layout silently returned ``{}`` for the second, so
+    every frame lost its language and ``task_tokenize`` fell back to the
+    recipe's ``default_task``. On a multi-task dataset that trains every frame
+    under one prompt with nothing to signal it.
     """
     pq_tasks = path / "meta" / "tasks.parquet"
     if pq_tasks.exists():
         df = pq.read_table(pq_tasks).to_pandas()
         if "task_index" in df.columns and "task" in df.columns:
             return {int(r["task_index"]): str(r["task"]) for _, r in df.iterrows()}
+        # Index-as-task layout. Guard against a plain RangeIndex, whose values
+        # are row numbers rather than task text.
+        if "task_index" in df.columns and not pd.api.types.is_numeric_dtype(df.index):
+            return {
+                int(task_index): str(task_text)
+                for task_text, task_index in df["task_index"].items()
+            }
         return {}
     jsonl_tasks = path / "meta" / "tasks.jsonl"
     if jsonl_tasks.exists():

@@ -155,11 +155,14 @@ def apply_lora(
     subtree_paths: list[str] = []
     for comp in targets:
         if comp not in metadata.components:
-            logger.warning(
-                "LoRA target_components %r not in metadata.components %s; skipping.",
-                comp, list(metadata.components),
+            # Skipping would silently shrink the adapter surface — the run
+            # succeeds, trains fewer layers than the recipe asked for, and only
+            # a log line records it. Fail instead (same rule as full.py).
+            raise ValueError(
+                f"LoRA: target_components entry {comp!r} is not declared in "
+                f"ModelMetadata.components for model {metadata.name!r}. "
+                f"Available components: {list(metadata.components)}."
             )
-            continue
         subtree_paths.extend(metadata.components[comp])
 
     if not subtree_paths:
@@ -193,10 +196,15 @@ def _wrap_subtree(model: nn.Module, subtree_paths: list[str], peft_config) -> nn
         path = subtree_paths[0].rstrip(".")
         parent, leaf = _resolve_parent(model, path)
         if parent is None or leaf is None:
-            logger.warning(
-                "LoRA: subtree %r not found on model; falling back to whole-model wrap.", path
+            # Falling back to a whole-model wrap changes where adapters land
+            # (every matching linear layer, not the declared subtree) while the
+            # run still succeeds — the LoRA equivalent of freezing the wrong
+            # component. Fail so the wrong mount surface cannot ship.
+            raise ValueError(
+                f"LoRA: subtree {path!r} (declared in ModelMetadata.components) "
+                f"does not exist on {type(model).__name__}. Adapters would land "
+                "on the whole model instead of the intended subtree."
             )
-            return get_peft_model(model, peft_config)
         subtree = getattr(parent, leaf)
         wrapped = get_peft_model(subtree, peft_config)
         setattr(parent, leaf, wrapped)

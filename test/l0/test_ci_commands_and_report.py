@@ -12,11 +12,12 @@ from pathlib import Path
 
 import pytest
 
-CI_DIR = Path(__file__).resolve().parents[1] / "scripts" / "ci"
+CI_DIR = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 sys.path.insert(0, str(CI_DIR))
 
 import commands  # noqa: E402
 import parse_results  # noqa: E402
+import run_ci as ci_launcher  # noqa: E402
 
 
 # ── /vla-factory command parsing ──────────────────────────────────────
@@ -44,6 +45,35 @@ def test_help_text_lists_registered_commands():
 def test_review_uses_vlafactory_skill_from_skills_repo():
     assert commands.SKILL_SUBMODULE_URL == "https://github.com/2012geek/skills.git"
     assert commands.REVIEW_SKILL_RELPATH == "skills/vlafactory-code-review"
+
+
+def test_ci_launcher_requires_all_tier_environments(tmp_path):
+    interpreter = str(tmp_path / "python")
+    (tmp_path / "python").touch()
+
+    complete = {
+        "VLAF_ENV_BASE": interpreter,
+        "VLAF_ENV_ACT": interpreter,
+        "VLAF_ENV_PI": interpreter,
+        "HF_TOKEN": "hf_test",
+    }
+    assert ci_launcher.validate_ci_environments(complete) is None
+    assert "act" in ci_launcher.validate_ci_environments({
+        "VLAF_ENV_BASE": interpreter,
+        "VLAF_ENV_PI": interpreter,
+        "HF_TOKEN": "hf_test",
+    })
+    assert "pi" in ci_launcher.validate_ci_environments({
+        "VLAF_ENV_BASE": interpreter,
+        "VLAF_ENV_ACT": interpreter,
+        "VLAF_ENV_PI": str(tmp_path / "missing-python"),
+        "HF_TOKEN": "hf_test",
+    })
+    assert "HF_TOKEN" in ci_launcher.validate_ci_environments({
+        "VLAF_ENV_BASE": interpreter,
+        "VLAF_ENV_ACT": interpreter,
+        "VLAF_ENV_PI": interpreter,
+    })
 
 
 def test_help_command_posts_help(monkeypatch):
@@ -219,6 +249,18 @@ def test_zero_collected_tier_is_skip_not_fail(daemon, tmp_path):
     assert by_env["base"]["ok"] is True
     assert by_env["act"]["ok"] is True
     assert by_env["act"]["l1"] == "— (skip)"
+
+
+def test_missing_tier_directory_writes_a_zero_test_report(daemon, tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "DEFAULT_ENV_TIERS", {"act": ["l2"]})
+    monkeypatch.setattr(daemon, "TIER_TEST_PATHS", {"l2": "test/l2"})
+
+    report_dir = tmp_path / "reports" / "act"
+    assert daemon.run_gate(tmp_path, "act", "unused-python", report_dir) is True
+
+    summary = parse_results.parse_junit(report_dir / "l2.xml")
+    assert summary["total"] == 0
+    assert summary["ok"] is True
 
 
 def test_env_with_real_failures_still_fails(daemon, tmp_path):
@@ -476,6 +518,7 @@ def test_run_gate_timeout_writes_failed_junit(daemon, tmp_path, monkeypatch):
     def hang(*a, **k):
         raise subprocess.TimeoutExpired(cmd="pytest", timeout=1, output=b"slow test ...")
     monkeypatch.setattr(daemon.subprocess, "run", hang)
+    (tmp_path / "test" / "l0").mkdir(parents=True)
     reports = tmp_path / "reports" / "base"
 
     ok = daemon.run_gate(tmp_path, "base", "python", reports)
@@ -490,6 +533,7 @@ def test_run_gate_missing_python_fails_not_raises(daemon, tmp_path, monkeypatch)
     def boom(*a, **k):
         raise FileNotFoundError("no such python")
     monkeypatch.setattr(daemon.subprocess, "run", boom)
+    (tmp_path / "test" / "l0").mkdir(parents=True)
 
     ok = daemon.run_gate(tmp_path, "base", "/no/such/python", tmp_path / "r")
 

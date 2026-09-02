@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_project_root = Path(__file__).resolve().parents[1]
+_project_root = Path(__file__).resolve().parents[2]
 
 from helpers import make_schema
 
@@ -95,10 +95,11 @@ class TestGoldenRealData:
             ("image_layout", {"to": "CHW"}),
             ("image_normalize", {"mode": "imagenet"}),
             ("normalize_vector", {"fields": ["state", "actions"],
-                                  "method": "zscore", "stats_ref": "norm_stats"}),
+                                  "method": "zscore", "eps": 1e-8,
+                                  "stats_ref": "norm_stats"}),
         ]
         assert _calls(a.model_to_robot) == [
-            ("unnormalize_action", {"stats_ref": "norm_stats"}),
+            ("unnormalize_action", {"stats_ref": "norm_stats", "eps": 1e-8}),
         ]
 
     def test_pi0_camera_override_is_the_complete_mapping(self, schema, norm_stats):
@@ -140,12 +141,13 @@ class TestGoldenRealData:
         assert all("padded" not in e for e in a.action_mapping.entries)
 
         assert _calls(a.data_to_model) == [
-            ("image_to_float", {"range": [-1.0, 1.0]}),
-            ("image_layout", {"to": "CHW"}),
             ("resize_images", {"height": 224, "width": 224,
                                "mode": "pad", "interpolation": "bilinear"}),
+            ("image_to_float", {"range": [-1.0, 1.0]}),
+            ("image_layout", {"to": "CHW"}),
             ("normalize_vector", {"fields": ["state", "actions"],
-                                  "method": "zscore", "stats_ref": "norm_stats"}),
+                                  "method": "zscore", "eps": 1e-6,
+                                  "stats_ref": "norm_stats"}),
             ("pad_dimensions", {"target_dim": 32, "fields": ["state", "actions"]}),
             ("task_tokenize", {"max_length": 48, "discrete_state": False,
                                "tokenizer_repo": "google/paligemma-3b-pt-224"}),
@@ -154,7 +156,7 @@ class TestGoldenRealData:
         # steps without an inverse (resize, tokenize, image ops) disappear.
         assert _calls(a.model_to_robot) == [
             ("unpad_action", {"target_dim": 8}),
-            ("unnormalize_action", {"stats_ref": "norm_stats"}),
+            ("unnormalize_action", {"stats_ref": "norm_stats", "eps": 1e-6}),
         ]
 
     def test_pi05_plans_quantile_inverse_and_state_tokenization_dependency(
@@ -175,7 +177,7 @@ class TestGoldenRealData:
         }
         assert _calls(a.model_to_robot) == [
             ("unpad_action", {"target_dim": 8}),
-            ("unnormalize_action_quantile", {"stats_ref": "norm_stats"}),
+            ("unnormalize_action_quantile", {"stats_ref": "norm_stats", "eps": 1e-6}),
         ]
 
     def test_language_mapping_reads_the_dataset_task_field(self, schema, norm_stats):

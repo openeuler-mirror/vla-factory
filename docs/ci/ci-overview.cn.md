@@ -99,17 +99,16 @@ pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不�
 
 ## 四、测试分层
 
-测试按「验证对象」分三层，用 pytest marker 隔离。
+测试按「验证对象」分三层，并按目录收集。
 
 | 层 | marker | 验证对象 | 成本 | 触发 |
 |----|--------|---------|------|------|
-| **L0** 单元 | 无（`not l1 and not l2 and not l3`） | 我们自己的代码：模块功能、边界条件、报错路径 | 秒级 CPU | 每次 PR |
-| **L1** parity | `@pytest.mark.l1` | 引进的上游语义：transform 链、归一化公式、PEFT 挂载 | 秒级 CPU | 每次 PR |
-| **L2** 冒烟 | `@pytest.mark.l2` | 端到端连通性：单条 episode 过拟合 | 分钟级 CPU/GPU | 每次 PR |
+| **L0** 单元 | `test/l0/` | 我们自己的代码：模块功能、边界条件、报错路径 | 秒级 CPU | 每次 PR |
+| **L1** parity | `test/l1/` + `@pytest.mark.l1` | 引进的上游语义：transform 链、归一化公式、PEFT 挂载 | 秒级 CPU | 每次 PR |
+| **L2** 冒烟 | `test/l2/` + `@pytest.mark.l2` | 端到端连通性：单条 episode 过拟合 | 分钟级 CPU/GPU | 每次 PR |
 
-marker 已在 `pyproject.toml` `[tool.pytest.ini_options] markers` 注册。当前
-master 上尚无任何测试携带 `l1`/`l2` 标记（parity / 冒烟测试在 `dev_ci-backup`
-分支，见下），因此**现阶段 L0 = 全套件**，L1/L2 tier 收集 0 例。tier 收集
+marker 已在 `pyproject.toml` `[tool.pytest.ini_options] markers` 注册。各层级
+按目录选择，因此可以从路径和 marker 两处识别测试层级。tier 收集
 0 例（junit `tests=0`，pytest exit 5）视为 **skip** 而非 FAIL；只有某环境的
 junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）才判 FAIL。
 
@@ -128,28 +127,21 @@ junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）�
 | Inference / Deployment | 执行策略、双 action width、train → infer round trip、平台 adapter、PolicyRunner 和 RPC transport |
 | User Interface | Recipe 解析与拒绝路径、inspect 输出、CLI 命令注册和失败副作用边界 |
 
-当前重构分支有 22 个测试模块；在完整开发环境中收集 365 例并全部通过。
 收集数会随 parametrization 和可选依赖变化，CI 以 pytest 结果而不是本文数字
 作为最终依据。
 
-### L1 — parity 测试（计划中，尚未合入）
-
-> L1 parity 测试文件（`test/parity/*.py`）目前在 `dev_ci-backup` 分支，
-> **尚未合入 master**。daemon 在 master 上跑 `pytest -m l1` 收集 0 例，
-> 该 tier 显示 `— (skip)`、环境整体不因此判 FAIL（见 §3）；但为了让 tier
-> 真正发挥防回归作用，建议在 parity 文件合入后再给 daemon 配置 act/pi 环境。
-> 以下为合入后生效的计划清单。
+### L1 — parity 测试
 
 验证**引进的上游语义**与官方实现一致。golden 值内嵌在测试代码中（常量/参考实现），
 不依赖外部 `.npz`。每个上游契约 pin 到源码 commit，缺依赖时 `importorskip` 自动 skip。
 
-| 文件（计划） | 例数 | 对照上游 | 验证的契约 |
+| 文件 | 例数 | 对照上游 | 验证的契约 |
 |------|------|---------|-----------|
-| `test/parity/utils.py` | — (helper) | — | `assert_tensor_parity`：报告首个不匹配元素位置/双方值/shape/dtype |
-| `test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps 是 per-model 上游契约；config eps 到达算术；两个数量级差异；openpi pin 未漂移 |
-| `test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | pi0/pi05 全链 parity：state/actions 逐元素相等、图像角色匹配、letterbox padding、prompt token 对齐 |
-| `test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | ACT 全链 parity：state/actions/images 逐元素相等、channels-first layout、ImageNet 归一化等价 |
-| `test_peft_parity.py` | 10 | peft (张量级) + openpi (契约级) | LoRA 挂载面张量一致、scaling 公式 == openpi、adapter 保持 float32 on bf16 base、merge 写入 delta |
+| `test/l1/utils.py` | — (helper) | — | `assert_tensor_parity`：报告首个不匹配元素位置/双方值/shape/dtype |
+| `test/l1/test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps 是 per-model 上游契约；config eps 到达算术；两个数量级差异；openpi pin 未漂移 |
+| `test/l1/test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | pi0/pi05 全链 parity：state/actions 逐元素相等、图像角色匹配、letterbox padding、prompt token 对齐 |
+| `test/l1/test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | ACT 全链 parity：state/actions/images 逐元素相等、channels-first layout、ImageNet 归一化等价 |
+| `test/l1/test_peft_parity.py` | 10 | peft (张量级) + openpi (契约级) | LoRA 挂载面张量一致、scaling 公式 == openpi、adapter 保持 float32 on bf16 base、merge 写入 delta |
 
 ### L2 — 端到端冒烟（计划中，尚未合入）
 
@@ -171,17 +163,25 @@ junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）�
 ### 首次准备
 
 ```bash
-# 1. 准备测试环境（至少 base；L1 需要额外 act/pi）
+# 1. 准备三个必需的测试环境
 #    daemon 首次启动时会自动 clone 仓库，不需要手动 clone
-bash scripts/ci/build_ci_envs.sh base          # 最低要求：L0
-# bash scripts/ci/build_ci_envs.sh base act pi # 完整覆盖：L0 + L1 + L2
+bash scripts/ci/build_ci_envs.sh base act pi
 ```
 
 ### 日常启动
 
 ```bash
-python3 scripts/run_ci.sh
+bash scripts/run_ci.sh
 ```
+
+### 本地等价 CI 运行
+
+```bash
+python3 scripts/ci/run_local_ci.py
+```
+
+该脚本使用与 daemon 相同的 base/act/pi 解释器和测试矩阵。远程 CI 只测试干净的
+detached 提交，因此默认拒绝脏工作区；仅在提交前迭代时使用 `--allow-dirty`。
 
 交互式配置（首次运行，之后存到 `~/.vlaf_ci.conf` 自动复用）：
 
@@ -192,14 +192,15 @@ python3 scripts/run_ci.sh
 ============================================================
 
   GitCode token [13rYhn...]:              ← 从 config.json 自动读
+  Hugging Face token（需已获 PaliGemma 访问权限）:
   CI 目录 (不存在会自动 clone) [~/vla-factory-ci]:  ← 默认值
   轮询间隔 (秒) [30]:
 
-  测试环境 (act/pi 留空则跳过, 仅跑 L0):
+  测试环境（L0/L1/L2 均需配置）:
 
   base python (L0) [/.../python3.12]:    ← 当前解释器
-  act python (L1+L2, 留空跳过) []:
-  pi python (L1, 留空跳过) []:
+  act python (L1+L2) [/.../envs/act/bin/python]:
+  pi python (L1) [/.../envs/pi/bin/python]:
 ```
 
 配置完成后 daemon 开始轮询，看到新 PR 自动跑测试并发评论。
@@ -234,16 +235,14 @@ sudo systemctl enable --now vlaf-ci
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `VLAF_GITCODE_TOKEN` | GitCode access token（必填） | 从 config.json 读 |
+| `HF_TOKEN` | 已获 `google/paligemma-3b-pt-224` 访问权限的 Hugging Face token（必填；PI L1） | 配置值 |
 | `VLAF_BASE_DIR` | CI 目录（不存在自动 clone） | `~/vla-factory-ci` |
-| `VLAF_ENV_BASE` | base 环境 python（必填） | 当前解释器 |
-| `VLAF_ENV_ACT` | act 环境 python（可选） | 空 |
-| `VLAF_ENV_PI` | pi 环境 python（可选） | 空 |
+| `VLAF_ENV_BASE` | base 环境 python（必填，L0） | 配置路径 |
+| `VLAF_ENV_ACT` | act 环境 python（必填，L1/L2） | 配置路径 |
+| `VLAF_ENV_PI` | pi 环境 python（必填，L1） | 配置路径 |
 | `VLAF_POLL_INTERVAL` | 轮询间隔秒 | 30 |
 | `VLAF_DB_PATH` | 去重 DB 路径 | `~/.vlaf_ci.db` |
 | `VLAF_UPSTREAM` | upstream 仓库 | `openeuler/vla-factory` |
-| `VLAF_ENV_BASE_TIERS` | base 环境跑哪些 tier（覆盖） | `l0` |
-| `VLAF_ENV_ACT_TIERS` | act 环境跑哪些 tier（覆盖） | `l1,l2` |
-| `VLAF_ENV_PI_TIERS` | pi 环境跑哪些 tier（覆盖） | `l1` |
 | `VLAF_CI_WORKERS` | CI 任务线程池并发数 | 5 |
 | `VLAF_CMD_WORKERS` | 评论命令任务线程池并发数 | 5 |
 | `VLAF_TIER_TIMEOUT` | 单 tier pytest 超时（秒） | 1200 |
@@ -276,7 +275,7 @@ sudo systemctl enable --now vlaf-ci
 
 daemon 对每个 PR 先发一条「运行中」评论，跑完后编辑为结果表格：
 
-当前（仅 base 环境、L0 = 全套件）的实际输出形如：
+配置三个环境后，结果表按各自负责的 tier 展示：
 
 ```markdown
 ## CI 测试报告 — pass
@@ -288,7 +287,7 @@ branch: `dev_ci` · commit: `517028f8f6fe` · all tests passed · 32s
 | base | 159 passed, 3 skipped | — (skip) | — (skip) | 21s |
 ```
 
-parity / 冒烟测试合入并配置 act/pi 环境后，表格会扩展为多环境多 tier。
+daemon 会对每个新的 PR head 运行这组三环境矩阵。
 
 ---
 

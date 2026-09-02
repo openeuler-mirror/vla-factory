@@ -27,7 +27,7 @@ from vla_factory.data.codec.pyav import PyAVCodec, _VideoFrameCache
 from vla_factory.data.data_schema import VideoRef
 
 DATASET_PATH = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "test"
     / "data"
     / "lerobot_train_data_3_episodes"

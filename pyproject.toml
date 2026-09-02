@@ -38,7 +38,12 @@ dependencies = [
     "torch>=2.7,<2.11.0",
     "torchvision>=0.22.0,<0.26.0",
     "numpy>=1.24",
-    "transformers>=4.40",
+    # Upper bound: transformers 5.x removed TrainingArguments.save_safetensors,
+    # which _build_training_args relies on to save pi0-base's tied weights via
+    # torch.save (safetensors refuses shared-storage tensors). openpi also
+    # patches transformers in place (scripts/install.sh), and that patch targets
+    # the 4.x layout.
+    "transformers>=4.40,<5",
     # LoRA / adapter fine-tuning (framework-level strategy, available by default).
     "peft>=0.11",
     "pyyaml>=6.0",
@@ -61,7 +66,9 @@ vlafactory-cli = "vla_factory.user_interface.cli:main"
 
 [project.optional-dependencies]
 # Per-model ecosystem deps. ACT wraps lerobot's ACTPolicy (standard PyPI, pip-friendly).
-act = ["lerobot>=0.5"]
+# LeRobot 0.5+ requires huggingface-hub >= 1, while Transformers 4.x requires
+# huggingface-hub < 1. Keep ACT on the last compatible release line.
+act = ["lerobot==0.4.4"]
 # pi0/pi05 use openpi's native PI0Pytorch (jax + pytorch). openpi is pinned to a
 # known-good commit for reproducibility. It also imports pytest at runtime
 # (gemma_pytorch.py), so pytest is listed here even though it's a test dep.
@@ -89,7 +96,7 @@ robotwin = ["h5py>=3.0"]
 # explicitly on top (e.g. `pip install torchcodec==0.4.0`).
 torchcodec = ["torchcodec>=0.4.0"]
 all = [
-    "lerobot>=0.5",
+    "lerobot==0.4.4",
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
     "h5py>=3.0",
     "pytest>=7",
@@ -139,9 +146,8 @@ include = ["vla_factory*"]
 # local directories such as vendored skills or datasets).
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# CI tier markers (see docs/ci/ci-overview.md). L0 is the unmarked subset
-# selected via `-m "not l1 and not l2 and not l3"`; until tests carrying
-# these markers are merged, L0 equals the full suite and L1/L2 collect zero.
+# CI tier markers (see docs/ci/ci-overview.md). L0 and L1 are selected by
+# their test directories; markers remain for metadata and future L2/L3 tiers.
 markers = [
     "l1: parity tests against upstream implementations (needs model extras)",
     "l2: end-to-end smoke tests (short CPU overfit runs)",

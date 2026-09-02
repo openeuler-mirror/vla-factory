@@ -50,11 +50,22 @@ def build_prompt(task: str, state: np.ndarray | None = None) -> str:
 
         Task: <cleaned task>, State: <256-bin digitized state>;\\nAction:{space}
 
-    Without ``state`` (pi0), the cleaned task text is returned as-is.
+    Without ``state`` (pi0), the cleaned task text plus a trailing newline.
+    openpi appends that newline as a separate token and calls it the "start of
+    answer" marker::
+
+        # openpi models/tokenizer.py:33
+        tokens = self._tokenizer.encode(cleaned_text, add_bos=True) \\
+                 + self._tokenizer.encode("\\n")
+
+    We append it to the string instead of to the token list; the PaliGemma
+    tokenizer emits the same id (108) either way, verified against upstream by
+    ``test/l1/test_openpi_pipeline_parity.py``. pi05 needs no addition — its
+    template already carries ``;\\nAction: ``.
     """
     cleaned = str(task).strip().replace("_", " ").replace("\n", " ")
     if state is None:
-        return cleaned
+        return cleaned + "\n"
     discretized = np.digitize(state, bins=_STATE_BINS) - 1
     state_str = " ".join(map(str, discretized))
     return f"Task: {cleaned}, State: {state_str};\nAction: "

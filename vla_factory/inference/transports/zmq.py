@@ -47,16 +47,16 @@ class ZmqPolicyClient:
         self._context = zmq.Context()
 
         self._cmd_socket = self._context.socket(zmq.PUSH)
+        self._cmd_socket.setsockopt(zmq.CONFLATE, 1)
         self._cmd_socket.connect(
             f"tcp://{config.remote_ip}:{config.port_zmq_cmd}"
         )
-        self._cmd_socket.setsockopt(zmq.CONFLATE, 1)
 
         self._obs_socket = self._context.socket(zmq.PULL)
+        self._obs_socket.setsockopt(zmq.CONFLATE, 1)
         self._obs_socket.connect(
             f"tcp://{config.remote_ip}:{config.port_zmq_observations}"
         )
-        self._obs_socket.setsockopt(zmq.CONFLATE, 1)
 
     def wait_for_connection(self) -> None:
         """Wait until the first observation is available."""

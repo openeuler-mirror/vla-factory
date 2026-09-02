@@ -128,8 +128,15 @@ def test_build_prompt_discrete_state():
     assert "State: 0 128 255;" in prompt
 
 
-def test_build_prompt_without_state_is_cleaned_task():
-    assert build_prompt(" say_hello ") == "say hello"
+def test_build_prompt_without_state_is_cleaned_task_plus_newline():
+    """pi0: cleaned text + the trailing "start of answer" newline.
+
+    The newline mirrors openpi ``models/tokenizer.py:33``, which appends it as a
+    separate token. Dropping it leaves the prefix one token short of what the
+    base checkpoint was trained with — see
+    ``test/l1/test_openpi_pipeline_parity.py::test_prompt_tokens_are_identical``.
+    """
+    assert build_prompt(" say_hello ") == "say hello\n"
 
 
 def test_task_tokenize_discrete_state_requires_state():
@@ -158,16 +165,18 @@ def _tokenize_step(**kwargs):
     return step
 
 
+# pi0 prompts carry a trailing "\n" (openpi's start-of-answer token); the
+# fallback chain picks the *text*, build_prompt appends the newline.
 def test_task_fallback_chain_sample_task_wins():
     step = _tokenize_step(default_task="default")
     step({"task": "from dataset"})
-    assert step._tokenizer.seen == ["from dataset"]
+    assert step._tokenizer.seen == ["from dataset\n"]
 
 
 def test_task_fallback_chain_default_task():
     step = _tokenize_step(default_task="default")
     step({})
-    assert step._tokenizer.seen == ["default"]
+    assert step._tokenizer.seen == ["default\n"]
 
 
 def test_task_fallback_chain_empty_prompt_never_skips():
@@ -176,7 +185,7 @@ def test_task_fallback_chain_empty_prompt_never_skips():
     # exist), tokenized from the empty string.
     step = _tokenize_step()
     out = step({})
-    assert step._tokenizer.seen == [""]
+    assert step._tokenizer.seen == ["\n"]
     assert "tokenized_prompt" in out and "tokenized_prompt_mask" in out
 
 

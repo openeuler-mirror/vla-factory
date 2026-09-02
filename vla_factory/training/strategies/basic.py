@@ -77,22 +77,28 @@ class SelectiveStrategy(FinetuningStrategy[ComponentConfig]):
 def _get_component_patterns(
     component_names: list[str],
     metadata: ModelMetadata,
+    context: str,
 ) -> list[str]:
     """Resolve component names to parameter-name prefix patterns.
 
     ``metadata.components`` maps ``"backbone"`` → ``["model.backbone."]``.
     This function expands a list of component names into the union of their
     prefix patterns.
+
+    Raises ``ValueError`` on an unknown component name. Skipping it instead
+    would silently change which parameters train — a typo in
+    ``freeze_components`` would freeze nothing and train the whole model, with
+    only a log line to show for it. That is the "runs fine but trains wrong"
+    failure mode the framework must surface, not log.
     """
     patterns: list[str] = []
     for name in component_names:
         if name not in metadata.components:
-            logger.warning(
-                "Component %r not found in metadata.components (%s). Skipping.",
-                name,
-                list(metadata.components.keys()),
+            raise ValueError(
+                f"{context}: component {name!r} is not declared in "
+                f"ModelMetadata.components for model {metadata.name!r}. "
+                f"Available components: {list(metadata.components.keys())}."
             )
-            continue
         patterns.extend(metadata.components[name])
     return patterns
 
@@ -108,10 +114,20 @@ def _freeze_components(
     metadata: ModelMetadata,
 ) -> None:
     """Freeze parameters belonging to the named components."""
-    patterns = _get_component_patterns(freeze_names, metadata)
+    if not freeze_names:
+        raise ValueError(
+            "freeze: finetuning.strategy='freeze' but freeze_components is empty. "
+            "Nothing would be frozen and the run would train the whole model — "
+            "use strategy='full' if that is the intent. Available components: "
+            f"{list(metadata.components.keys())}."
+        )
+    patterns = _get_component_patterns(freeze_names, metadata, context="freeze")
     if not patterns:
-        logger.warning("freeze: no matching component patterns found, nothing frozen.")
-        return
+        raise ValueError(
+            f"freeze: components {freeze_names} declare no parameter-name prefixes "
+            f"in ModelMetadata.components for model {metadata.name!r} — nothing "
+            "would be frozen."
+        )
 
     for name, param in model.named_parameters():
         if _match_prefix(name, patterns):
@@ -124,19 +140,28 @@ def _selective_train(
     metadata: ModelMetadata,
 ) -> None:
     """Freeze everything, then un-freeze only the named components."""
-    # Step 1: freeze all
+    # Step 1: resolve before mutating, so a bad component name leaves the model
+    # untouched rather than fully frozen.
+    if not trainable_names:
+        raise ValueError(
+            "selective: finetuning.strategy='selective' but trainable_components "
+            "is empty. Every parameter would stay frozen and training would "
+            "update nothing. Available components: "
+            f"{list(metadata.components.keys())}."
+        )
+    patterns = _get_component_patterns(trainable_names, metadata, context="selective")
+    if not patterns:
+        raise ValueError(
+            f"selective: components {trainable_names} declare no parameter-name "
+            f"prefixes in ModelMetadata.components for model {metadata.name!r} — "
+            "every parameter would stay frozen."
+        )
+
+    # Step 2: freeze all
     for param in model.parameters():
         param.requires_grad_(False)
 
-    # Step 2: un-freeze selected components
-    patterns = _get_component_patterns(trainable_names, metadata)
-    if not patterns:
-        logger.warning(
-            "selective: no matching component patterns found. "
-            "All parameters are frozen — training will not update anything."
-        )
-        return
-
+    # Step 3: un-freeze selected components
     for name, param in model.named_parameters():
         if _match_prefix(name, patterns):
             param.requires_grad_(True)

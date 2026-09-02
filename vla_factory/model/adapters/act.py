@@ -292,6 +292,7 @@ _ACT_METADATA = ModelMetadata(
     image_layout="CHW",
     image_resize_mode="stretch",
     vector_normalization="mean_std",
+    vector_normalization_eps=1e-8,
     control_mode_pref=("joint_pos",),
     # Trainable-component name patterns.  The wrapper holds the lerobot policy
     # as ``self.model`` and the policy holds the ACT network as ``self.model``,
