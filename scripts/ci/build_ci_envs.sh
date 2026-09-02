@@ -77,8 +77,8 @@ echo "   uv: $("$UV" --version)"
 export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"
 mkdir -p "$ENV_PREFIX"
 
-# Report the exact interpreter paths at the end — these are what go into
-# ci/remote_gate.sh, and guessing them wrong is the most likely setup mistake.
+# Report the exact interpreter paths at the end — these are the values stored
+# by scripts/ci/run_ci.py; guessing them wrong is the most likely setup mistake.
 declare -a SUMMARY=()
 SKIPPED=0
 

@@ -203,7 +203,39 @@ def test_support_lora_false_raises():
         _prepare(_FakePI0(), _make_recipe(["llm"]), _MetaNoLora())
 
 
-def test_unknown_lora_fields_are_rejected_by_strategy():
+def test_unknown_target_component_raises_and_lists_available():
+    """A typo in target_components must fail, not silently shrink the mount surface.
+
+    Skipping the unknown name and carrying on used to leave the run training
+    fewer layers than the recipe asked for, with only a log line to show it.
+    """
+    with pytest.raises(ValueError) as exc:
+        _prepare(_FakePI0(), _make_recipe(["llm", "acton_expert"]), _Meta())
+
+    message = str(exc.value)
+    assert "acton_expert" in message
+    assert "llm" in message and "action_expert" in message
+
+
+def test_missing_subtree_raises_instead_of_whole_model_fallback():
+    """A component path absent from the model must fail, not fall back.
+
+    The old fallback wrapped the *whole* model, so adapters landed on every
+    matching linear layer instead of the declared subtree — the LoRA form of
+    freezing the wrong component, invisible at runtime.
+    """
+    class _MetaBadPath:
+        name = "pi0"
+        support_lora = True
+        components = {"llm": ["does_not_exist.paligemma."]}
+
+    with pytest.raises(ValueError, match="does not exist"):
+        _prepare(_FakePI0(), _make_recipe(["llm"]), _MetaBadPath())
+
+    assert not _injected, "no adapter may be injected when the subtree is missing"
+
+
+def test_legacy_rank_alpha_aliases_are_rejected():
     recipe = parse_recipe_from_string(
         """
 model: {name: pi0}

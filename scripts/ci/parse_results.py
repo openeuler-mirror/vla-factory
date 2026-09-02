@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Parse pytest junit XML reports into CI summary dicts.
 
-Reads the ``<tier>.xml`` files produced by ``ci/run_gate.sh`` (via
+Reads the ``<tier>.xml`` files produced by the CI daemon (via
 ``pytest --junitxml=...``) and returns a structured summary::
 
     {

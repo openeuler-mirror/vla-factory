@@ -1,13 +1,28 @@
-"""Z-score normalisation transform (numpy-based).
+"""Z-score / quantile normalisation transforms (numpy-based).
 
-Uses the same formula as lerobot: ``(x - mean) / (std + eps)`` with ``eps=1e-8``.
-This handles near-zero std dimensions (e.g. constant gripper) correctly — the
-epsilon is additive rather than a max clamp, matching lerobot's behaviour.
+Formula: ``(x - mean) / (std + eps)``. The epsilon is additive rather than a
+max clamp, so near-zero std dimensions (a constant gripper, a locked joint)
+stay finite instead of blowing up.
 
-Normalises **state** and **actions** with per-feature z-score from the dataset's
-own statistics.  **Images** are normalised with ImageNet channel statistics
-(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) matching lerobot's
-``use_imagenet_stats=True`` default (see ``lerobot/datasets/factory.py:126``).
+**The epsilon value is a per-model upstream contract, not a framework
+constant.** Each ecosystem picked its own, and the difference only shows up on
+those near-zero std dimensions — where it is a 100x difference in the value
+the model is fed:
+
+    lerobot (ACT)   1e-8   NormalizationProcessor
+    openpi (pi0)    1e-6   transforms.py::Normalize._normalize
+    openpi (pi05)   1e-6   transforms.py::Normalize._normalize_quantile
+
+So ``eps`` is declared per model in ``ModelMetadata.vector_normalization_eps``
+and flows in through the resolved transform call. The defaults below are the
+historical values and must stay put: a checkpoint whose saved transform plan
+predates the ``eps`` key falls back to them, and that fallback is what keeps it
+reproducing the normalisation it was trained with.
+
+Normalises **state** and **actions** with per-feature statistics from the
+dataset. **Images** use ImageNet channel statistics (mean=[0.485, 0.456, 0.406],
+std=[0.229, 0.224, 0.225]) matching lerobot's ``use_imagenet_stats=True``
+default (see ``lerobot/datasets/factory.py:126``).
 """
 
 from __future__ import annotations
@@ -18,7 +33,9 @@ from vla_factory.data.data_schema import NormStats
 from .base import PlanContext, TransformStep, model_fact
 from .registry import TransformRegistry
 
-_EPS = 1e-8  # matches lerobot's NormalizationProcessor default
+# Fallbacks for configs that do not declare `eps` (see module docstring).
+DEFAULT_ZSCORE_EPS = 1e-8    # lerobot NormalizationProcessor
+DEFAULT_QUANTILE_EPS = 1e-6  # openpi transforms.py::_normalize_quantile
 
 # ModelMetadata.vector_normalization vocabulary → NormalizeVector method name.
 # Public: the composition resolver plans the same mapping when it emits a
@@ -66,8 +83,14 @@ class Normalize(TransformStep):
     Expects numpy arrays as input.
     """
 
-    def __init__(self, stats: NormStats, use_imagenet_stats: bool = True) -> None:
+    def __init__(
+        self,
+        stats: NormStats,
+        use_imagenet_stats: bool = True,
+        eps: float = DEFAULT_ZSCORE_EPS,
+    ) -> None:
         self._stats = stats
+        self.eps = float(eps)
         # When True (default, matching lerobot's ``use_imagenet_stats=True``),
         # images are normalised with fixed ImageNet channel constants and
         # ``stats.images`` is ignored entirely. The ImageNet decision is a
@@ -79,13 +102,13 @@ class Normalize(TransformStep):
         # Normalise state (z-score with dataset stats)
         if self._stats.state is not None and sample.get("state") is not None:
             mean = np.array(self._stats.state.mean, dtype=np.float32)
-            std = np.array(self._stats.state.std, dtype=np.float32) + _EPS
+            std = np.array(self._stats.state.std, dtype=np.float32) + self.eps
             sample["state"] = (sample["state"] - mean) / std
 
         # Normalise actions (z-score with dataset stats)
         if self._stats.action is not None and sample.get("actions") is not None:
             mean = np.array(self._stats.action.mean, dtype=np.float32)
-            std = np.array(self._stats.action.std, dtype=np.float32) + _EPS
+            std = np.array(self._stats.action.std, dtype=np.float32) + self.eps
             # actions shape: [horizon, dim] — broadcasting works against [dim] mean/std
             sample["actions"] = (sample["actions"] - mean) / std
 
@@ -99,10 +122,10 @@ class Normalize(TransformStep):
 
             if self._use_imagenet_stats:
                 mean = IMAGENET_MEAN
-                # +_EPS mirrors the legacy override path (ImageNet constants were
-                # stored in stats.images and went through the `std + _EPS` branch).
+                # +eps mirrors the legacy override path (ImageNet constants were
+                # stored in stats.images and went through the `std + eps` branch).
                 # Kept for bit-exact reproduction of prior training output.
-                std = IMAGENET_STD + _EPS
+                std = IMAGENET_STD + self.eps
             else:
                 cam_name = key[len("images."):]
                 cam_stats = (
@@ -112,7 +135,7 @@ class Normalize(TransformStep):
                 )
                 if cam_stats is not None and cam_stats.mean and cam_stats.std:
                     mean = np.array(cam_stats.mean, dtype=np.float32)
-                    std = np.array(cam_stats.std, dtype=np.float32) + _EPS
+                    std = np.array(cam_stats.std, dtype=np.float32) + self.eps
                 else:
                     # No per-camera dataset stats available — fall back to ImageNet
                     # so a missing stats.images never yields unnormalised images.
@@ -128,16 +151,19 @@ class Normalize(TransformStep):
 class UnnormalizeActionStep(TransformStep):
     """Reverse of :class:`Normalize` for the ``actions`` field.
 
-    ``actions * (std + _EPS) + mean`` — the exact inverse of Normalize's action
-    branch, sharing the same ``_EPS`` and the same ``norm_stats.action``.
+    ``actions * (std + eps) + mean`` — the exact inverse of the forward z-score
+    branch. ``eps`` must be the *same* value the forward step used, otherwise the
+    round trip drifts on near-zero std dimensions; ``inverse_for_output`` passes
+    it through rather than re-deriving it.
 
     Action-only: state / image normalisation has *no* reverse at inference (we
     never un-normalise an observation). This step is what the postprocessor
     pipeline runs on the model's action output.
     """
 
-    def __init__(self, stats: NormStats) -> None:
+    def __init__(self, stats: NormStats, eps: float = DEFAULT_ZSCORE_EPS) -> None:
         self._stats = stats
+        self.eps = float(eps)
 
     @classmethod
     def from_call(cls, args: dict, ctx=None) -> "UnnormalizeActionStep":
@@ -149,14 +175,15 @@ class UnnormalizeActionStep(TransformStep):
                 "UnnormalizeActionStep needs dataset statistics; none were provided by the "
                 "transform context."
             )
-        return cls(stats)
+        eps = args.get("eps")
+        return cls(stats, eps=DEFAULT_ZSCORE_EPS if eps is None else eps)
 
     def __call__(self, sample: dict) -> dict:
         actions = sample.get("actions")
         if actions is None or self._stats.action is None:
             return sample
         mean = np.array(self._stats.action.mean, dtype=np.float32)
-        std = np.array(self._stats.action.std, dtype=np.float32) + _EPS
+        std = np.array(self._stats.action.std, dtype=np.float32) + self.eps
         # actions: [..., D]; mean/std: [D] — broadcasts over the leading dims.
         sample["actions"] = actions * std + mean
         return sample
@@ -170,6 +197,11 @@ class NormalizeVector(TransformStep):
     - ``method="quantile"``: ``(x - q01) / (q99 - q01 + eps) * 2 - 1`` — maps
       the 1st..99th percentile range to [-1, 1], matching openpi's
       ``use_quantile_norm`` for pi05 (openpi transforms.py).
+
+    ``eps`` is the upstream contract described in the module docstring:
+    declare it per model in ``ModelMetadata.vector_normalization_eps``. Omitted,
+    it falls back to the method's historical default so pre-``eps`` checkpoints
+    stay reproducible.
     """
 
     def __init__(
@@ -177,12 +209,16 @@ class NormalizeVector(TransformStep):
         stats: NormStats,
         fields: list[str] | tuple[str, ...] = ("state", "actions"),
         method: str = "zscore",
+        eps: float | None = None,
     ) -> None:
         if method not in ("zscore", "quantile"):
             raise ValueError(f"Unsupported normalize_vector method: {method!r}")
         self._stats = stats
         self.fields = tuple(fields)
         self.method = method
+        if eps is None:
+            eps = DEFAULT_QUANTILE_EPS if method == "quantile" else DEFAULT_ZSCORE_EPS
+        self.eps = float(eps)
 
     @classmethod
     def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict | None:
@@ -200,6 +236,7 @@ class NormalizeVector(TransformStep):
         return {
             "fields": list(cfg.get("fields", ("state", "actions"))),
             "method": NORMALIZATION_TO_METHOD[norm],
+            "eps": getattr(ctx.metadata, "vector_normalization_eps", None),
             # Statistics are referenced, never inlined: a call has to stay
             # serializable, and ``from_call`` takes the real object from the
             # runtime context.
@@ -214,15 +251,19 @@ class NormalizeVector(TransformStep):
                 "normalize_vector needs dataset statistics; none were provided "
                 "by the transform context."
             )
-        return cls(stats=stats, fields=tuple(args.get("fields", ())),
-                   method=args["method"])
+        return cls(
+            stats=stats,
+            fields=tuple(args.get("fields", ("state", "actions"))),
+            method=args.get("method", "zscore"),
+            eps=args.get("eps"),
+        )
 
     def _normalize(self, x, stats, field_name: str):
         if self.method == "quantile":
             q01, q99 = _require_quantiles(stats, field_name)
-            return (x - q01) / (q99 - q01 + _QUANTILE_EPS) * 2.0 - 1.0
+            return (x - q01) / (q99 - q01 + self.eps) * 2.0 - 1.0
         mean = np.array(stats.mean, dtype=np.float32)
-        std = np.array(stats.std, dtype=np.float32) + _EPS
+        std = np.array(stats.std, dtype=np.float32) + self.eps
         return (x - mean) / std
 
     def __call__(self, sample: dict) -> dict:
@@ -244,11 +285,7 @@ class NormalizeVector(TransformStep):
             return None
         name = ("unnormalize_action_quantile" if args.get("method") == "quantile"
                 else "unnormalize_action")
-        return name, {"stats_ref": "norm_stats"}
-
-
-# openpi's quantile-normalisation epsilon (transforms.py _normalize_quantile).
-_QUANTILE_EPS = 1e-6
+        return name, {"stats_ref": "norm_stats", "eps": args.get("eps")}
 
 
 def _require_quantiles(stats, field_name: str):
@@ -272,11 +309,12 @@ class UnnormalizeActionQuantileStep(TransformStep):
 
     ``(x + 1) / 2 * (q99 - q01 + eps) + q01`` — the exact inverse of
     NormalizeVector's quantile branch (matches openpi ``Unnormalize`` with
-    ``use_quantiles=True``).
+    ``use_quantiles=True``). ``eps`` must match the forward step's.
     """
 
-    def __init__(self, stats: NormStats) -> None:
+    def __init__(self, stats: NormStats, eps: float = DEFAULT_QUANTILE_EPS) -> None:
         self._stats = stats
+        self.eps = float(eps)
 
     @classmethod
     def from_call(cls, args: dict, ctx=None) -> "UnnormalizeActionQuantileStep":
@@ -288,12 +326,13 @@ class UnnormalizeActionQuantileStep(TransformStep):
                 "UnnormalizeActionQuantileStep needs dataset statistics; none were provided by the "
                 "transform context."
             )
-        return cls(stats)
+        eps = args.get("eps")
+        return cls(stats, eps=DEFAULT_QUANTILE_EPS if eps is None else eps)
 
     def __call__(self, sample: dict) -> dict:
         actions = sample.get("actions")
         if actions is None or self._stats.action is None:
             return sample
         q01, q99 = _require_quantiles(self._stats.action, "actions")
-        sample["actions"] = (actions + 1.0) / 2.0 * (q99 - q01 + _QUANTILE_EPS) + q01
+        sample["actions"] = (actions + 1.0) / 2.0 * (q99 - q01 + self.eps) + q01
         return sample

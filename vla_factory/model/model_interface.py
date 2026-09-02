@@ -110,6 +110,7 @@ class ModelMetadata:
     dim_policy: str = "flexible"            # fixed | padded_to_max | flexible
     dim_policy_max: int | None = None       # N for fixed / padded_to_max
     vector_normalization: str | None = None  # mean_std | quantile | min_max
+    vector_normalization_eps: float | None = None
     # Action contract.
     control_mode_pref: tuple[str, ...] = ()  # CONTROL_MODES, priority order
     # Temporal contract.
@@ -137,9 +138,9 @@ class ModelMetadata:
         "name", "action_dim", "action_horizon", "dim_policy", "dim_policy_max",
         "vision_slots", "missing_slot_policy", "image_input_range",
         "image_normalize_mode", "image_layout", "image_resize_mode",
-        "vector_normalization", "requires_prompt", "language_template",
-        "tokenizer_repo", "tokenizer_max_length", "prompt_includes_state",
-        "control_mode_pref", "expected_hz", "history_frames",
+        "vector_normalization", "vector_normalization_eps", "requires_prompt",
+        "language_template", "tokenizer_repo", "tokenizer_max_length",
+        "prompt_includes_state", "control_mode_pref", "expected_hz", "history_frames",
     )
 
     @classmethod

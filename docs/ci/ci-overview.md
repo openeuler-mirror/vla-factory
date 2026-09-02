@@ -108,18 +108,17 @@ without interference. Missing dependencies produce skips, not errors.
 
 ## 4. Test tiers
 
-Tests are layered by **what they verify**, isolated with pytest markers.
+Tests are layered by **what they verify** and collected from tier directories.
 
 | Tier | Marker | Verifies | Cost | Trigger |
 |------|--------|----------|------|---------|
-| **L0** unit | none (`not l1 and not l2 and not l3`) | our own code: module behavior, edge cases, error paths | seconds, CPU | every PR |
-| **L1** parity | `@pytest.mark.l1` | adopted upstream semantics: transform chains, normalization formulas, PEFT mounting | seconds, CPU | every PR |
-| **L2** smoke | `@pytest.mark.l2` | end-to-end connectivity: single-episode overfit | minutes, CPU/GPU | every PR |
+| **L0** unit | `test/l0/` | our own code: module behavior, edge cases, error paths | seconds, CPU | every PR |
+| **L1** parity | `test/l1/` + `@pytest.mark.l1` | adopted upstream semantics: transform chains, normalization formulas, PEFT mounting | seconds, CPU | every PR |
+| **L2** smoke | `test/l2/` + `@pytest.mark.l2` | end-to-end connectivity: single-episode overfit | minutes, CPU/GPU | every PR |
 
 The markers are registered under `[tool.pytest.ini_options] markers` in
-`pyproject.toml`. No test on master currently carries `l1`/`l2` (the parity
-and smoke tests live on the `dev_ci-backup` branch, see below), so **for now
-L0 equals the full suite** and the L1/L2 tiers collect zero tests. A tier
+`pyproject.toml`. Tiers are selected by directory, so a test's execution
+level is visible from its path as well as its marker. A tier
 that collects zero tests (junit `tests=0`, pytest exit 5) is a **skip**,
 not a FAIL; an environment only FAILs when its report directory is missing
 entirely (the env never ran — crash / misconfiguration).
@@ -141,19 +140,10 @@ document does not duplicate a per-file case count that quickly becomes stale.
 | Inference / Deployment | Execution policies, dual action widths, train → infer round trip, platform adapters, PolicyRunner, and RPC transport |
 | User Interface | Recipe parsing and rejection paths, inspect output, CLI registration, and failure-side-effect boundaries |
 
-The current refactor branch contains 22 test modules; a complete development
-environment collects and passes 365 cases. Collection counts can change with
-parametrization and optional dependencies, so CI treats pytest output—not this
-document—as the source of truth.
+Test counts change with parametrization and optional dependencies, so CI treats
+pytest output—not this document—as the source of truth.
 
-### L1 — parity tests (planned, not yet merged)
-
-> The L1 parity files (`test/parity/*.py`) currently live on the
-> `dev_ci-backup` branch and are **not yet merged into master**. Running
-> `pytest -m l1` on master collects zero tests; the tier shows `— (skip)`
-> without failing its environment (see §3) — still, configure
-> act/pi environments for the daemon until the parity files land. The
-> table below is the plan that takes effect once they merge.
+### L1 — parity tests
 
 Verify that **adopted upstream semantics** match the official
 implementations. Golden values are embedded in the test code (constants /
@@ -161,13 +151,13 @@ reference implementations), no external `.npz`. Each upstream contract is
 pinned to a source commit; missing dependencies auto-skip via
 `importorskip`.
 
-| File (planned) | Cases | Upstream | Verified contract |
+| File | Cases | Upstream | Verified contract |
 |------|-------|----------|-------------------|
-| `test/parity/utils.py` | — (helper) | — | `assert_tensor_parity`: reports first mismatching element position / both values / shape / dtype |
-| `test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps is a per-model upstream contract; config eps reaches the arithmetic; two orders of magnitude apart; openpi pin has not drifted |
-| `test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | Full-chain pi0/pi05 parity: state/actions element-wise equal, image role matching, letterbox padding, prompt token alignment |
-| `test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | Full-chain ACT parity: state/actions/images element-wise equal, channels-first layout, ImageNet normalization equivalence |
-| `test_peft_parity.py` | 10 | peft (tensor-level) + openpi (contract-level) | LoRA mount surface tensors identical, scaling formula == openpi, adapter stays float32 on bf16 base, merge writes delta |
+| `test/l1/utils.py` | — (helper) | — | `assert_tensor_parity`: reports first mismatching element position / both values / shape / dtype |
+| `test/l1/test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps is a per-model upstream contract; config eps reaches the arithmetic; two orders of magnitude apart; openpi pin has not drifted |
+| `test/l1/test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | Full-chain pi0/pi05 parity: state/actions element-wise equal, image role matching, letterbox padding, prompt token alignment |
+| `test/l1/test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | Full-chain ACT parity: state/actions/images element-wise equal, channels-first layout, ImageNet normalization equivalence |
+| `test/l1/test_peft_parity.py` | 10 | peft (tensor-level) + openpi (contract-level) | LoRA mount surface tensors identical, scaling formula == openpi, adapter stays float32 on bf16 base, merge writes delta |
 
 ### L2 — end-to-end smoke (planned, not yet merged)
 
@@ -190,17 +180,26 @@ trainable-parameter set — any broken link fails it.
 ### First-time setup
 
 ```bash
-# 1. Prepare test environments (at minimum base; L1 needs act/pi extras)
+# 1. Prepare the three required test environments
 #    The daemon clones the repo automatically on first start — no manual clone
-bash scripts/ci/build_ci_envs.sh base          # minimum: L0
-# bash scripts/ci/build_ci_envs.sh base act pi # full coverage: L0 + L1 + L2
+bash scripts/ci/build_ci_envs.sh base act pi
 ```
 
 ### Day-to-day start
 
 ```bash
-python3 scripts/run_ci.sh
+bash scripts/run_ci.sh
 ```
+
+### Local CI-equivalent run
+
+```bash
+python3 scripts/ci/run_local_ci.py
+```
+
+This uses the same configured base/act/pi interpreters and daemon test matrix.
+It refuses a dirty worktree by default because remote CI tests a clean detached
+commit; use `--allow-dirty` only while iterating before a commit.
 
 Interactive configuration (first run only; saved to `~/.vlaf_ci.conf` and
 reused afterwards):
@@ -212,14 +211,15 @@ reused afterwards):
 ============================================================
 
   GitCode token [13rYhn...]:              ← auto-read from config.json
+  Hugging Face token (PaliGemma access required):
   CI directory (auto-cloned if missing) [~/vla-factory-ci]:
   Poll interval (seconds) [30]:
 
-  Test environments (leave act/pi empty to skip; L0 only):
+  Test environments (all required for L0/L1/L2 coverage):
 
   base python (L0) [/.../python3.12]:     ← current interpreter
-  act python (L1+L2, empty to skip) []:
-  pi python (L1, empty to skip) []:
+  act python (L1+L2) [/.../envs/act/bin/python]:
+  pi python (L1) [/.../envs/pi/bin/python]:
 ```
 
 Once configured, the daemon polls and automatically tests + comments on
@@ -255,16 +255,14 @@ sudo systemctl enable --now vlaf-ci
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VLAF_GITCODE_TOKEN` | GitCode access token (required) | read from config.json |
+| `HF_TOKEN` | Hugging Face token authorized for `google/paligemma-3b-pt-224` (required; PI L1) | configured value |
 | `VLAF_BASE_DIR` | CI directory (auto-cloned if missing) | `~/vla-factory-ci` |
-| `VLAF_ENV_BASE` | base environment python (required) | current interpreter |
-| `VLAF_ENV_ACT` | act environment python (optional) | empty |
-| `VLAF_ENV_PI` | pi environment python (optional) | empty |
+| `VLAF_ENV_BASE` | base environment python (required; L0) | configured path |
+| `VLAF_ENV_ACT` | act environment python (required; L1/L2) | configured path |
+| `VLAF_ENV_PI` | pi environment python (required; L1) | configured path |
 | `VLAF_POLL_INTERVAL` | poll interval in seconds | 30 |
 | `VLAF_DB_PATH` | dedup DB path | `~/.vlaf_ci.db` |
 | `VLAF_UPSTREAM` | upstream repository | `openeuler/vla-factory` |
-| `VLAF_ENV_BASE_TIERS` | tiers for base env (override) | `l0` |
-| `VLAF_ENV_ACT_TIERS` | tiers for act env (override) | `l1,l2` |
-| `VLAF_ENV_PI_TIERS` | tiers for pi env (override) | `l1` |
 | `VLAF_CI_WORKERS` | CI task pool concurrency | 5 |
 | `VLAF_CMD_WORKERS` | comment-command pool concurrency | 5 |
 | `VLAF_TIER_TIMEOUT` | per-tier pytest timeout (s) | 1200 |
@@ -299,8 +297,8 @@ rate limiting below):
 The daemon posts one "running" comment per PR, then edits it into the
 result table when the run finishes.
 
-With the current setup (base environment only, L0 = full suite) the actual
-output looks like:
+With all three configured environments, the result table reports their
+assigned tiers:
 
 ```markdown
 ## CI 测试报告 — pass
@@ -312,8 +310,7 @@ branch: `dev_ci` · commit: `517028f8f6fe` · all tests passed · 32s
 | base | 159 passed, 3 skipped | — (skip) | — (skip) | 21s |
 ```
 
-Once the parity/smoke tests merge and act/pi environments are configured,
-the table grows to multiple environments and tiers.
+The daemon runs this three-environment matrix for every new PR head.
 
 ---
 

@@ -52,6 +52,7 @@ _PI05_METADATA = ModelMetadata(
     image_layout="CHW",
     image_resize_mode="pad",
     vector_normalization="quantile",
+    vector_normalization_eps=1e-6,
     language_template="{task}",
     tokenizer_repo="google/paligemma-3b-pt-224",
     tokenizer_max_length=200,

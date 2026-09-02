@@ -121,18 +121,14 @@ def _append_padding_calls(
 def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
     """Derive the complete input plan from DataSchema and ModelMetadata facts.
 
-    Ordering follows dependencies, not model-specific lists: images are brought
-    to their model contract first; vectors are normalized before anything reads
-    them; a prompt that embeds state is tokenized before padding; padding is the
-    final shape reconciliation. A normal prompt is independent and follows it.
+    Ordering follows dependencies, not model-specific lists: image geometry is
+    resolved on raw pixels before their value range or layout is converted;
+    vectors are normalized before anything reads them; a prompt that embeds
+    state is tokenized before padding; padding is the final shape
+    reconciliation. A normal prompt is independent and follows it.
     """
     metadata = ctx.metadata
     calls: list[TransformStepCall] = []
-
-    if metadata.image_input_range is not None:
-        _append_call(calls, "image_to_float", {}, ctx)
-    if metadata.image_layout is not None:
-        _append_call(calls, "image_layout", {"to": metadata.image_layout}, ctx)
 
     resize_args = TransformRegistry.get("resize_images").compile_call(
         {"mode": metadata.image_resize_mode or "stretch"}, ctx,
@@ -142,8 +138,13 @@ def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
             raise ValueError(
                 f"Model {metadata.name!r} needs image resizing but declares no "
                 "ModelMetadata.image_resize_mode."
-            )
+        )
         calls.append(TransformStepCall(type="resize_images", args=resize_args))
+
+    if metadata.image_input_range is not None:
+        _append_call(calls, "image_to_float", {}, ctx)
+    if metadata.image_layout is not None:
+        _append_call(calls, "image_layout", {"to": metadata.image_layout}, ctx)
 
     if metadata.image_normalize_mode is not None:
         if metadata.image_input_range is None:

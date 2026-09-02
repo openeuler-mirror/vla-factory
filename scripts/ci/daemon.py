@@ -2,7 +2,7 @@
 """Local CI daemon for vla-factory (Issue #7).
 
 Single process on the local GPU machine. Polls GitCode for open PRs,
-runs ``ci/run_gate.sh`` for any with a new head SHA, and reports results
+runs the tiered pytest gate for any PR with a new head SHA, and reports results
 as a PR comment.
 
 Tasks execute asynchronously on thread pools (see VLAF_CI_WORKERS /
@@ -22,9 +22,10 @@ Config (environment variables)::
     VLAF_GITCODE_TOKEN    GitCode personal access token (required)
     VLAF_UPSTREAM         default openeuler/vla-factory
     VLAF_BASE_DIR         parent dir for the CI checkouts (auto-cloned if missing)
-    VLAF_ENV_BASE         /home/you/envs/base/bin/python
-    VLAF_ENV_ACT          /home/you/envs/act/bin/python   (optional)
-    VLAF_ENV_PI           /home/you/envs/pi/bin/python     (optional)
+    VLAF_ENV_BASE         /home/you/envs/base/bin/python  (required; L0)
+    VLAF_ENV_ACT          /home/you/envs/act/bin/python   (required; L1/L2)
+    VLAF_ENV_PI           /home/you/envs/pi/bin/python    (required; L1)
+    HF_TOKEN              Hugging Face token authorized for PaliGemma (required; PI L1)
     VLAF_POLL_INTERVAL    seconds between polls (default 30)
     VLAF_DB_PATH          seen-SHA tracking DB (default ~/.vlaf_ci.db)
     VLAF_CI_WORKERS       concurrent CI runs (default 5)
@@ -48,6 +49,9 @@ Run::
     VLAF_GITCODE_TOKEN=... \
     VLAF_BASE_DIR=$HOME/vla-factory-ci \
     VLAF_ENV_BASE=$HOME/envs/base/bin/python \
+    VLAF_ENV_ACT=$HOME/envs/act/bin/python \
+    VLAF_ENV_PI=$HOME/envs/pi/bin/python \
+    HF_TOKEN=hf_... \
     python3 ci/runner/daemon.py
 """
 
@@ -69,6 +73,7 @@ import requests
 # ── Config ───────────────────────────────────────────────────────────
 
 GITCODE_TOKEN = os.environ.get("VLAF_GITCODE_TOKEN", "")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 UPSTREAM = os.environ.get("VLAF_UPSTREAM", "openeuler/vla-factory")
 BASE_DIR = Path(os.environ.get("VLAF_BASE_DIR", str(Path.home() / "vla-factory-ci")))
 CLONE_URL = f"https://gitcode.com/{UPSTREAM}.git"
@@ -83,8 +88,6 @@ for label in ("base", "act", "pi"):
     py = os.environ.get(f"VLAF_ENV_{label.upper()}")
     if py:
         ENVS.append((label, py))
-if not ENVS:
-    ENVS = [("base", sys.executable)]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -537,10 +540,9 @@ def sync_pr(repo_dir: Path, pr_number: int) -> str | None:
 
 # ── Test execution ───────────────────────────────────────────────────
 
-# All available tiers: (pytest marker, junit stem)
-# The l1/l2/l3 markers are registered in pyproject.toml. L0 is the unmarked
-# subset; until tests carrying those markers are merged, L0 equals the full
-# suite and the l1/l2 tiers collect zero tests. Such tiers are reported as
+# All available tiers: (pytest marker, junit stem). Each tier has a dedicated
+# test directory; markers are retained for report metadata and selection.
+# Empty reserved tiers are reported as
 # "— (skip)" (see collect_results); only a missing report dir or actual
 # test failures make an environment FAIL.
 ALL_TIERS = [
@@ -549,34 +551,28 @@ ALL_TIERS = [
     ("l2", "l2"),
 ]
 
-# Default tier assignment per environment label.
-# Rationale:
-#   base → L0 only (L0 needs no model deps; running it once is enough)
-#   act  → L1 + L2  (lerobot parity + CPU overfit smoke)
-#   pi   → L1 only  (openpi parity; act can't run these, pi picks them up)
-# L1 tests self-skip (importorskip) when their upstream is absent, so
-# running L1 in both act and pi is safe — each env covers a disjoint subset.
+# Fixed tier assignment per required environment. Every PR update must execute
+# L0, L1, and L2; changing it per machine would silently reduce CI coverage.
+# L1 self-skips the cases whose upstream is absent, so act and pi safely cover
+# their respective Lerobot and OpenPI contracts.
 DEFAULT_ENV_TIERS: dict[str, list[str]] = {
     "base": ["l0"],
     "act": ["l1", "l2"],
     "pi": ["l1"],
 }
 
+TIER_TEST_PATHS = {
+    "l0": "test/l0",
+    "l1": "test/l1",
+    "l2": "test/l2",
+    "l3": "test/l3",
+}
+
 
 def env_tiers(label: str) -> list[tuple[str, str]]:
-    """Return the (marker, name) pairs this environment should run.
-
-    Per-env override via environment variable ``VLAF_ENV_<LABEL>_TIERS``::
-
-        VLAF_ENV_BASE_TIERS="l0,l1"   # also run L1 in base
-        VLAF_ENV_ACT_TIERS="l1"       # skip L2 in act
-    """
+    """Return the fixed (marker, name) pairs assigned to an environment."""
     tier_map = {name: (marker, name) for marker, name in ALL_TIERS}
-    override = os.environ.get(f"VLAF_ENV_{label.upper()}_TIERS", "")
-    if override:
-        names = [n.strip() for n in override.split(",") if n.strip()]
-    else:
-        names = DEFAULT_ENV_TIERS.get(label, ["l0", "l1", "l2"])
+    names = DEFAULT_ENV_TIERS.get(label, [])
     return [tier_map[n] for n in names if n in tier_map]
 
 
@@ -596,6 +592,15 @@ def _write_timeout_xml(path: Path, tier: str, timeout: int) -> None:
         f'<testcase classname="ci" name="tier-timeout" time="{timeout}">'
         f'<failure message="tier exceeded {timeout}s timeout" type="Timeout"/>'
         f"</testcase></testsuite></testsuites>"
+    )
+
+
+def _write_empty_xml(path: Path, tier: str) -> None:
+    """Record an assigned tier with no test directory as a zero-test result."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'<testsuites><testsuite name="{tier}" tests="0" failures="0" errors="0" '
+        'skipped="0" time="0.0"/></testsuites>'
     )
 
 
@@ -623,8 +628,13 @@ def run_gate(repo_dir: Path, label: str, python_bin: str, report_dir: Path) -> b
     tiers = env_tiers(label)
     all_ok = True
     for marker, name in tiers:
+        test_path = repo_dir / TIER_TEST_PATHS[name]
+        if not test_path.exists():
+            log.info("  [%s] tier %s has no test directory", label, name)
+            _write_empty_xml(report_dir / f"{name}.xml", name)
+            continue
         t0 = time.time()
-        cmd = [python_bin, "-m", "pytest", str(repo_dir / "test"), "-q", "-m", marker,
+        cmd = [python_bin, "-m", "pytest", str(test_path), "-q", "-m", marker,
                f"--junitxml={report_dir}/{name}.xml"]
         log.info("  [%s] tier %s start (marker: %s)", label, name, marker)
         try:
@@ -769,6 +779,32 @@ def ci_task(pr: dict) -> None:
 def main():
     if not GITCODE_TOKEN:
         sys.exit("VLAF_GITCODE_TOKEN is required")
+    if not HF_TOKEN:
+        sys.exit(
+            "HF_TOKEN is required for PI L1 parity. Accept access to "
+            "google/paligemma-3b-pt-224, then configure it with bash scripts/run_ci.sh."
+        )
+    missing_envs = [
+        label for label in ("base", "act", "pi")
+        if not os.environ.get(f"VLAF_ENV_{label.upper()}")
+    ]
+    invalid_envs = [
+        label for label in ("base", "act", "pi")
+        if os.environ.get(f"VLAF_ENV_{label.upper()}")
+        and not Path(os.environ[f"VLAF_ENV_{label.upper()}"]).exists()
+    ]
+    if missing_envs or invalid_envs:
+        detail = []
+        if missing_envs:
+            detail.append(f"missing {', '.join(missing_envs)}")
+        if invalid_envs:
+            detail.append(f"invalid paths for {', '.join(invalid_envs)}")
+        sys.exit(
+            "Configured interpreters are required for full CI coverage: "
+            f"{'; '.join(detail)}. "
+            "Run bash scripts/ci/build_ci_envs.sh base act pi, then "
+            "configure them with bash scripts/run_ci.sh."
+        )
 
     ensure_repo()
     recovered = recover_stale_running()

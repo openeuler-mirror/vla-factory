@@ -107,8 +107,8 @@ def save_conf(conf: dict[str, str]) -> None:
     """Write ~/.vlaf_ci.conf as a fully annotated template.
 
     The file doubles as the documentation of every supported knob: keys
-    the operator configured keep their values, the rest are written with
-    their defaults (or commented out when optional).
+    the operator configured keep their values and the rest are written with
+    their defaults.
     """
     def val(k: str, default: str = "") -> str:
         return conf.get(k, default)
@@ -119,7 +119,11 @@ def save_conf(conf: dict[str, str]) -> None:
         "",
         "# ── 必填 ──",
         f"VLAF_GITCODE_TOKEN={val('VLAF_GITCODE_TOKEN')}",
+        "# Must have accepted access for google/paligemma-3b-pt-224 on Hugging Face.",
+        f"HF_TOKEN={val('HF_TOKEN')}",
         f"VLAF_ENV_BASE={val('VLAF_ENV_BASE')}",
+        f"VLAF_ENV_ACT={val('VLAF_ENV_ACT')}",
+        f"VLAF_ENV_PI={val('VLAF_ENV_PI')}",
         "",
         "# ── CI 行为（默认值如下，按需修改）──",
         f"VLAF_BASE_DIR={val('VLAF_BASE_DIR', str(Path.home() / 'vla-factory-ci'))}",
@@ -143,10 +147,6 @@ def save_conf(conf: dict[str, str]) -> None:
         "# VLAF_REVIEW_GUIDE=              # 缺省使用新技能内置的 VLA Factory policy",
         "# VLAF_SKILL_DIR=                # 缺省使用仓库内 skills 子模块并自动同步最新 main",
         "# VLAF_NODE_BIN=                 # node 不在 daemon PATH 时显式指定",
-        "",
-        "# ── 可选测试环境（留空则跳过该环境）──",
-        f"VLAF_ENV_ACT={val('VLAF_ENV_ACT')}",
-        f"VLAF_ENV_PI={val('VLAF_ENV_PI')}",
         "",
     ]
     CONF_FILE.write_text("\n".join(lines) + "\n")
@@ -185,6 +185,25 @@ def validate_python(val: str) -> str | None:
     return None
 
 
+def validate_ci_environments(conf: dict[str, str]) -> str | None:
+    """Require credentials and all tier environments for full CI coverage."""
+    if not conf.get("HF_TOKEN"):
+        return "缺少 HF_TOKEN（PI L1 需要已获 PaliGemma 访问权限的 Hugging Face token）"
+    missing = [
+        label for label in ("base", "act", "pi")
+        if not conf.get(f"VLAF_ENV_{label.upper()}")
+    ]
+    if missing:
+        return "缺少测试环境: " + ", ".join(missing)
+    invalid = [
+        label for label in ("base", "act", "pi")
+        if not Path(conf[f"VLAF_ENV_{label.upper()}"]).exists()
+    ]
+    if invalid:
+        return "解释器不存在: " + ", ".join(invalid)
+    return None
+
+
 # ── Interactive setup ────────────────────────────────────────────────
 
 def interactive_setup() -> dict[str, str]:
@@ -193,15 +212,19 @@ def interactive_setup() -> dict[str, str]:
     if old:
         print("发现已有配置 (~/.vlaf_ci.conf):\n")
         for k, v in old.items():
-            display = v if k != "VLAF_GITCODE_TOKEN" else v[:8] + "..."
+            display = v if k not in {"VLAF_GITCODE_TOKEN", "HF_TOKEN"} else v[:8] + "..."
             print(f"  {k} = {display}")
         choice = input("\n  回车 = 使用已有配置, r = 重新配置: ").strip().lower()
         if choice != "r":
-            return old
+            if error := validate_ci_environments(old):
+                print(f"  现有配置不能覆盖全部 tier: {error}，请重新配置。")
+            else:
+                return old
 
     # Merge saved conf + auto-detected defaults.
     d = {
         "VLAF_GITCODE_TOKEN": old.get("VLAF_GITCODE_TOKEN") or detect_token(),
+        "HF_TOKEN": old.get("HF_TOKEN") or os.environ.get("HF_TOKEN", ""),
         "VLAF_BASE_DIR": old.get("VLAF_BASE_DIR") or str(Path.home() / "vla-factory-ci"),
         "VLAF_POLL_INTERVAL": old.get("VLAF_POLL_INTERVAL", "30"),
         "VLAF_ENV_BASE": old.get("VLAF_ENV_BASE") or detect_env_default("base") or sys.executable,
@@ -218,6 +241,8 @@ def interactive_setup() -> dict[str, str]:
     conf = {}
     conf["VLAF_GITCODE_TOKEN"] = ask(
         "GitCode token", d["VLAF_GITCODE_TOKEN"], required=True)
+    conf["HF_TOKEN"] = ask(
+        "Hugging Face token (PaliGemma access required)", d["HF_TOKEN"], required=True)
 
     conf["VLAF_BASE_DIR"] = ask(
         "CI 目录 (不存在会自动 clone)", d["VLAF_BASE_DIR"])
@@ -225,20 +250,20 @@ def interactive_setup() -> dict[str, str]:
     conf["VLAF_POLL_INTERVAL"] = ask(
         "轮询间隔 (秒)", d["VLAF_POLL_INTERVAL"])
 
-    print("\n  测试环境 (act/pi 留空则跳过该 tier):")
-    print("  未跑过 build_ci_envs.sh? 留空即可, 之后手动指定\n")
+    print("\n  测试环境（每个 PR 都必须覆盖 L0、L1、L2）:")
+    print("  请先运行: bash scripts/ci/build_ci_envs.sh base act pi\n")
 
     conf["VLAF_ENV_BASE"] = ask(
         "base python (L0)", d["VLAF_ENV_BASE"],
         required=True, validate=validate_python)
 
     conf["VLAF_ENV_ACT"] = ask(
-        "act python (L1+L2, 留空跳过)", d["VLAF_ENV_ACT"],
-        validate=validate_python)
+        "act python (L1+L2)", d["VLAF_ENV_ACT"],
+        required=True, validate=validate_python)
 
     conf["VLAF_ENV_PI"] = ask(
-        "pi python (L1, 留空跳过)", d["VLAF_ENV_PI"],
-        validate=validate_python)
+        "pi python (L1)", d["VLAF_ENV_PI"],
+        required=True, validate=validate_python)
 
     print()
     conf["VLAF_AGENT_CMD"] = ask_agent_cmd()
