@@ -39,7 +39,6 @@ import torch.nn as nn
 
 from vla_factory.training.strategies.lora import (
     LoraConfig as VlaLoraConfig,
-    _DEFAULT_TARGET_MODULES,
     apply_lora,
 )
 
@@ -106,7 +105,7 @@ def _recipe(targets=("llm",)) -> VlaLoraConfig:
     return VlaLoraConfig(
         r=_RANK,
         lora_alpha=_ALPHA,
-        target_components=list(targets),
+        components=list(targets),
         init_lora_weights="gaussian",
     )
 
@@ -114,8 +113,9 @@ def _recipe(targets=("llm",)) -> VlaLoraConfig:
 def _peft_config():
     """手写参照用的 LoraConfig，字段与 apply_lora 构造的一致。
 
-    ``_DEFAULT_TARGET_MODULES`` 是**输入**（声明要挂哪些层）而非被测对象，直接复用；
-    被测的是 apply_lora 如何找到子树并把包裹结果挂回去。
+    target_modules 取 apply_lora 的默认值 ``"all-linear"``（vla 的 LoraConfig
+    默认），使手写参照与被测路径匹配同样的线性层集合；被测的是 apply_lora
+    如何找到子树并把包裹结果挂回去。
     """
     from peft import LoraConfig
 
@@ -125,7 +125,7 @@ def _peft_config():
         lora_dropout=0.0,
         use_rslora=False,
         init_lora_weights="gaussian",
-        target_modules=_DEFAULT_TARGET_MODULES,
+        target_modules="all-linear",
     )
 
 
@@ -174,7 +174,7 @@ def test_apply_lora_returns_the_same_top_level_object():
 
 
 def test_adapters_land_only_on_the_targeted_subtree():
-    """target_components=["llm"] 时，action expert 与子树外的投影层不得有 adapter。"""
+    """components=["llm"] 时，action expert 与子树外的投影层不得有 adapter。"""
     model = apply_lora(_FakePI0(), _recipe(), _Metadata())
 
     adapter_names = [n for n, _ in model.named_parameters() if "lora_" in n]
