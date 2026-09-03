@@ -172,9 +172,12 @@ class Observation(Generic[T]):
     images: dict[str, T]
     image_masks: dict[str, T]
     state: T | None = None
-    # Raw per-sample task instruction text (list[str], one per batch element).
-    # Carried for models that construct their own prompt (OpenVLA), instead of
-    # the tokenized_prompt produced by the `task_tokenize` transform.
+    # Raw per-sample task text (list[str], one entry per batch element). Pure
+    # transport for models that read the string itself (OpenVLA builds its own
+    # prompt): the fallback chain (sample["task"] > default_task > "") is
+    # resolved framework-side — task_tokenize for prompt models,
+    # inject_default_task for prompt-free ones — so adapters find final
+    # strings here, or None when the dataset declares no language at all.
     task: list[str] | None = None
     tokenized_prompt: T | None = None
     tokenized_prompt_mask: T | None = None

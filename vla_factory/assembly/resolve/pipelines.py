@@ -175,6 +175,14 @@ def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
     if tokenizer_cfg is not None and not metadata.prompt_includes_state:
         _append_call(calls, "task_tokenize", tokenizer_cfg, ctx)
 
+    # Prompt-free models never tokenize a prompt, but they may still read the
+    # task text (OpenVLA assembles its own prompt from the raw string). Keep
+    # the fallback chain single-sourced: the default_task link materializes
+    # here instead of being re-implemented inside an adapter. Dropped (no-op)
+    # unless a default_task override is configured.
+    if not metadata.requires_prompt:
+        _append_call(calls, "inject_default_task", {}, ctx)
+
     return TransformPipelinePlan(calls=tuple(calls))
 
 

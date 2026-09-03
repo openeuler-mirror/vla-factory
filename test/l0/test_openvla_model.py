@@ -415,12 +415,13 @@ def test_unnorm_key_fail_fast_resolution():
         _resolve_unnorm_key(None, empty, "openvla-7b")
 
 
-def test_default_task_fallback_in_prompt():
-    # Review fix #4: OpenVLA builds its prompt internally (no task_tokenize),
-    # so the framework's sample["task"] > default_task > "" chain never ran —
-    # a language-less dataset with overrides.default_task trained with an
-    # empty instruction. The wrapper now mirrors the chain. Going through
-    # compute_loss (the real path) verifies the fallback in the call site.
+def test_task_text_is_pure_transport():
+    # Review round 2: the wrapper used to mirror the framework's
+    # sample["task"] > default_task > "" chain — a second answer that could
+    # drift from the framework's. The chain now lives only framework-side
+    # (task_tokenize for prompt models, inject_default_task for prompt-free
+    # ones); the adapter reads Observation.task as final transport. Going
+    # through compute_loss (the real path) verifies the call-site read.
     from vla_factory.model.adapters.openvla import OpenVLAModelWrapper
 
     class FakePromptBuilder:
@@ -498,21 +499,14 @@ def test_default_task_fallback_in_prompt():
     w = OpenVLAModelWrapper(
         model, FakeProcessor(), FakeActionTokenizer(),
         RecordingPromptBuilder, _identity_collator, unnorm_key="d",
-        default_task="pick apple",
     )
     actions = torch.zeros(1, 1, 7)
 
-    # No per-step task -> default_task is used in the prompt.
-    obs = Observation(
-        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
-        image_masks={"front": torch.ones(1, dtype=torch.bool)},
-        task=None,
-    )
-    RecordingPromptBuilder.human_turns = []
-    w.compute_loss(obs, actions)
-    assert any("pick apple" in t for t in RecordingPromptBuilder.human_turns)
+    # default_task no longer lives on the adapter: the wrapper is a pure
+    # transport reader, the chain is framework-side (inject_default_task).
+    assert not hasattr(w, "_default_task")
 
-    # Per-step task present -> it wins over default_task.
+    # Transport entry present -> it is the prompt text, verbatim.
     obs2 = Observation(
         images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
         image_masks={"front": torch.ones(1, dtype=torch.bool)},
@@ -522,13 +516,14 @@ def test_default_task_fallback_in_prompt():
     w.compute_loss(obs2, actions)
     assert any("push red block" in t for t in RecordingPromptBuilder.human_turns)
 
-    # No task, no default_task -> empty instruction (falls back to "").
-    w2 = OpenVLAModelWrapper(
-        FakeModel(), FakeProcessor(), FakeActionTokenizer(),
-        RecordingPromptBuilder, _identity_collator, unnorm_key="d",
+    # Transport absent -> the chain's terminal "": empty instruction.
+    obs = Observation(
+        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
+        image_masks={"front": torch.ones(1, dtype=torch.bool)},
+        task=None,
     )
     RecordingPromptBuilder.human_turns = []
-    w2.compute_loss(obs, actions)
+    w.compute_loss(obs, actions)
     assert any("take to ?" in t for t in RecordingPromptBuilder.human_turns) or any(
         "take to  ?" in t for t in RecordingPromptBuilder.human_turns
     )

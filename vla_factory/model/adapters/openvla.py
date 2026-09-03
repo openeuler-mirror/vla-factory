@@ -105,7 +105,6 @@ class OpenVLAModelWrapper(nn.Module):
         collator,
         unnorm_key=None,
         camera_key=None,
-        default_task=None,
     ):
         super().__init__()
         self.model = model
@@ -121,13 +120,6 @@ class OpenVLAModelWrapper(nn.Module):
         # means "not declared": single-camera observations are unambiguous and
         # fall back to the only image; multi-camera ones fail loudly.
         self._camera_key = camera_key
-        # Recipe default_task (assembly overrides). OpenVLA builds its prompt
-        # internally and never runs the framework's task_tokenize transform,
-        # whose fallback chain sample["task"] > default_task > "" would have
-        # applied; mirror that chain here so language-less datasets still get
-        # a meaningful instruction instead of "What action should the robot
-        # take to ?".
-        self._default_task = default_task
 
     @property
     def _device(self):
@@ -158,17 +150,15 @@ class OpenVLAModelWrapper(nn.Module):
 
         instances = []
         for i in range(actions.shape[0]):
-            # Per-item fallback: batch-aligned task list may hold None for
-            # frames without language (mixed datasets); truthiness of the list
-            # only covers the all-None case.
+            # Pure transport read: the fallback chain (sample["task"] >
+            # default_task > "") is resolved framework-side (task_tokenize for
+            # prompt models, inject_default_task for prompt-free ones), so the
+            # entries here are final. An absent entry is the chain's terminal
+            # "" — no adapter-side fallback lives here.
             task = (
                 observation.task[i]
-                if (
-                    observation.task
-                    and i < len(observation.task)
-                    and observation.task[i]
-                )
-                else (self._default_task or "")
+                if observation.task and i < len(observation.task)
+                else ""
             )
             # ActionTokenizer uses np.clip internally; must pass CPU numpy.
             instances.append(
@@ -212,11 +202,8 @@ class OpenVLAModelWrapper(nn.Module):
     def predict_actions(self, observation, **kwargs):
         task = (
             observation.task[0]
-            if (
-                observation.task
-                and observation.task[0]
-            )
-            else (self._default_task or "")
+            if observation.task and observation.task[0]
+            else ""
         )
         prompt_builder = self._prompt_builder_fn("openvla")
         prompt_builder.add_turn(
@@ -396,7 +383,6 @@ def _load_openvla(recipe, assembly, upstream, model_name="openvla-7b"):
         model, processor, action_tokenizer, PurePromptBuilder, collator,
         unnorm_key=unnorm_key,
         camera_key=_resolve_primary_camera(assembly.camera_mapping),
-        default_task=assembly.overrides_ref.get("default_task"),
     )
 
 

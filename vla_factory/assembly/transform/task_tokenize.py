@@ -19,6 +19,13 @@ meaningful prompt. The final ``""`` keeps the model runnable either way —
 ``PI0Pytorch.embed_prefix`` embeds the prompt unconditionally, so producing an
 empty-but-valid prompt beats skipping the fields and crashing in the model.
 
+Prompt-free models (``requires_prompt=False``) never run this step — they read
+the raw string itself instead of a tokenized prompt. The chain stays
+single-sourced for them too: :class:`InjectDefaultTask` materializes only the
+``default_task`` link, the data link is the untouched ``sample["task"]`` key
+(carried into ``Observation.task`` by the collate), and the terminal ``""`` is
+the adapter reading an absent entry as empty.
+
 pi05 (``discrete_state: true``): the state vector is part of the discrete
 language input — it is digitized into 256 bins over [-1, 1] and embedded into
 the prompt as ``Task: <task>, State: <bins>;\\nAction: `` (openpi
@@ -168,3 +175,35 @@ class TaskTokenize(TransformStep):
         if default_task is not None:
             args["default_task"] = default_task
         return args
+
+
+@TransformRegistry.register("inject_default_task")
+class InjectDefaultTask(TransformStep):
+    """Prompt-free models: materialize the ``default_task`` fallback link.
+
+    The never-failing chain (``sample["task"]`` > ``default_task`` > ``""``)
+    is documented on the module and owned by :class:`TaskTokenize` for models
+    that tokenize a prompt. Prompt-free models (``requires_prompt=False`` —
+    e.g. OpenVLA builds its own prompt with its own tokenizer) never run that
+    step but still read the task text — the raw string the collate carries
+    into ``Observation.task``. This step keeps the chain single-sourced: the
+    data link is the sample's own ``"task"`` key (transported untouched), the
+    override link is filled in here, and the terminal ``""`` is the adapter
+    reading an absent entry as empty. No tokenizer, no tensor output.
+    """
+
+    def __init__(self, default_task: str) -> None:
+        self.default_task = default_task
+
+    def __call__(self, sample: dict) -> dict:
+        # ``is None`` mirrors TaskTokenize's link semantics: an explicit empty
+        # string from the data is a present (if odd) data link and wins.
+        if sample.get("task") is None:
+            sample["task"] = self.default_task
+        return sample
+
+    @classmethod
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict | None:
+        # Only the override link needs materializing; with no default_task
+        # configured the chain has nothing to add and the step is dropped.
+        return {"default_task": ctx.default_task} if ctx.default_task else None

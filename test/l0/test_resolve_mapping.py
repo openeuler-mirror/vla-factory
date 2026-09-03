@@ -102,6 +102,46 @@ class TestGoldenRealData:
             ("unnormalize_action", {"stats_ref": "norm_stats", "eps": 1e-8}),
         ]
 
+    def test_default_task_chain_is_planned_not_mirrored(self, schema, norm_stats):
+        """The task fallback chain lives once, in the task transforms: a
+        prompt-free model plans ``inject_default_task`` only when a
+        ``default_task`` override exists (the data link rides the untouched
+        ``sample["task"]``), and a prompt model never plans it — its
+        ``task_tokenize`` already owns the chain."""
+        # Prompt-free (act), no override: nothing to materialize, no step.
+        plain = resolve_assembly(schema, norm_stats, _metadata("act"))
+        assert "inject_default_task" not in dict(_calls(plain.data_to_model))
+
+        # Prompt-free (act) + override: the override link appends as the last
+        # input step, and being fill-only it declares no inverse.
+        over = resolve_assembly(
+            schema, norm_stats, _metadata("act"),
+            overrides=AssemblyOverrides(default_task="pick"),
+        )
+        assert _calls(over.data_to_model)[-1] == (
+            "inject_default_task", {"default_task": "pick"},
+        )
+        assert "inject_default_task" not in dict(_calls(over.model_to_robot))
+
+        # Prompt model (pi0) + override: task_tokenize owns the chain.
+        a = resolve_assembly(
+            schema, norm_stats, _metadata("pi0"),
+            overrides=AssemblyOverrides(default_task="pick"),
+        )
+        types = dict(_calls(a.data_to_model))
+        assert "inject_default_task" not in types
+        assert "task_tokenize" in types
+
+    def test_inject_default_task_step_fills_only_missing(self):
+        """The step materializes the override link with TaskTokenize's link
+        semantics: ``is None`` — a present data link wins even if empty."""
+        from vla_factory.assembly.transform.task_tokenize import InjectDefaultTask
+
+        step = InjectDefaultTask(default_task="pick apple")
+        assert step({})["task"] == "pick apple"
+        assert step({"task": "from dataset"})["task"] == "from dataset"
+        assert step({"task": ""})["task"] == ""
+
     def test_pi0_camera_override_is_the_complete_mapping(self, schema, norm_stats):
         """``examples/pi0_lora.yaml`` maps two of pi0's three slots and
         documents the third as intentionally unmapped. The override must
