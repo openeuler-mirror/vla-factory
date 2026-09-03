@@ -147,6 +147,8 @@ class ModelMetadata:
         "vector_normalization", "vector_normalization_eps", "requires_prompt",
         "language_template", "tokenizer_repo", "tokenizer_max_length",
         "prompt_includes_state", "control_mode_pref", "expected_hz", "history_frames",
+        # Checkpoint contract: what inference must be able to read back.
+        "inference_needs_base_checkpoint",
     )
 
     @classmethod
