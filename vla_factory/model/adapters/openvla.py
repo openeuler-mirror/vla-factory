@@ -87,8 +87,8 @@ def try_import_openvla():
 # ── Wrapper (nn.Module, satisfies VLAModelPyTorch; composition) ─────
 
 
-# Key under which the DATASET's own action statistics are mounted in the
-# loaded checkpoint's ``norm_stats`` — see ``_inject_finetune_stats``.
+# Key under which IDENTITY action statistics (q01=-1, q99=+1) are mounted in
+# the loaded checkpoint's ``norm_stats`` — see ``_inject_identity_action_stats``.
 _FINETUNE_STATS_KEY = "finetune_dataset"
 
 
@@ -120,8 +120,8 @@ class OpenVLAModelWrapper(nn.Module):
         self._prompt_builder_fn = prompt_builder_fn
         self._collator = collator
         # Both call sites below read norm_stats under this key; the factory
-        # mounts the DATASET's own q01/q99 there (see _inject_finetune_stats),
-        # so encode and decode always share one stats entry.
+        # mounts IDENTITY stats there (see _inject_identity_action_stats), so
+        # predict_action decodes in the normalized space the plan expects.
         self._stats_key = stats_key
         # Dataset camera feeding the single primary visual slot, from the
         # resolved assembly camera_mapping ("primary" -> data camera). None
@@ -152,9 +152,10 @@ class OpenVLAModelWrapper(nn.Module):
     # ── Training ──────────────────────────────────────────────────
 
     def compute_loss(self, observation, actions, action_is_pad=None):
-        # actions: [B, 1, D] raw continuous. Normalise to [-1, 1] via the
-        # model's per-dataset q01/q99 stats (BOUNDS_Q99), then discretise.
-        norm_actions = self._normalize_actions(actions)
+        # actions: [B, 1, D], already normalized to [-1, 1] by the plan's
+        # normalize_vector step (quantile over the dataset's own q01/q99 —
+        # the statistics upstream fine-tuning computes at train time). The
+        # ActionTokenizer discretizes them; its np.clip absorbs the eps slack.
 
         instances = []
         for i in range(actions.shape[0]):
@@ -170,7 +171,7 @@ class OpenVLAModelWrapper(nn.Module):
             )
             # ActionTokenizer uses np.clip internally; must pass CPU numpy.
             instances.append(
-                self._build_training_instance(task, norm_actions[i].cpu().numpy(), observation, i)
+                self._build_training_instance(task, actions[i].cpu().numpy(), observation, i)
             )
 
         batch = self._collator(instances)
@@ -224,20 +225,17 @@ class OpenVLAModelWrapper(nn.Module):
 
         pixel_values = self._image_to_pixel_values(observation, 0).unsqueeze(0).to(self._device)
 
-        # OpenVLAForActionPrediction.predict_action → unnormalized [D] continuous action.
+        # predict_action decodes tokens → bin centers with IDENTITY stats
+        # mounted by the factory (q01=-1, q99=+1), so it returns actions in
+        # the NORMALIZED space; the plan's model_to_robot inverse
+        # (unnormalize_action, real assembly statistics) finishes the round
+        # trip — same division of labor as pi0.
         actions = self.model.predict_action(
             input_ids, self._stats_key, pixel_values=pixel_values
         )
         return torch.as_tensor(actions, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     # ── Helpers ───────────────────────────────────────────────────
-
-    def _normalize_actions(self, actions):
-        stats = self.model.get_action_stats(self._stats_key)
-        q01 = torch.as_tensor(stats["q01"], dtype=actions.dtype, device=actions.device)
-        q99 = torch.as_tensor(stats["q99"], dtype=actions.dtype, device=actions.device)
-        # BOUNDS_Q99: [q01, q99] → [-1, 1]
-        return 2.0 * (actions[:, 0, :] - q01) / (q99 - q01 + 1e-8) - 1.0
 
     def _image_to_pixel_values(self, observation, index):
         # observation.images: {camera: [B, H, W, C] uint8} — raw, no framework
@@ -291,8 +289,10 @@ _OPENVLA_PARAMS: dict = {
 _OPENVLA_METADATA = ModelMetadata(
     name="openvla-7b",
     backend="pytorch",
-    action_dim=0,                  # flexible: dataset supplies 7-DoF; adapter normalises internally
+    action_dim=0,                  # flexible: dataset supplies 7-DoF; normalized by the plan's normalize_vector
     action_horizon=1,              # one 7-DoF action per inference step
+    vector_normalization="quantile",   # dataset's own q01/q99 — same semantics as upstream fine-tuning
+    vector_normalization_eps=1e-6,
     action_head_type="autoregressive",
     training_paradigm="pretrained_finetune",
     requires_prompt=False,          # OpenVLA builds its own prompt internally (PurePromptBuilder + Llama-2 tokenizer); does not use the framework's task_tokenize pipeline.
@@ -398,8 +398,8 @@ def _load_openvla(recipe, assembly, upstream, model_name="openvla-7b"):
         model_max_length=getattr(model.config, "llm_max_length", 2048),
         pad_token_id=getattr(model.config, "pad_token_id", 0) or 0,
     )
-    q01, q99 = _require_dataset_quantiles(assembly, model_name)
-    _inject_finetune_stats(model, q01, q99)
+    _require_dataset_action_quantiles(assembly, model_name)
+    _inject_identity_action_stats(model, len(assembly.norm_stats.action.q01))
 
     cfg.assert_all_consumed(model_name)
 
@@ -424,14 +424,16 @@ def _resolve_primary_camera(camera_mapping) -> str | None:
     return None
 
 
-def _require_dataset_quantiles(assembly, model_name: str) -> tuple[list, list]:
-    """Return the fine-tune dataset's own action q01/q99 from the assembly.
+def _require_dataset_action_quantiles(assembly, model_name: str) -> None:
+    """Fail fast when the dataset's stats lack action q01/q99.
 
-    Normalization binds to the DATASET's statistics — the same semantics as
-    upstream fine-tuning, which computes dataset statistics at train time
-    (``get_dataset_statistics``), and the framework's other adapters. Older
-    lerobot ``stats.json`` files carry min/max/mean/std only; such datasets
-    must be regenerated with a writer that emits q01/q99.
+    Normalization binds to the DATASET's statistics — the plan's
+    normalize_vector consumes them from the assembly context, the same
+    semantics as upstream fine-tuning, which computes dataset statistics at
+    train time (``get_dataset_statistics``). Older lerobot ``stats.json``
+    files carry min/max/mean/std only; such datasets must be regenerated
+    with a writer that emits q01/q99. Checked here, at load time, rather
+    than on the first training step.
     """
     stats = assembly.norm_stats.action
     if not stats.q01 or not stats.q99:
@@ -440,18 +442,20 @@ def _require_dataset_quantiles(assembly, model_name: str) -> tuple[list, list]:
             "action normalization requires. Regenerate the dataset statistics "
             "with a lerobot writer that emits quantiles (meta/stats.json)."
         )
-    return stats.q01, stats.q99
 
 
-def _inject_finetune_stats(model, q01: list, q99: list) -> None:
-    """Mount the dataset's action stats in the loaded checkpoint's norm_stats.
+def _inject_identity_action_stats(model, action_dim: int) -> None:
+    """Mount identity stats so upstream's predict_action decode is the
+    identity map and returns actions in the NORMALIZED space.
 
-    Upstream's ``get_action_stats`` / ``predict_action`` read
-    ``self.norm_stats[key]["action"]`` — the same dict object as
-    ``model.config.norm_stats`` — so mounting under one key makes encode
-    (training normalization) and decode (inference denormalization) share
-    exactly the stats this fine-tune used.
+    Training-side normalization runs in the plan (normalize_vector, real
+    assembly statistics); at inference the plan's model_to_robot inverse
+    (unnormalize_action, same statistics) finishes the round trip. Upstream's
+    decode affine ``0.5*(a+1)*(q99-q01)+q01`` becomes the identity for
+    q01=-1/q99=+1 — the same model-emits-normalized division of labor as pi0.
+    The key itself is pure internal addressing: predict_action requires a
+    norm_stats entry to exist and be named.
     """
     model.norm_stats[_FINETUNE_STATS_KEY] = {
-        "action": {"q01": list(q01), "q99": list(q99)},
+        "action": {"q01": [-1.0] * action_dim, "q99": [1.0] * action_dim},
     }

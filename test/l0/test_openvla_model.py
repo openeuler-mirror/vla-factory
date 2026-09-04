@@ -20,11 +20,20 @@ import torch
 import torch.nn as nn
 
 from vla_factory.assembly import resolve_from_facts as resolve_assembly
-from vla_factory.data.data_schema import NormStats
+from vla_factory.data.data_schema import FeatureStats, NormStats
 from vla_factory.model.checkpoint_validation import extract_checkpoint_observations
 from vla_factory.model.model_interface import Observation
 from vla_factory.model.registry import get_entry, list_entries
 from vla_factory.user_interface import AssemblyOverrides
+
+
+def _quantile_stats(state_dim: int = 6, action_dim: int = 7) -> NormStats:
+    # vector_normalization="quantile" requires per-dim q01/q99 for state and
+    # action at resolve time — real datasets must ship them in stats.json.
+    return NormStats(
+        state=FeatureStats(q01=[0.0] * state_dim, q99=[1.0] * state_dim),
+        action=FeatureStats(q01=[0.0] * action_dim, q99=[1.0] * action_dim),
+    )
 
 from helpers import make_schema
 
@@ -47,6 +56,10 @@ def test_metadata():
     # Contract visibility: the checkpoint's instruction format, declared
     # read-only (no pipeline step consumes it for this prompt-free model).
     assert meta.language_template == "What action should the robot take to {task}?"
+    # Action normalization runs in the plan (normalize_vector, quantile over
+    # the dataset's own q01/q99) — same semantics as upstream fine-tuning.
+    assert meta.vector_normalization == "quantile"
+    assert meta.vector_normalization_eps == 1e-6
     assert meta.params.get("dtype") == "bfloat16"
     assert meta.params.get("num_inference_steps") == 1
 
@@ -64,6 +77,7 @@ def test_oft_registered_and_shares_adapter():
     assert oft.dim_policy == "flexible"
     assert oft.components == get_entry("openvla-7b").metadata.components
     assert oft.language_template == get_entry("openvla-7b").metadata.language_template
+    assert oft.vector_normalization == get_entry("openvla-7b").metadata.vector_normalization
 
 
 def test_oft_and_base_assembly_resolves():
@@ -79,7 +93,7 @@ def test_oft_and_base_assembly_resolves():
     )
     for name in ("openvla-7b", "openvla-7b-oft"):
         meta = get_entry(name).metadata
-        assembly = resolve_assembly(schema, NormStats(), meta)
+        assembly = resolve_assembly(schema, _quantile_stats(), meta)
         assert assembly.model_io_spec.action_dim == 7
         assert assembly.model_io_spec.requires_language is False
 
@@ -194,34 +208,6 @@ def test_lora_forwards_target_modules_from_config(monkeypatch):
 # ── Adapter input construction (no upstream model needed) ───────────
 
 
-def test_adapter_normalize_actions():
-    from vla_factory.model.adapters.openvla import (
-        _FINETUNE_STATS_KEY,
-        OpenVLAModelWrapper,
-    )
-
-    class FakeModel:
-        def get_action_stats(self, stats_key):
-            assert stats_key == _FINETUNE_STATS_KEY
-            return {"q01": [0.0] * 7, "q99": [1.0] * 7}
-
-        def parameters(self):
-            return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
-
-    class _IP:
-        apply_transform = None
-
-    class FakeProcessor:
-        tokenizer = None
-        image_processor = _IP()
-
-    w = OpenVLAModelWrapper(FakeModel(), FakeProcessor(), None, None, None)
-    actions = torch.tensor([[[0.0, 0.5, 1.0, 0.25, 0.75, 0.0, 1.0]]])  # [1,1,7]
-    norm = w._normalize_actions(actions)
-    # BOUNDS_Q99: 2*(a - q01)/(q99 - q01) - 1 = 2a - 1 over [0,1]
-    expected = torch.tensor([[-1.0, 0.0, 1.0, -0.5, 0.5, -1.0, 1.0]])
-    assert torch.allclose(norm, expected, atol=1e-6)
-
 
 def test_adapter_build_training_instance():
     from vla_factory.model.model_interface import Observation
@@ -320,7 +306,7 @@ def test_camera_mapping_selects_primary_camera():
         action_keys=("x1", "x2", "x3", "x4", "x5", "x6", "x7"),
     )
     assembly = resolve_assembly(
-        schema, NormStats(), entry.metadata,
+        schema, _quantile_stats(), entry.metadata,
         overrides=AssemblyOverrides(camera_mapping={"primary": "front"}),
     )
     assert (assembly.camera_mapping.entries[0]["model_slot"],
@@ -387,9 +373,9 @@ def test_camera_mapping_selects_primary_camera():
 def test_dataset_quantiles_fail_fast():
     # Normalization binds to the DATASET's own q01/q99 (upstream fine-tuning
     # semantics). Older lerobot stats.json files carry min/max/mean/std only —
-    # such datasets must fail with an actionable error, not silently train
-    # against someone else's statistics.
-    from vla_factory.model.adapters.openvla import _require_dataset_quantiles
+    # such datasets must fail with an actionable error at load time, not
+    # silently train against someone else's statistics.
+    from vla_factory.model.adapters.openvla import _require_dataset_action_quantiles
 
     class _Missing:
         class norm_stats:
@@ -397,33 +383,34 @@ def test_dataset_quantiles_fail_fast():
                 q01, q99 = [], []
 
     with pytest.raises(ValueError, match="q01/q99"):
-        _require_dataset_quantiles(_Missing(), "openvla-7b")
+        _require_dataset_action_quantiles(_Missing(), "openvla-7b")
 
     class _Present:
         class norm_stats:
             class action:
                 q01, q99 = [0.1, 0.2], [0.3, 0.4]
 
-    assert _require_dataset_quantiles(_Present(), "openvla-7b") == ([0.1, 0.2], [0.3, 0.4])
+    # Must not raise.
+    _require_dataset_action_quantiles(_Present(), "openvla-7b")
 
 
-def test_finetune_stats_injection():
-    # The dataset's stats are mounted in the loaded checkpoint's norm_stats
-    # under one key, so upstream get_action_stats (training encode) and
-    # predict_action (inference decode) share exactly the stats this
-    # fine-tune used — the round-trip rule, by construction.
+def test_identity_stats_injection():
+    # predict_action's decode affine (0.5*(a+1)*(q99-q01)+q01) becomes the
+    # identity for q01=-1/q99=+1, so it returns actions in the NORMALIZED
+    # space; the plan's model_to_robot inverse (real assembly statistics)
+    # finishes the round trip — pi0's division of labor.
     from vla_factory.model.adapters.openvla import (
         _FINETUNE_STATS_KEY,
-        _inject_finetune_stats,
+        _inject_identity_action_stats,
     )
 
     class FakeModel:
         norm_stats = {"bridge_orig": {"action": {"q01": [0.0], "q99": [1.0]}}}
 
-    _inject_finetune_stats(FakeModel(), [0.1, 0.2], [0.3, 0.4])
+    _inject_identity_action_stats(FakeModel(), action_dim=7)
     mounted = FakeModel.norm_stats[_FINETUNE_STATS_KEY]["action"]
-    assert mounted["q01"] == [0.1, 0.2]
-    assert mounted["q99"] == [0.3, 0.4]
+    assert mounted["q01"] == [-1.0] * 7
+    assert mounted["q99"] == [1.0] * 7
 
 
 def test_task_text_is_pure_transport():

@@ -31,6 +31,8 @@ _OPENVLA_OFT_METADATA = ModelMetadata(
     # would conflict with dim_policy='flexible' at assembly resolution.
     action_dim=0,
     action_horizon=1,
+    vector_normalization="quantile",   # same as openvla-7b: dataset's own q01/q99
+    vector_normalization_eps=1e-6,
     action_head_type="autoregressive",
     training_paradigm="pretrained_finetune",
     # Same adapter as openvla-7b: the prompt is built internally via
