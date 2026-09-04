@@ -1,4 +1,4 @@
-"""Built-in full, freeze, and selective parameter strategies.
+"""Built-in full and selective parameter strategies.
 
 Applies parameter freezing to a model based on the recipe's
 ``finetuning_strategy`` and the component name patterns declared in
@@ -48,16 +48,6 @@ class FullStrategy(FinetuningStrategy[FullConfig]):
 
     def prepare_model(self, model, config, metadata):
         _log_param_stats(model, "full (all trainable)")
-        return model
-
-
-@register_strategy("freeze")
-class FreezeStrategy(FinetuningStrategy[ComponentConfig]):
-    config_type = ComponentConfig
-
-    def prepare_model(self, model, config, metadata):
-        _freeze_components(model, config.components, metadata)
-        _log_param_stats(model, f"freeze({config.components})")
         return model
 
 

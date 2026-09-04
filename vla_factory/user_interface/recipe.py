@@ -80,6 +80,7 @@ class OutputConfig:
     logging_steps: int = 50
     save_steps: int = 5000
     save_total_limit: int = 3
+    save_delta_only: bool = False
     overwrite_output_dir: bool = False
 
 
@@ -307,6 +308,9 @@ def _parse_output(value: Any) -> OutputConfig:
         save_steps=_integer(block.get("save_steps", 5000), "output.save_steps"),
         save_total_limit=_integer(
             block.get("save_total_limit", 3), "output.save_total_limit"
+        ),
+        save_delta_only=_boolean(
+            block.get("save_delta_only", False), "output.save_delta_only"
         ),
         overwrite_output_dir=_boolean(
             block.get("overwrite_output_dir", False),

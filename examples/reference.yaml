@@ -121,7 +121,6 @@ finetuning:
                                #   ├────────────┼────────────────────────────────────┤
                                #   │ full       │ 全参数训练 (ACT从零训练, 或全量微调)  │
                                #   │ lora       │ LoRA 低秩适配 (大模型推荐)           │
-                               #   │ freeze     │ 冻结指定组件, 训练其余               │
                                #   │ selective  │ 只训练指定组件, 冻结其余             │
                                #   └────────────┴────────────────────────────────────┘
 
@@ -129,7 +128,7 @@ finetuning:
   # ── strategy == "lora" 时取消下面整块注释 ──
   # 字段名与 peft.LoraConfig 对齐（r/lora_alpha/lora_dropout/use_rslora/init_lora_weights
   # 透传给 peft）。components 是 vla 自己的抽象（component → subtree → peft
-  # target_modules），因为不同模型 module 名不同；它与 freeze/selective 同名，
+  # target_modules），因为不同模型 module 名不同；它与 selective 同名，
   # 都取 ModelMetadata.components 的 key。freeze_components 可选，冻死而非全训
   # 选定子树之外的某些子树（如 "action_expert 冻结 + llm LoRA"）。
   # 默认行为（只写 r/lora_alpha 即可）：components 默认 "all"（对全部组件打
@@ -145,9 +144,6 @@ finetuning:
   #   components: [llm]           # 打 LoRA 的子树; 默认 "all" = 全部组件
   #   freeze_components: [action_expert]  # 冻死而非全训的子树 (可选), 默认 []
   #   target_modules: all-linear  # peft 线性层名; 默认 "all-linear", 或列表如 [q_proj, v_proj]
-
-  # ── strategy == "freeze" 时需要 ──
-  # config: {components: [vision_encoder]}   # 冻结视觉编码器
 
   # ── strategy == "selective" 时需要 ──
   # config: {components: [action_head]}      # 只训练 action head
@@ -195,7 +191,7 @@ training:
 # 注意: 输出字段必须嵌套在 output: 块下; 顶层的 output_dir: 会直接报错。
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 output:
-  output_dir: outputs/act_aloha  # [必填] checkpoint、日志、最终权重的保存目录
+  output_dir: outputs/act_aloha  # [必填] checkpoint、日志的保存目录
                                  #   示例: "outputs/act_aloha_000"
 
   report_to: none                # [可选] 训练日志后端
@@ -213,6 +209,8 @@ output:
 
   save_total_limit: 3            # [可选] 最多保留的 checkpoint 数量
                                  #   超出后删除最旧的
+
+  save_delta_only: false         # [可选] 仅 LoRA：只保存可训练参数，推理/导出需要 model.path 基座
 
   overwrite_output_dir: true     # [可选] 训练前是否清空 output_dir
                                  #   true  = 清空 (重新训练时推荐)

@@ -246,7 +246,7 @@ class VLAModelPyTorch(VLAModel, Protocol):
         ...
 
     def named_parameters(self):
-        """``nn.Module.named_parameters()`` — used by freeze / selective strategies."""
+        """``nn.Module.named_parameters()`` — used by selective strategies."""
         ...
 
     def train(self, mode: bool = True):

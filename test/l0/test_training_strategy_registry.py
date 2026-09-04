@@ -18,7 +18,7 @@ from vla_factory.training.strategies import (
 
 
 def test_builtin_strategies_are_registered():
-    assert set(list_strategies()) >= {"full", "freeze", "selective", "lora"}
+    assert set(list_strategies()) >= {"full", "selective", "lora"}
 
 
 def test_unknown_strategy_reports_available_names():
@@ -30,14 +30,13 @@ def test_strategy_config_is_strict():
     with pytest.raises(ValueError, match="Unknown config field"):
         get_strategy("full").parse_config({"unused": True})
     with pytest.raises(TypeError, match="components"):
-        get_strategy("freeze").parse_config({"components": "backbone"})
+        get_strategy("selective").parse_config({"components": "backbone"})
 
 
 @pytest.mark.parametrize(
     ("name", "config", "backbone_trainable", "head_trainable"),
     [
         ("full", {}, True, True),
-        ("freeze", {"components": ["backbone"]}, False, True),
         ("selective", {"components": ["head"]}, False, True),
     ],
 )
@@ -68,7 +67,7 @@ def test_recipe_rejects_strategy_specific_legacy_fields():
             """
 model: {name: act}
 finetuning:
-  strategy: freeze
+  strategy: selective
   freeze_components: [backbone]
 """
         )
