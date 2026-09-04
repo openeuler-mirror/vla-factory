@@ -16,7 +16,12 @@ from dataclasses import replace
 from vla_factory.model.model_interface import ModelMetadata, VisionSlot
 from vla_factory.model.registry import register_vla
 
-from .openvla import _OPENVLA_PARAMS, _load_openvla, try_import_openvla
+from .openvla import (
+    _OPENVLA_PARAMS,
+    _OPENVLA_TASK_TEMPLATE,
+    _load_openvla,
+    try_import_openvla,
+)
 
 _OPENVLA_OFT_METADATA = ModelMetadata(
     name="openvla-7b-oft",
@@ -33,6 +38,9 @@ _OPENVLA_OFT_METADATA = ModelMetadata(
     # task_tokenize pipeline is not used, so requires_prompt must stay False
     # (True would trip the assembly resolver's tokenizer_max_length check).
     requires_prompt=False,
+    # Same instruction format as openvla-7b (shared adapter), declared
+    # read-only: no pipeline step consumes it for this prompt-free model.
+    language_template=_OPENVLA_TASK_TEMPLATE,
     support_lora=True,
     support_full=True,
     support_freeze=True,
@@ -40,8 +48,8 @@ _OPENVLA_OFT_METADATA = ModelMetadata(
     inference_needs_base_checkpoint=True,
     dim_policy="flexible",
     # Same image contract as openvla-7b: raw images are handed to the adapter,
-    # which runs Prismatic's processor (Resize/CenterCrop/Normalize); the
-    # declare resize mode only lets assembly resolution accept any source size.
+    # which runs Prismatic's processor. "stretch" matches the checkpoint's
+    # resize-naive strategy (see openvla.py for the full reasoning).
     image_resize_mode="stretch",
     vision_slots=(
         VisionSlot(

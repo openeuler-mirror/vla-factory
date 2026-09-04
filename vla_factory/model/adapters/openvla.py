@@ -178,7 +178,7 @@ class OpenVLAModelWrapper(nn.Module):
         """Mirror upstream ``RLDSBatchTransform``: chat prompt + action tokens."""
         prompt_builder = self._prompt_builder_fn("openvla")
         conversation = [
-            {"from": "human", "value": f"What action should the robot take to {task.lower()}?"},
+            {"from": "human", "value": _task_query(task)},
             {"from": "gpt", "value": self._action_tokenizer(normalized_action)},
         ]
         for turn in conversation:
@@ -206,9 +206,7 @@ class OpenVLAModelWrapper(nn.Module):
             else ""
         )
         prompt_builder = self._prompt_builder_fn("openvla")
-        prompt_builder.add_turn(
-            "human", f"What action should the robot take to {task.lower()}?"
-        )
+        prompt_builder.add_turn("human", _task_query(task))
         input_ids = self._tokenizer(
             prompt_builder.get_prompt(), add_special_tokens=True
         ).input_ids
@@ -261,6 +259,16 @@ class OpenVLAModelWrapper(nn.Module):
 
 # ── Registration ───────────────────────────────────────────────────
 
+# The instruction format OpenVLA was pretrained with (mirrored from upstream
+# RLDSBatchTransform). Declared read-only in ModelMetadata.language_template
+# (contract visibility); formatted at the two construction sites below. The
+# task text is lowercased before formatting, matching upstream.
+_OPENVLA_TASK_TEMPLATE = "What action should the robot take to {task}?"
+
+
+def _task_query(task: str) -> str:
+    return _OPENVLA_TASK_TEMPLATE.format(task=task.lower())
+
 
 _OPENVLA_PARAMS: dict = {
     "dtype": "bfloat16",
@@ -281,6 +289,11 @@ _OPENVLA_METADATA = ModelMetadata(
     action_head_type="autoregressive",
     training_paradigm="pretrained_finetune",
     requires_prompt=False,          # OpenVLA builds its own prompt internally (PurePromptBuilder + Llama-2 tokenizer); does not use the framework's task_tokenize pipeline.
+    # Declared read-only for the contract (interface_dict → assembly.json): no
+    # pipeline step consumes it — the prompt is assembled adapter-side from
+    # upstream primitives, and requires_prompt=False keeps task_tokenize out
+    # of the plan.
+    language_template=_OPENVLA_TASK_TEMPLATE,
     support_lora=True,
     support_full=True,
     support_freeze=True,
@@ -291,10 +304,13 @@ _OPENVLA_METADATA = ModelMetadata(
     inference_needs_base_checkpoint=True,
     dim_policy="flexible",         # OpenVLA adapts to the dataset's action width
     # Framework-side images are kept raw (HWC uint8) and handed to the adapter,
-    # which runs Prismatic's own Resize/CenterCrop/Normalize via the processor.
-    # Declaring a resize mode lets assembly resolution pass any source size
-    # (the step is a no-op when source == 224x224); the processor then does the
-    # exact resize.
+    # which runs Prismatic's own processor transform. Declaring "stretch" makes
+    # the framework's resize step match this checkpoint's resize-naive strategy
+    # (stretch to 224x224, ignoring aspect ratio): for non-224 sources the step
+    # runs first and the processor's resize then sees a square input — same
+    # geometry as upstream's own transform, only redundant interpolation. A
+    # checkpoint shipped with letterbox/resize-crop would need the framework's
+    # resize vocabulary to grow before it can be declared honestly.
     image_resize_mode="stretch",
     vision_slots=(
         VisionSlot(

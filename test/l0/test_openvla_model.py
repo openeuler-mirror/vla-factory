@@ -44,6 +44,9 @@ def test_metadata():
     assert meta.support_full is True
     assert meta.support_freeze is True
     assert "llm" in meta.components and "vision_encoder" in meta.components
+    # Contract visibility: the checkpoint's instruction format, declared
+    # read-only (no pipeline step consumes it for this prompt-free model).
+    assert meta.language_template == "What action should the robot take to {task}?"
     assert meta.params.get("dtype") == "bfloat16"
     assert meta.params.get("num_inference_steps") == 1
 
@@ -60,6 +63,7 @@ def test_oft_registered_and_shares_adapter():
     assert oft.requires_prompt is False
     assert oft.dim_policy == "flexible"
     assert oft.components == get_entry("openvla-7b").metadata.components
+    assert oft.language_template == get_entry("openvla-7b").metadata.language_template
 
 
 def test_oft_and_base_assembly_resolves():
