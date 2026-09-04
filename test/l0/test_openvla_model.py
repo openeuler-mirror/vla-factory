@@ -195,11 +195,14 @@ def test_lora_forwards_target_modules_from_config(monkeypatch):
 
 
 def test_adapter_normalize_actions():
-    from vla_factory.model.adapters.openvla import OpenVLAModelWrapper
+    from vla_factory.model.adapters.openvla import (
+        _FINETUNE_STATS_KEY,
+        OpenVLAModelWrapper,
+    )
 
     class FakeModel:
-        def get_action_stats(self, unnorm_key):
-            assert unnorm_key == "d"
+        def get_action_stats(self, stats_key):
+            assert stats_key == _FINETUNE_STATS_KEY
             return {"q01": [0.0] * 7, "q99": [1.0] * 7}
 
         def parameters(self):
@@ -212,7 +215,7 @@ def test_adapter_normalize_actions():
         tokenizer = None
         image_processor = _IP()
 
-    w = OpenVLAModelWrapper(FakeModel(), FakeProcessor(), None, None, None, unnorm_key="d")
+    w = OpenVLAModelWrapper(FakeModel(), FakeProcessor(), None, None, None)
     actions = torch.tensor([[[0.0, 0.5, 1.0, 0.25, 0.75, 0.0, 1.0]]])  # [1,1,7]
     norm = w._normalize_actions(actions)
     # BOUNDS_Q99: 2*(a - q01)/(q99 - q01) - 1 = 2a - 1 over [0,1]
@@ -285,9 +288,7 @@ def test_adapter_build_training_instance():
             return self.forward(**batch)
 
     at = FakeActionTokenizer()
-    w = OpenVLAModelWrapper(
-        FakeModel(), FakeProcessor(), at, FakePromptBuilder, None, unnorm_key="d"
-    )
+    w = OpenVLAModelWrapper(FakeModel(), FakeProcessor(), at, FakePromptBuilder, None)
     obs = Observation(
         images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
         image_masks={"front": torch.ones(1, dtype=torch.bool)},
@@ -341,7 +342,7 @@ def test_camera_mapping_selects_primary_camera():
             return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
 
     w = OpenVLAModelWrapper(
-        FakeModel(), FakeProcessor(), None, None, None, unnorm_key="d",
+        FakeModel(), FakeProcessor(), None, None, None,
         camera_key="front",
     )
     obs = Observation(
@@ -383,40 +384,46 @@ def test_camera_mapping_selects_primary_camera():
     assert tuple(w._image_to_pixel_values(single, 0).shape) == (3, 224, 224)
 
 
-def test_unnorm_key_fail_fast_resolution():
-    # Review fix #3: a multi-dataset base checkpoint (openvla/openvla-7b has
-    # ~25 OXE keys) with no model.config.unnorm_key used to crash upstream's
-    # _check_unnorm_key assert on the first train/infer step. Resolution must
-    # now happen at load time with an actionable error listing candidates.
-    from vla_factory.model.adapters.openvla import _resolve_unnorm_key
+def test_dataset_quantiles_fail_fast():
+    # Normalization binds to the DATASET's own q01/q99 (upstream fine-tuning
+    # semantics). Older lerobot stats.json files carry min/max/mean/std only —
+    # such datasets must fail with an actionable error, not silently train
+    # against someone else's statistics.
+    from vla_factory.model.adapters.openvla import _require_dataset_quantiles
+
+    class _Missing:
+        class norm_stats:
+            class action:
+                q01, q99 = [], []
+
+    with pytest.raises(ValueError, match="q01/q99"):
+        _require_dataset_quantiles(_Missing(), "openvla-7b")
+
+    class _Present:
+        class norm_stats:
+            class action:
+                q01, q99 = [0.1, 0.2], [0.3, 0.4]
+
+    assert _require_dataset_quantiles(_Present(), "openvla-7b") == ([0.1, 0.2], [0.3, 0.4])
+
+
+def test_finetune_stats_injection():
+    # The dataset's stats are mounted in the loaded checkpoint's norm_stats
+    # under one key, so upstream get_action_stats (training encode) and
+    # predict_action (inference decode) share exactly the stats this
+    # fine-tune used — the round-trip rule, by construction.
+    from vla_factory.model.adapters.openvla import (
+        _FINETUNE_STATS_KEY,
+        _inject_finetune_stats,
+    )
 
     class FakeModel:
-        norm_stats = {
-            "austin_buds": {"action": {"q01": [0.0]}},
-            "libero_goal": {"action": {"q01": [0.0]}},
-        }
+        norm_stats = {"bridge_orig": {"action": {"q01": [0.0], "q99": [1.0]}}}
 
-    # Multi-key, no config -> ValueError with both candidates named.
-    with pytest.raises(ValueError, match="austin_buds.*libero_goal"):
-        _resolve_unnorm_key(None, FakeModel(), "openvla-7b")
-
-    # Multi-key, valid config -> that key.
-    assert _resolve_unnorm_key("libero_goal", FakeModel(), "openvla-7b") == "libero_goal"
-
-    # Multi-key, invalid config -> ValueError naming the bad key + candidates.
-    with pytest.raises(ValueError, match="nope"):
-        _resolve_unnorm_key("nope", FakeModel(), "openvla-7b")
-
-    # Single-key, no config -> the only key is inferred (existing behavior).
-    single = FakeModel()
-    single.norm_stats = {"kuka": {"action": {"q01": [0.0]}}}
-    assert _resolve_unnorm_key(None, single, "openvla-7b") == "kuka"
-
-    # No norm_stats at all -> ValueError rather than a later AttributeError/assert.
-    empty = FakeModel()
-    empty.norm_stats = {}
-    with pytest.raises(ValueError, match="0 dataset key"):
-        _resolve_unnorm_key(None, empty, "openvla-7b")
+    _inject_finetune_stats(FakeModel(), [0.1, 0.2], [0.3, 0.4])
+    mounted = FakeModel.norm_stats[_FINETUNE_STATS_KEY]["action"]
+    assert mounted["q01"] == [0.1, 0.2]
+    assert mounted["q99"] == [0.3, 0.4]
 
 
 def test_task_text_is_pure_transport():
@@ -502,7 +509,7 @@ def test_task_text_is_pure_transport():
     model = FakeModel()
     w = OpenVLAModelWrapper(
         model, FakeProcessor(), FakeActionTokenizer(),
-        RecordingPromptBuilder, _identity_collator, unnorm_key="d",
+        RecordingPromptBuilder, _identity_collator,
     )
     actions = torch.zeros(1, 1, 7)
 

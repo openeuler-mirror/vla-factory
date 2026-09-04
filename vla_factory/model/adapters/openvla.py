@@ -87,6 +87,11 @@ def try_import_openvla():
 # ── Wrapper (nn.Module, satisfies VLAModelPyTorch; composition) ─────
 
 
+# Key under which the DATASET's own action statistics are mounted in the
+# loaded checkpoint's ``norm_stats`` — see ``_inject_finetune_stats``.
+_FINETUNE_STATS_KEY = "finetune_dataset"
+
+
 class OpenVLAModelWrapper(nn.Module):
     """Thin adapter: vla ``Observation`` → upstream OpenVLA input → loss / actions.
 
@@ -103,7 +108,7 @@ class OpenVLAModelWrapper(nn.Module):
         action_tokenizer,
         prompt_builder_fn,
         collator,
-        unnorm_key=None,
+        stats_key: str = _FINETUNE_STATS_KEY,
         camera_key=None,
     ):
         super().__init__()
@@ -114,7 +119,10 @@ class OpenVLAModelWrapper(nn.Module):
         self._action_tokenizer = action_tokenizer
         self._prompt_builder_fn = prompt_builder_fn
         self._collator = collator
-        self._unnorm_key = unnorm_key
+        # Both call sites below read norm_stats under this key; the factory
+        # mounts the DATASET's own q01/q99 there (see _inject_finetune_stats),
+        # so encode and decode always share one stats entry.
+        self._stats_key = stats_key
         # Dataset camera feeding the single primary visual slot, from the
         # resolved assembly camera_mapping ("primary" -> data camera). None
         # means "not declared": single-camera observations are unambiguous and
@@ -218,14 +226,14 @@ class OpenVLAModelWrapper(nn.Module):
 
         # OpenVLAForActionPrediction.predict_action → unnormalized [D] continuous action.
         actions = self.model.predict_action(
-            input_ids, self._unnorm_key, pixel_values=pixel_values
+            input_ids, self._stats_key, pixel_values=pixel_values
         )
         return torch.as_tensor(actions, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
     # ── Helpers ───────────────────────────────────────────────────
 
     def _normalize_actions(self, actions):
-        stats = self.model.get_action_stats(self._unnorm_key)
+        stats = self.model.get_action_stats(self._stats_key)
         q01 = torch.as_tensor(stats["q01"], dtype=actions.dtype, device=actions.device)
         q99 = torch.as_tensor(stats["q99"], dtype=actions.dtype, device=actions.device)
         # BOUNDS_Q99: [q01, q99] → [-1, 1]
@@ -273,11 +281,10 @@ def _task_query(task: str) -> str:
 _OPENVLA_PARAMS: dict = {
     "dtype": "bfloat16",
     "num_inference_steps": 1,
-    # The dataset key whose q01/q99 stats normalise actions (BOUNDS_Q99).
-    # OpenVLA-7b was trained on many OXE datasets; set this to a key present
-    # in the base model's norm_stats. None (the default) means use the model's
-    # only dataset key if there is exactly one.
-    "unnorm_key": None,
+    # Action normalization binds to the DATASET's own q01/q99 (assembly
+    # norm_stats — same semantics as upstream fine-tuning, which computes
+    # dataset statistics at train time). No tunable: there is nothing to
+    # select, so the former unnorm_key is retired.
 }
 
 
@@ -391,13 +398,13 @@ def _load_openvla(recipe, assembly, upstream, model_name="openvla-7b"):
         model_max_length=getattr(model.config, "llm_max_length", 2048),
         pad_token_id=getattr(model.config, "pad_token_id", 0) or 0,
     )
-    unnorm_key = _resolve_unnorm_key(cfg.get("unnorm_key"), model, model_name)
+    q01, q99 = _require_dataset_quantiles(assembly, model_name)
+    _inject_finetune_stats(model, q01, q99)
 
     cfg.assert_all_consumed(model_name)
 
     return OpenVLAModelWrapper(
         model, processor, action_tokenizer, PurePromptBuilder, collator,
-        unnorm_key=unnorm_key,
         camera_key=_resolve_primary_camera(assembly.camera_mapping),
     )
 
@@ -417,30 +424,34 @@ def _resolve_primary_camera(camera_mapping) -> str | None:
     return None
 
 
-def _resolve_unnorm_key(cfg_value, model, model_name) -> str:
-    """Resolve the dataset q01/q99 stats key, failing fast with candidates.
+def _require_dataset_quantiles(assembly, model_name: str) -> tuple[list, list]:
+    """Return the fine-tune dataset's own action q01/q99 from the assembly.
 
-    Upstream's ``_check_unnorm_key`` asserts ``len(norm_stats) == 1`` when
-    ``unnorm_key`` is None — on a multi-dataset base checkpoint
-    (openvla/openvla-7b has ~25 OXE keys) that assert fires only on the first
-    training/inference step, after loading and scanning. We validate here, at
-    load time, and raise an actionable error listing the available keys so the
-    user can set ``model.config.unnorm_key``.
+    Normalization binds to the DATASET's statistics — the same semantics as
+    upstream fine-tuning, which computes dataset statistics at train time
+    (``get_dataset_statistics``), and the framework's other adapters. Older
+    lerobot ``stats.json`` files carry min/max/mean/std only; such datasets
+    must be regenerated with a writer that emits q01/q99.
     """
-    if cfg_value is not None:
-        keys = list(getattr(model, "norm_stats", {}) or {})
-        if cfg_value not in keys:
-            raise ValueError(
-                f"{model_name}: model.config.unnorm_key={cfg_value!r} is not in "
-                f"the checkpoint's norm_stats; choose from: {sorted(keys)}"
-            )
-        return cfg_value
-    keys = list(getattr(model, "norm_stats", {}) or {})
-    if len(keys) == 1:
-        return keys[0]
-    raise ValueError(
-        f"{model_name}: checkpoint norm_stats has {len(keys)} dataset key(s) "
-        f"{sorted(keys) if keys else '(none)'}; action normalization needs "
-        "exactly one dataset's q01/q99 stats. Set model.config.unnorm_key to "
-        "one of the listed keys."
-    )
+    stats = assembly.norm_stats.action
+    if not stats.q01 or not stats.q99:
+        raise ValueError(
+            f"{model_name}: dataset norm_stats lack q01/q99 quantiles, which "
+            "action normalization requires. Regenerate the dataset statistics "
+            "with a lerobot writer that emits quantiles (meta/stats.json)."
+        )
+    return stats.q01, stats.q99
+
+
+def _inject_finetune_stats(model, q01: list, q99: list) -> None:
+    """Mount the dataset's action stats in the loaded checkpoint's norm_stats.
+
+    Upstream's ``get_action_stats`` / ``predict_action`` read
+    ``self.norm_stats[key]["action"]`` — the same dict object as
+    ``model.config.norm_stats`` — so mounting under one key makes encode
+    (training normalization) and decode (inference denormalization) share
+    exactly the stats this fine-tune used.
+    """
+    model.norm_stats[_FINETUNE_STATS_KEY] = {
+        "action": {"q01": list(q01), "q99": list(q99)},
+    }

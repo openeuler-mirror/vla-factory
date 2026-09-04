@@ -12,9 +12,8 @@
 # the adapter's upstream ActionTokenizer. The adapter also builds the chat
 # prompt and preprocesses the image, so the resolved transforms are empty.
 #
-# The unnorm_key selects which dataset's q01/q99 stats the model uses for
-# action normalisation. OpenVLA-7b was trained on many OXE datasets; set this
-# to a key present in the base model's norm_stats.
+# Action normalization binds to the dataset's own q01/q99 statistics (see
+# below); nothing needs to be selected or configured for it.
 
 model:
   name: openvla-7b              # or openvla-7b-oft
@@ -25,10 +24,10 @@ overrides:
     primary: front             # OpenVLA single RGB camera ← dataset camera
   default_task: "pick up the object"
 
-# unnorm_key is not a recipe-level override; it is a model tunable.
-# Set it in model.config:
-#   config:
-#     unnorm_key: austin_buds_dataset_converted_externally_to_rlds
+# Action normalization uses the DATASET's own q01/q99 statistics (assembly
+# norm_stats) — the same semantics as upstream OpenVLA fine-tuning, which
+# computes dataset statistics at train time. The dataset must ship quantile
+# stats (meta/stats.json with q01/q99); no unnorm_key needs to be configured.
 
 data:
   path: data/banana
