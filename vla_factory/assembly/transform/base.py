@@ -56,6 +56,9 @@ class PlanContext:
     # Language fallbacks resolved by the caller (recipe / controlled override).
     default_task: str | None = None
     tokenizer_repo: str | None = None
+    # Data camera feeding the model's primary slot (resolved camera_mapping);
+    # steps that read one canonical image address it by this key.
+    primary_camera: str | None = None
 
 
 class TransformStep(ABC):

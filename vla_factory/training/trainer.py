@@ -98,7 +98,12 @@ class VLATrainer(Trainer):
         """Merge auxiliary loss metrics into the log dict."""
         if hasattr(self, "_last_loss_dict") and self._last_loss_dict:
             logs.update(self._last_loss_dict)
-        super().log(logs, start_time=start_time)
+        # Trainer.log(start_time=...) was added after transformers 4.40 (the
+        # OpenVLA venv); probe the signature like build_training_args.
+        if "start_time" in inspect.signature(super().log).parameters:
+            super().log(logs, start_time=start_time)
+        else:
+            super().log(logs)
 
     def create_optimizer(self):
         """Support lr_backbone: backbone parameters use a separate (lower) LR."""
@@ -146,13 +151,23 @@ def build_training_args(recipe: TrainRecipe) -> TrainingArguments:
         logging_steps=recipe.output.logging_steps,
         save_steps=recipe.output.save_steps,
         save_total_limit=recipe.output.save_total_limit,
-        eval_strategy="no",
+        # eval_strategy is set conditionally below (signature probe for
+        # transformers <4.41 compatibility).
         dataloader_drop_last=True,
         dataloader_num_workers=training.num_workers,
         remove_unused_columns=False,
         report_to=_resolve_report_to(recipe.output.report_to),
         logging_nan_inf_filter=False,
     )
+    # eval_strategy was renamed from evaluation_strategy in transformers 4.41;
+    # the OpenVLA venv (transformers==4.40.1) predates the rename. Same
+    # signature-probe pattern as save_safetensors below.
+    if "eval_strategy" in inspect.signature(
+        TrainingArguments.__init__
+    ).parameters:
+        ta_kwargs["eval_strategy"] = "no"
+    else:
+        ta_kwargs["evaluation_strategy"] = "no"
     if "save_safetensors" in inspect.signature(
         TrainingArguments.__init__
     ).parameters:

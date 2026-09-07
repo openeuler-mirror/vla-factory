@@ -247,6 +247,22 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     for item in batch:
         keys.update(item.keys())
 
+    # Collect raw task strings (skipped by torch.stack below) before they are
+    # dropped, so language-conditioned adapters that build their own prompt
+    # (OpenVLA) can receive them via Observation.task. Keep None entries so
+    # the list stays batch-aligned: a mixed dataset (some frames annotated,
+    # some not) must not shorten the list, or per-item indexing in adapters
+    # (observation.task[i]) runs out of range. `or None` keeps the all-None
+    # case indistinguishable from "no language" (task=None).
+    if "task" not in keys:
+        tasks = None
+    else:
+        # Batch-aligned: keep None placeholders for unannotated frames so
+        # adapters can index observation.task[i] safely (mixed datasets).
+        tasks = [item.get("task") for item in batch]
+        if all(t is None for t in tasks):
+            tasks = None
+
     stacked: dict[str, torch.Tensor | None] = {}
     for key in keys:
         values = [item[key] for item in batch if item.get(key) is not None]
@@ -278,8 +294,11 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         images=images,
         image_masks=image_masks,
         state=stacked.get("state"),
+        task=tasks,
         tokenized_prompt=stacked.get("tokenized_prompt"),
         tokenized_prompt_mask=stacked.get("tokenized_prompt_mask"),
+        token_loss_mask=stacked.get("token_loss_mask"),
+        pixel_values=stacked.get("pixel_values"),
     )
 
     return {

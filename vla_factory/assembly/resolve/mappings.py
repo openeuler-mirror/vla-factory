@@ -196,8 +196,10 @@ def resolve_language_mapping(
 ) -> LanguageMapping:
     """Task text → model prompt.
 
-    Runtime fallback policy is compiled into ``task_tokenize``; this mapping
-    records only whether its input relationship came from data or an override.
+    Runtime fallback policy is compiled into the task transforms
+    (``task_tokenize``; ``inject_default_task`` for prompt-free models); this
+    mapping records only whether its input relationship came from data or an
+    override.
     """
     if not metadata.requires_prompt:
         # Nothing to map (ACT takes no prompt). Resolved, deliberately empty.

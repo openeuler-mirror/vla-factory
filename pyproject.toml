@@ -95,6 +95,11 @@ robotwin = ["h5py>=3.0"]
 # installable across that range; on an older torch, pin the matching row
 # explicitly on top (e.g. `pip install torchcodec==0.4.0`).
 torchcodec = ["torchcodec>=0.4.0"]
+# OpenVLA (Llama-2 7B + Prismatic fused DINOv2/SigLIP + action head) is
+# vendored via `bash scripts/install.sh --model openvla` into its own venv —
+# upstream prismatic-vlm is not on PyPI and needs transformers<5, so it is NOT
+# installed as a plain extra here. This extra is metadata only.
+openvla = []
 all = [
     "lerobot==0.4.4",
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",

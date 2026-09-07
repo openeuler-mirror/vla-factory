@@ -400,7 +400,11 @@ def _resolve_parent(model: nn.Module, dotted_path: str):
     upstream's own structure (e.g. ``paligemma_with_expert.paligemma.``).
     """
     parent, leaf = _walk(model, dotted_path)
-    if parent is not None:
+    # A wrapper may expose a same-named prefix without the leaf (e.g. our
+    # OpenVLA wrapper holds the upstream model at ``self.model`` and has no
+    # ``vision_backbone`` attribute itself); fall through to the inner-model
+    # walk in that case instead of reporting a hit with a missing leaf.
+    if parent is not None and leaf is not None:
         return parent, leaf
     inner = getattr(model, "model", None)
     if isinstance(inner, nn.Module):
@@ -510,7 +514,9 @@ def _merge_lora_layer_chunked(layer, adapter: str, chunk_rows: int = 256) -> boo
             delta = torch.mm(weight_b[start:end], weight_a) * scaling
             base.weight.data[start:end] += delta.to(base.weight.dtype)
 
-        if layer.lora_bias[adapter]:
+        # lora_bias was added after peft 0.11 (the OpenVLA venv pin); with it
+        # absent, LoRA bias is never enabled, so the bias fold is a no-op.
+        if getattr(layer, "lora_bias", None) and layer.lora_bias[adapter]:
             if getattr(base, "bias", None) is None:
                 raise RuntimeError(
                     "lora_bias=True but base layer has no bias; cannot merge."

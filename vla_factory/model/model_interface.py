@@ -75,6 +75,14 @@ class ModelMetadata:
         "from_scratch",
     ] = "pretrained_finetune"
 
+    # ── Inference / checkpoint contract ──
+    # True when the adapter must read model structure + processors from the
+    # base checkpoint at inference time (HF AutoModel/AutoProcessor — OpenVLA),
+    # i.e. the saved final/model.pt alone cannot reconstruct the model.
+    # InferenceEngine keeps recipe.model.path in that case; other adapters get
+    # path=None (checkpoint state_dict is complete) per its default contract.
+    inference_needs_base_checkpoint: bool = False
+
     # ── Trainable components (name → parameter-name patterns) ──
     components: dict[str, list[str]] = field(default_factory=dict)
 
@@ -86,8 +94,6 @@ class ModelMetadata:
     support_full: bool = True
     support_freeze: bool = True
 
-
-
     # ── Dependencies / install ──
     install_hint: str = ""   # e.g. 'pip install -e ".[act]"'; "" = no extra needed
 
@@ -98,7 +104,7 @@ class ModelMetadata:
     # Image contract. The resolver derives image transforms from these facts;
     # recipes never carry or override a transform step list.
     image_input_range: tuple[float, float] | None = None    # e.g. (-1.0, 1.0)
-    image_normalize_mode: str | None = None                 # "imagenet" | None
+    image_normalize_mode: str | None = None                 # "imagenet" | "checkpoint_processor" | None
     image_layout: Literal["CHW", "HWC"] | None = None
     image_resize_mode: Literal["stretch", "pad"] | None = None
     # Language contract.
@@ -141,6 +147,8 @@ class ModelMetadata:
         "vector_normalization", "vector_normalization_eps", "requires_prompt",
         "language_template", "tokenizer_repo", "tokenizer_max_length",
         "prompt_includes_state", "control_mode_pref", "expected_hz", "history_frames",
+        # Checkpoint contract: what inference must be able to read back.
+        "inference_needs_base_checkpoint",
     )
 
     @classmethod
@@ -166,10 +174,22 @@ class Observation(Generic[T]):
     images: dict[str, T]
     image_masks: dict[str, T]
     state: T | None = None
+    # Raw per-sample task text (list[str], one entry per batch element). Pure
+    # transport for models that read the string itself (OpenVLA builds its own
+    # prompt): the fallback chain (sample["task"] > default_task > "") is
+    # resolved framework-side — task_tokenize for prompt models,
+    # inject_default_task for prompt-free ones — so adapters find final
+    # strings here, or None when the dataset declares no language at all.
+    task: list[str] | None = None
     tokenized_prompt: T | None = None
     tokenized_prompt_mask: T | None = None
     token_ar_mask: T | None = None
     token_loss_mask: T | None = None
+    # Model-ready image tensors produced plan-side by the checkpoint's own
+    # processor (image_normalize_mode="checkpoint_processor"). Raw camera
+    # images stay in ``images``; this carries the processor's output contract
+    # (e.g. OpenVLA's fused-backbone channel stack) to the adapter.
+    pixel_values: T | None = None
 
     def to(self, *args, **kwargs):
         """Move every present tensor to a device or dtype."""
@@ -180,6 +200,7 @@ class Observation(Generic[T]):
                 for key, value in self.image_masks.items()
             },
             state=self.state.to(*args, **kwargs) if self.state is not None else None,
+            task=self.task,
             tokenized_prompt=(
                 self.tokenized_prompt.to(*args, **kwargs)
                 if self.tokenized_prompt is not None else None
@@ -195,6 +216,10 @@ class Observation(Generic[T]):
             token_loss_mask=(
                 self.token_loss_mask.to(*args, **kwargs)
                 if self.token_loss_mask is not None else None
+            ),
+            pixel_values=(
+                self.pixel_values.to(*args, **kwargs)
+                if self.pixel_values is not None else None
             ),
         )
 

@@ -21,7 +21,8 @@ from .normalize import Normalize, NormalizeVector, UnnormalizeActionStep, IMAGEN
 from .resize_images import ResizeImages
 from .pad_dimensions import PadDimensions, UnpadAction
 from .images import ImageToFloat, ImageLayout, ImageNormalize
-from .task_tokenize import TaskTokenize
+from .task_tokenize import TaskTokenize, InjectDefaultTask, AssembleTokenActionSequence
+from .checkpoint_image import CheckpointImageTransform
 
 __all__ = [
     "TransformStep",
@@ -41,6 +42,9 @@ __all__ = [
     "ImageLayout",
     "ImageNormalize",
     "TaskTokenize",
+    "InjectDefaultTask",
+    "AssembleTokenActionSequence",
+    "CheckpointImageTransform",
     "IMAGENET_MEAN",
     "IMAGENET_STD",
 ]

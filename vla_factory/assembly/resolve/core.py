@@ -261,8 +261,19 @@ def resolve_from_facts(
     )
 
     # Plan pipelines against that target interface.
+    primary_camera = next(
+        (entry["data_source"] for entry in camera_mapping.entries
+         if entry["model_slot"] == "primary" and entry.get("data_source")),
+        None,
+    )
+    if primary_camera is None and len(schema.cameras_entries) == 1:
+        # Single-camera datasets are unambiguous (the same fallback the
+        # adapter held at runtime): the lone camera feeds the primary slot
+        # even without a semantic-tag-based inference.
+        primary_camera = schema.cameras_entries[0].key
     plan_ctx = pipelines.plan_context(
         schema, norm_stats, metadata, io_spec, overrides.default_task, model_path,
+        primary_camera=primary_camera,
     )
     data_to_model = pipelines.plan_data_to_model(plan_ctx)
     model_to_robot = pipelines.plan_model_to_robot(data_to_model, plan_ctx)

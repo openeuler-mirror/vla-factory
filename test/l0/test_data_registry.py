@@ -104,3 +104,83 @@ def test_codec_is_discovered_from_external_entry_point(monkeypatch):
     )
 
     assert isinstance(CodecRegistry.create("_plugin-codec"), _Codec)
+def test_feature_names_normalisation():
+    # Regression for the real-data finding: lerobot/utokyo_xarm_pick_and_place
+    # (a real HF lerobot-v3 dataset) declares feature names as a NESTED dict
+    # {"motors": ["motor_0", ...]}, while synthetic fixtures use a flat list.
+    # _feature_names must accept both; anything else yields [] (dimensions get
+    # name=None and resolution fails loudly on canonical-name validation).
+    from vla_factory.data.reader.lerobot_v3 import _feature_names
+
+    # Flat list (synthetic fixtures / simple datasets).
+    assert _feature_names(["dx", "dy", "dz"]) == ["dx", "dy", "dz"]
+
+    # Nested dict (real HF lerobot-v3 layout).
+    assert _feature_names(
+        {"motors": ["motor_0", "motor_1", "motor_2"]}
+    ) == ["motor_0", "motor_1", "motor_2"]
+
+    # Empty / unknown shapes -> [], never crash.
+    assert _feature_names(None) == []
+    assert _feature_names({}) == []
+    assert _feature_names({"motors": "not-a-list"}) == []
+
+
+def test_get_schema_accepts_nested_dict_names(tmp_path):
+    """End-to-end: a real-style info.json with nested names resolves dims."""
+    import json
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from vla_factory.data.reader.registry import ReaderRegistry
+
+    (tmp_path / "meta").mkdir(parents=True)
+    (tmp_path / "data" / "chunk-000").mkdir(parents=True)
+
+    info = {
+        "codebase_version": "v3.0",
+        "robot_type": "xarm",
+        "total_frames": 10,
+        "total_episodes": 1,
+        "fps": 10,
+        "features": {
+            "observation.images.image": {
+                "dtype": "video", "shape": [10, 224, 224, 3],
+                "video_info": {"video.height": 224, "video.width": 224,
+                               "video.channels": 3},
+            },
+            "observation.state": {
+                "dtype": "float32", "shape": [8],
+                "names": {"motors": [f"motor_{i}" for i in range(8)]},
+            },
+            "action": {
+                "dtype": "float32", "shape": [7],
+                "names": {"motors": [f"motor_{i}" for i in range(7)]},
+            },
+        },
+    }
+    (tmp_path / "meta" / "info.json").write_text(json.dumps(info))
+
+    df = pd.DataFrame({
+        "observation.state": [list(range(8))],
+        "action": [list(range(7))],
+        "episode_index": [0],
+        "frame_index": [0],
+        "timestamp": [0.0],
+        "index": [0],
+        "task_index": [0],
+    })
+    pq.write_table(
+        pa.Table.from_pandas(df),
+        tmp_path / "data" / "chunk-000" / "file-000.parquet",
+    )
+
+    reader = ReaderRegistry.create("lerobot-v3")
+    schema = reader.get_schema(tmp_path)
+    assert [d.name for d in schema.state_dims] == [f"motor_{i}" for i in range(8)]
+    assert [d.name for d in schema.action_dims] == [f"motor_{i}" for i in range(7)]
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

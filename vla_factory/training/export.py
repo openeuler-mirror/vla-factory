@@ -34,13 +34,17 @@ def export_checkpoint(checkpoint: str | Path, output_dir: str | Path) -> Path:
     assembly, recipe = load_inference_metadata(checkpoint)
     weights = resolve_checkpoint_path(checkpoint)
     weight_format = checkpoint_format(weights)
-    is_delta = weight_format == "lora_delta"
-    if is_delta and not recipe.model.path:
-        raise ValueError("Delta checkpoint requires model.path in its saved recipe")
-    if not is_delta:
-        recipe = replace(recipe, model=replace(recipe.model, path=None))
-
     entry = get_entry(recipe.model.name)
+    is_delta = weight_format == "lora_delta"
+    # A delta checkpoint needs its declared base to merge into; adapters that
+    # reconstruct structure + processors from the base checkpoint (declared
+    # via inference_needs_base_checkpoint) keep the path in the exported
+    # recipe as well — their inference cannot run without it.
+    if is_delta:
+        if not recipe.model.path:
+            raise ValueError("Delta checkpoint requires model.path in its saved recipe")
+    elif not entry.metadata.inference_needs_base_checkpoint:
+        recipe = replace(recipe, model=replace(recipe.model, path=None))
     model = entry.factory(recipe=recipe, assembly=assembly)
     strategy = get_strategy(recipe.finetuning.strategy)
     if weight_format in {"lora_delta", "lora_wrapped_full"} or (

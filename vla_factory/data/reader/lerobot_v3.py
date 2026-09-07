@@ -183,6 +183,23 @@ def _span_error(g: int, cam_key: str, spans: list[_VideoFileSpan]) -> ValueError
     )
 
 
+def _feature_names(names) -> list:
+    """Normalise feature name declarations to a flat list.
+
+    lerobot-v3 info.json uses a flat list (``["dx", "dy", ...]``) or a nested
+    dict (``{"motors": ["motor_0", ...]}`` — the shape used by real HF
+    datasets). Both are accepted; nested dicts unwrap their first value list.
+    """
+    if isinstance(names, list):
+        return names
+    if isinstance(names, dict) and names:
+        # Canonical lerobot layout: a single {group: [names]} mapping.
+        first_value = next(iter(names.values()))
+        if isinstance(first_value, list):
+            return first_value
+    return []
+
+
 @ReaderRegistry.register("lerobot-v3", aliases=("lerobot_v3",))
 class LeRobotV3Reader:
     """Read LeRobot v3 datasets (parquet + MP4)."""
@@ -229,7 +246,7 @@ class LeRobotV3Reader:
 
             if key == "action":
                 dim = shape[0] if shape else 0
-                name_list = list(names) if isinstance(names, list) else []
+                name_list = _feature_names(names)
                 for i in range(dim):
                     nm = name_list[i] if i < len(name_list) else None
                     mode = infer_action_mode(nm) if nm else None
@@ -241,7 +258,7 @@ class LeRobotV3Reader:
                     ))
             elif "state" in key.lower() and dtype != "video":
                 dim = shape[0] if shape else 0
-                name_list = list(names) if isinstance(names, list) else []
+                name_list = _feature_names(names)
                 for i in range(dim):
                     nm = name_list[i] if i < len(name_list) else None
                     state_dims.append(StateDim(name=nm, source_field=key))

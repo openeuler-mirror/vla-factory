@@ -83,15 +83,22 @@ class InferenceEngine:
         self.schema = assembly.schema
         self.norm_stats = assembly.norm_stats
 
+        entry = get_entry(recipe.model.name)
         checkpoint_file = resolve_checkpoint_path(checkpoint_path)
         weight_format = checkpoint_format(checkpoint_file)
         is_delta = weight_format == "lora_delta"
-        # Full checkpoints are self-contained; a delta checkpoint must first
-        # construct its declared base model.
-        if not is_delta:
+        # A delta checkpoint must first construct its declared base model, so
+        # its path is always required. Full checkpoints are self-contained —
+        # except for adapters that reconstruct structure + processors from the
+        # base checkpoint (OpenVLA: HF AutoModel/AutoProcessor), which declare
+        # inference_needs_base_checkpoint and keep the path.
+        if is_delta:
+            if not recipe.model.path:
+                raise ValueError(
+                    "Delta checkpoint requires model.path in its saved recipe"
+                )
+        elif not entry.metadata.inference_needs_base_checkpoint:
             recipe = replace(recipe, model=replace(recipe.model, path=None))
-        elif not recipe.model.path:
-            raise ValueError("Delta checkpoint requires model.path in its saved recipe")
         self.recipe = recipe
 
         self.state_keys, self.action_keys = resolve_vector_keys(self.schema)
@@ -102,7 +109,6 @@ class InferenceEngine:
             )
         self.camera_keys = tuple(io_spec.cameras)
 
-        entry = get_entry(recipe.model.name)
         assembly.check_model_compatibility(entry.metadata)
         model = entry.factory(recipe=recipe, assembly=assembly)
         # Trainer checkpoints retain strategy-owned wrappers so training can
@@ -229,12 +235,15 @@ class InferenceEngine:
             transformed.get("tokenized_prompt_mask")
         )
 
+        task = transformed.get("task")
         return Observation(
             images=images,
             image_masks=image_masks,
             state=state_tensor,
+            task=[task] if task is not None else None,
             tokenized_prompt=prompt_tensor,
             tokenized_prompt_mask=prompt_mask_tensor,
+            pixel_values=self._optional_tensor(transformed.get("pixel_values")),
         )
 
     def _optional_tensor(self, value: Any) -> torch.Tensor | None:

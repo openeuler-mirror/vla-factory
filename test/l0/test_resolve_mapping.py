@@ -102,6 +102,149 @@ class TestGoldenRealData:
             ("unnormalize_action", {"stats_ref": "norm_stats", "eps": 1e-8}),
         ]
 
+    def test_default_task_chain_is_planned_not_mirrored(self, schema, norm_stats):
+        """The task fallback chain lives once, in the task transforms: a
+        prompt-free model plans ``inject_default_task`` only when a
+        ``default_task`` override exists (the data link rides the untouched
+        ``sample["task"]``), and a prompt model never plans it — its
+        ``task_tokenize`` already owns the chain."""
+        # Prompt-free (act), no override: nothing to materialize, no step.
+        plain = resolve_assembly(schema, norm_stats, _metadata("act"))
+        assert "inject_default_task" not in dict(_calls(plain.data_to_model))
+
+        # Prompt-free (act) + override: the override link appends as the last
+        # input step, and being fill-only it declares no inverse.
+        over = resolve_assembly(
+            schema, norm_stats, _metadata("act"),
+            overrides=AssemblyOverrides(default_task="pick"),
+        )
+        assert _calls(over.data_to_model)[-1] == (
+            "inject_default_task", {"default_task": "pick"},
+        )
+        assert "inject_default_task" not in dict(_calls(over.model_to_robot))
+
+        # Prompt model (pi0) + override: task_tokenize owns the chain.
+        a = resolve_assembly(
+            schema, norm_stats, _metadata("pi0"),
+            overrides=AssemblyOverrides(default_task="pick"),
+        )
+        types = dict(_calls(a.data_to_model))
+        assert "inject_default_task" not in types
+        assert "task_tokenize" in types
+
+    def test_inject_default_task_step_fills_only_missing(self):
+        """The step materializes the override link with TaskTokenize's link
+        semantics: ``is None`` — a present data link wins even if empty."""
+        from vla_factory.assembly.transform.task_tokenize import InjectDefaultTask
+
+        step = InjectDefaultTask(default_task="pick apple")
+        assert step({})["task"] == "pick apple"
+        assert step({"task": "from dataset"})["task"] == "from dataset"
+        assert step({"task": ""})["task"] == ""
+
+    def test_assemble_token_action_sequence_step(self):
+        """Training: question + discretized answer, supervision on the last
+        dim+1 tokens; inference (no actions in the sample): question only and
+        no loss mask — the answer is what the model generates."""
+        from vla_factory.assembly.transform.task_tokenize import (
+            AssembleTokenActionSequence,
+        )
+
+        class FakeTokenizer:
+            pad_token_id = 0
+
+            def __call__(self, text, add_special_tokens=True):
+                ids = [7] + [ord(c) % 90 + 10 for c in text]
+                return type("T", (), {"input_ids": ids})
+
+        class FakeActionTokenizer:
+            def __call__(self, action):
+                assert action.shape == (3,)
+                return "<a> <b> <c>"
+
+        class FakeBuilder:
+            def __init__(self, family):
+                assert family == "openvla"
+                self.turns = []
+
+            def add_turn(self, role, value):
+                self.turns.append((role, value))
+
+            def get_prompt(self):
+                return " ".join(value for _, value in self.turns)
+
+        step = AssembleTokenActionSequence(
+            max_length=64, template="Do: {task}?",
+        )
+        step._tokenizer = FakeTokenizer()
+        step._action_tokenizer = FakeActionTokenizer()
+        step._builder_fn = FakeBuilder
+
+        train = step({"task": "push", "actions": [[0.1, 0.2, 0.3]]})
+        assert train["tokenized_prompt"].shape == (64,)  # padded to the budget
+        real = int(train["tokenized_prompt_mask"].sum())
+        lm = train["token_loss_mask"]
+        assert int(lm.sum()) == 4                        # 3 action tokens + stop
+        assert lm[: real - 4].sum() == 0 and lm[real:].sum() == 0
+
+        infer = step({"task": "push"})
+        assert "token_loss_mask" not in infer            # the answer is generated
+        real_infer = int(infer["tokenized_prompt_mask"].sum())
+        assert real_infer < real                         # the answer turn is absent
+
+    def test_openvla_plans_sequence_assembly(self):
+        """The prompt-free token-action model assembles its sequence in the
+        plan: normalize (dataset stats) → inject_default_task (override link)
+        → assemble (question + answer, checkpoint tokenizer). Models without a
+        language_template (ACT) plan neither step."""
+        from vla_factory.model.registry import list_entries
+
+        schema = make_schema(
+            state_dim=6, action_dim=7, cameras=("front",), fps=30,
+            has_language=False,
+        )
+        stats = NormStats(
+            state=FeatureStats(q01=[0.0] * 6, q99=[1.0] * 6),
+            action=FeatureStats(q01=[0.0] * 7, q99=[1.0] * 7),
+        )
+        a = resolve_assembly(
+            schema, stats, list_entries()["openvla-7b"],
+            model_path="/ckpts/openvla-7b",  # tokenizer source for the assemble step
+        )
+        types = [call.type for call in a.data_to_model.calls]
+        assert types.index("normalize_vector") < types.index(
+            "assemble_token_action_sequence"
+        )
+        args = dict(_calls(a.data_to_model))["assemble_token_action_sequence"]
+        assert args["template"] == "What action should the robot take to {task}?"
+        assert args["max_length"] == 48
+
+        # Without an override the chain's data link suffices (the assemble
+        # step reads sample["task"] directly); inject_default_task only
+        # materializes under default_task — between normalize and assemble.
+        assert "inject_default_task" not in types
+        over = resolve_assembly(
+            schema, stats, list_entries()["openvla-7b"],
+            overrides=AssemblyOverrides(default_task="pick"),
+            model_path="/ckpts/openvla-7b",
+        )
+        otypes = [call.type for call in over.data_to_model.calls]
+        assert otypes.index("inject_default_task") < otypes.index(
+            "assemble_token_action_sequence"
+        )
+
+        plain = resolve_assembly(
+            schema,
+            NormStats(
+                state=FeatureStats(mean=[0.0] * 6, std=[1.0] * 6),
+                action=FeatureStats(mean=[0.0] * 7, std=[1.0] * 7),
+            ),
+            _metadata("act"),  # ACT declares mean_std — feed the stats it requires
+        )
+        assert "assemble_token_action_sequence" not in {
+            call.type for call in plain.data_to_model.calls
+        }
+
     def test_pi0_camera_override_is_the_complete_mapping(self, schema, norm_stats):
         """``examples/pi0_lora.yaml`` maps two of pi0's three slots and
         documents the third as intentionally unmapped. The override must

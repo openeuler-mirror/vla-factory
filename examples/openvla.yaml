@@ -1,0 +1,59 @@
+# OpenVLA (openvla-7b / openvla-7b-oft) fine-tuning recipe.
+#
+# As written it runs LoRA (the portable path for a 7B model). For full
+# fine-tuning, set finetuning.strategy: full and drop finetuning.config
+# (needs ~48+ GB VRAM; lower training.lr to ~2e-5).
+#
+# LoRA uses peft target_modules="all-linear" (the LoraConfig default, forwarded
+# verbatim to peft), matching OpenVLA's official recipe.
+#
+# OpenVLA's action space is tokenized: raw 7-DoF actions are normalised to
+# [-1, 1] via the dataset's q01/q99 (BOUNDS_Q99) and discretised to 256 bins by
+# the adapter's upstream ActionTokenizer. The adapter also builds the chat
+# prompt and preprocesses the image, so the resolved transforms are empty.
+#
+# Action normalization binds to the dataset's own q01/q99 statistics (see
+# below); nothing needs to be selected or configured for it.
+
+model:
+  name: openvla-7b              # or openvla-7b-oft
+  path: openvla/openvla-7b      # base checkpoint: HF id or local dir (use local dir on offline hosts)
+
+overrides:
+  camera_mapping:
+    primary: front             # OpenVLA single RGB camera ← dataset camera
+  default_task: "pick up the object"
+
+# Action normalization uses the DATASET's own q01/q99 statistics (assembly
+# norm_stats) — the same semantics as upstream OpenVLA fine-tuning, which
+# computes dataset statistics at train time. The dataset must ship quantile
+# stats (meta/stats.json with q01/q99); no unnorm_key needs to be configured.
+
+data:
+  path: data/banana
+  format: lerobot-v3
+
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    lora_dropout: 0.0
+    init_lora_weights: gaussian
+    components: ["llm"]          # LoRA on the Llama-2 backbone (target_modules: "all-linear")
+
+training:
+  backend: pytorch
+  lr: 5.0e-5                     # LoRA lr (⚠️ tune); full FT → ~2e-5
+  batch_size: 1
+  total_steps: 3                 # smoke: 3 optimizer steps
+  gradient_checkpointing: true
+  num_workers: 0
+
+output:
+  output_dir: outputs/openvla_smoke
+  report_to: none
+  logging_steps: 1
+  save_steps: 1000
+  save_total_limit: 1
+  overwrite_output_dir: true
