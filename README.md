@@ -124,6 +124,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | `examples/act_lekiwi.yaml` | Train lekiwi from scratch |
 | `examples/pi0.yaml` | openpi pi0 family smoke — pi0 LoRA by default; commented switches for pi05 and full finetune |
 | `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA reference protocol |
+| `examples/openvla.yaml` | OpenVLA / OFT smoke — LoRA by default; normalization, sequence assembly and the checkpoint image processor run plan-side |
 | `examples/reference.yaml` | Fully annotated template |
 
 ---
@@ -139,6 +140,6 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ⬜ **π-FAST** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ⬜ **GR00T / OpenVLA** | | |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | ✅ **LoRA SFT** | ✅ **LeRobot** |
 
 ---

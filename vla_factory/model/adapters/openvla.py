@@ -122,10 +122,6 @@ class OpenVLAModelWrapper(nn.Module):
     def _dtype(self):
         return next(self.model.parameters()).dtype
 
-    @property
-    def _dtype(self):
-        return next(self.model.parameters()).dtype
-
     # ── Protocol surface (framework vocabulary) ───────────────────
 
     def forward(self, observation, actions, action_is_pad=None):
