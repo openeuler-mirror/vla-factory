@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -53,8 +54,8 @@ def test_metadata():
     assert meta.support_full is True
     assert meta.support_freeze is True
     assert "llm" in meta.components and "vision_encoder" in meta.components
-    # Contract visibility: the checkpoint's instruction format, declared
-    # read-only (no pipeline step consumes it for this prompt-free model).
+    # Contract visibility: the checkpoint's instruction format, consumed by
+    # the plan's assemble_token_action_sequence step.
     assert meta.language_template == "What action should the robot take to {task}?"
     # Action normalization runs in the plan (normalize_vector, quantile over
     # the dataset's own q01/q99) — same semantics as upstream fine-tuning.
@@ -93,7 +94,10 @@ def test_oft_and_base_assembly_resolves():
     )
     for name in ("openvla-7b", "openvla-7b-oft"):
         meta = get_entry(name).metadata
-        assembly = resolve_assembly(schema, _quantile_stats(), meta)
+        assembly = resolve_assembly(
+            schema, _quantile_stats(), meta,
+            model_path="/ckpts/openvla-7b",  # tokenizer source for the assemble step
+        )
         assert assembly.model_io_spec.action_dim == 7
         assert assembly.model_io_spec.requires_language is False
 
@@ -209,94 +213,15 @@ def test_lora_forwards_target_modules_from_config(monkeypatch):
 
 
 
-def test_adapter_build_training_instance():
-    from vla_factory.model.model_interface import Observation
-    from vla_factory.model.adapters.openvla import IGNORE_INDEX, OpenVLAModelWrapper
 
-    class FakePromptBuilder:
-        def __init__(self, family):
-            assert family == "openvla"
-            self.turns = []
-
-        def add_turn(self, role, value):
-            self.turns.append((role, value))
-
-        def get_prompt(self):
-            return "In: ...\nOut: "
-
-    class _TokOut:
-        input_ids = list(range(10))
-
-    class FakeTokenizer:
-        def __call__(self, text, add_special_tokens=True):
-            return _TokOut()
-
-    class FakeImageTransform:
-        def __call__(self, pil):
-            return torch.zeros(3, 224, 224)
-
-    class _IP:
-        apply_transform = FakeImageTransform()
-
-    class FakeProcessor:
-        tokenizer = FakeTokenizer()
-        image_processor = _IP()
-
-    class FakeActionTokenizer:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, action):
-            self.calls.append(action)
-            return "<act>"
-
-    class _LossOut:
-        def __init__(self):
-            self.loss = torch.tensor(1.0)
-
-    class FakeModel:
-        def __init__(self):
-            # Patch through the collator'd batch to avoid touching upstream,
-            # but record what _build_training_instance produced.
-            self.last_batch = None
-
-        def get_action_stats(self, k):
-            return {"q01": [0.0] * 7, "q99": [1.0] * 7}
-
-        def parameters(self):
-            return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
-
-        def forward(self, **batch):
-            self.last_batch = batch
-            return _LossOut()
-
-        def __call__(self, **batch):
-            return self.forward(**batch)
-
-    at = FakeActionTokenizer()
-    w = OpenVLAModelWrapper(FakeModel(), FakeProcessor(), at, FakePromptBuilder, None)
-    obs = Observation(
-        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
-        image_masks={"front": torch.ones(1, dtype=torch.bool)},
-        task=["pick apple"],
+def test_checkpoint_image_transform_planning_and_step():
+    # The checkpoint's own processor owns the image contract plan-side: the
+    # plan addresses the resolved primary camera, and the step converts that
+    # camera's raw HWC uint8 through the processor. Wrong/missing camera
+    # mapping fails at resolve time, not silently.
+    from vla_factory.assembly.transform.checkpoint_image import (
+        CheckpointImageTransform,
     )
-    inst = w._build_training_instance("pick apple", torch.zeros(7), obs, 0)
-
-    assert inst["input_ids"].tolist() == list(range(10))
-    # Only the last (len(action) + 1) = 8 positions carry a loss; prompt masked.
-    assert inst["labels"][:2].tolist() == [IGNORE_INDEX, IGNORE_INDEX]
-    assert inst["labels"][2:].tolist() == list(range(2, 10))
-    assert tuple(inst["pixel_values"].shape) == (3, 224, 224)
-    assert len(at.calls) == 1 and torch.allclose(at.calls[0], torch.zeros(7))
-
-
-def test_camera_mapping_selects_primary_camera():
-    # Review fix #2: _image_to_pixel_values must honour the resolved
-    # camera_mapping (primary slot -> data camera) instead of silently taking
-    # the first camera. Build a real assembly over a two-camera schema with
-    # overrides.camera_mapping.primary: front and check the wrapper resolves
-    # the front image.
-    from vla_factory.model.adapters.openvla import OpenVLAModelWrapper
 
     entry = get_entry("openvla-7b")
     schema = make_schema(
@@ -308,66 +233,44 @@ def test_camera_mapping_selects_primary_camera():
     assembly = resolve_assembly(
         schema, _quantile_stats(), entry.metadata,
         overrides=AssemblyOverrides(camera_mapping={"primary": "front"}),
+        model_path="/ckpts/openvla-7b",
     )
-    assert (assembly.camera_mapping.entries[0]["model_slot"],
-            assembly.camera_mapping.entries[0]["data_source"]) == ("primary", "front")
+    args = {c.type: c.args for c in assembly.data_to_model.calls}
+    assert "resize_images" not in args  # the processor owns geometry
+    assert args["checkpoint_image_transform"]["source_key"] == "images.front"
+    assert args["checkpoint_image_transform"]["repo"] == "/ckpts/openvla-7b"
 
-    class FakeImageTransform:
-        def __call__(self, pil):
-            return torch.zeros(3, 224, 224)
+    # Unresolved primary on a multi-camera dataset -> resolution fails loudly
+    # (the planner demands an unambiguous primary camera).
+    from vla_factory.assembly.resolve import ResolutionError
 
-    class _IP:
-        apply_transform = FakeImageTransform()
+    with pytest.raises((ResolutionError, ValueError)):
+        resolve_assembly(
+            schema, _quantile_stats(), entry.metadata,
+            model_path="/ckpts/openvla-7b",
+        )
+
+    # Step: reads the addressed camera key and runs the checkpoint processor.
+    recorded = {}
 
     class FakeProcessor:
-        tokenizer = None
-        image_processor = _IP()
+        @staticmethod
+        def apply_transform(pil):
+            recorded["size"] = pil.size
+            return torch.zeros(6, 224, 224)
 
-    class FakeModel:
-        def parameters(self):
-            return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
+    import vla_factory.assembly.transform.checkpoint_image as ci
 
-    w = OpenVLAModelWrapper(
-        FakeModel(), FakeProcessor(), None, None, None,
-        camera_key="front",
-    )
-    obs = Observation(
-        images={
-            "wrist": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8),
-            "front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8),
-        },
-        image_masks={k: torch.ones(1, dtype=torch.bool) for k in ("wrist", "front")},
-        task=["pick apple"],
-    )
-    # Wrong camera key -> loud KeyError, not a silent first-camera pick.
-    w._camera_key = "wrist"
-    px = w._image_to_pixel_values(obs, 0)
-    assert tuple(px.shape) == (3, 224, 224)
-
-    # Missing declared camera -> KeyError.
-    w._camera_key = "missing"
+    original = ci._registered_image_processor
+    ci._registered_image_processor = lambda repo: FakeProcessor()
     try:
-        w._image_to_pixel_values(obs, 0)
-        raise AssertionError("expected KeyError for missing camera")
-    except KeyError:
-        pass
+        step = CheckpointImageTransform(source_key="images.front", repo="/ckpts")
+        out = step({"images.front": np.full((224, 224, 3), 200, dtype=np.uint8)})
+    finally:
+        ci._registered_image_processor = original
 
-    # Unmapped + multi-camera -> ValueError (ambiguity must fail loudly).
-    w._camera_key = None
-    try:
-        w._image_to_pixel_values(obs, 0)
-        raise AssertionError("expected ValueError for ambiguous cameras")
-    except ValueError:
-        pass
-
-    # Unmapped + single camera -> unambiguous fallback still works.
-    single = Observation(
-        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
-        image_masks={"front": torch.ones(1, dtype=torch.bool)},
-        task=["pick apple"],
-    )
-    w._camera_key = None
-    assert tuple(w._image_to_pixel_values(single, 0).shape) == (3, 224, 224)
+    assert recorded["size"] == (224, 224)  # HWC uint8 -> PIL, processor called
+    assert tuple(out["pixel_values"].shape) == (6, 224, 224)
 
 
 def test_dataset_quantiles_fail_fast():
@@ -413,51 +316,11 @@ def test_identity_stats_injection():
     assert mounted["q99"] == [1.0] * 7
 
 
-def test_task_text_is_pure_transport():
-    # Review round 2: the wrapper used to mirror the framework's
-    # sample["task"] > default_task > "" chain — a second answer that could
-    # drift from the framework's. The chain now lives only framework-side
-    # (task_tokenize for prompt models, inject_default_task for prompt-free
-    # ones); the adapter reads Observation.task as final transport. Going
-    # through compute_loss (the real path) verifies the call-site read.
-    from vla_factory.model.adapters.openvla import OpenVLAModelWrapper
-
-    class FakePromptBuilder:
-        def __init__(self, family):
-            assert family == "openvla"
-            self.turns = []
-
-        def add_turn(self, role, value):
-            self.turns.append((role, value))
-
-        def get_prompt(self):
-            return "In: ...\nOut: "
-
-    class _TokOut:
-        input_ids = list(range(10))
-
-    class FakeTokenizer:
-        def __call__(self, text, add_special_tokens=True):
-            return _TokOut()
-
-    class FakeImageTransform:
-        def __call__(self, pil):
-            return torch.zeros(3, 224, 224)
-
-    class _IP:
-        apply_transform = FakeImageTransform()
-
-    class FakeProcessor:
-        tokenizer = FakeTokenizer()
-        image_processor = _IP()
-
-    class FakeActionTokenizer:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, action):
-            self.calls.append(action)
-            return "<act>"
+def test_compute_loss_derives_labels_from_plan():
+    # The plan's assemble step delivers input ids + masks via Observation;
+    # the adapter derives HF labels from the supervision mask and forwards
+    # the assembled batch to the upstream model.
+    from vla_factory.model.adapters.openvla import IGNORE_INDEX, OpenVLAModelWrapper
 
     class _LossOut:
         def __init__(self):
@@ -465,12 +328,7 @@ def test_task_text_is_pure_transport():
 
     class FakeModel:
         def __init__(self):
-            # Patch through the collator'd batch to avoid touching upstream,
-            # but record what _build_training_instance produced.
             self.last_batch = None
-
-        def get_action_stats(self, k):
-            return {"q01": [0.0] * 7, "q99": [1.0] * 7}
 
         def parameters(self):
             return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
@@ -482,49 +340,62 @@ def test_task_text_is_pure_transport():
         def __call__(self, **batch):
             return self.forward(**batch)
 
-    class RecordingPromptBuilder(FakePromptBuilder):
-        human_turns = []
-
-        def add_turn(self, role, value):
-            if role == "human":
-                RecordingPromptBuilder.human_turns.append(value)
-            super().add_turn(role, value)
-
-    def _identity_collator(instances):
-        return {"instances": instances}
-
     model = FakeModel()
-    w = OpenVLAModelWrapper(
-        model, FakeProcessor(), FakeActionTokenizer(),
-        RecordingPromptBuilder, _identity_collator,
-    )
-    actions = torch.zeros(1, 1, 7)
-
-    # default_task no longer lives on the adapter: the wrapper is a pure
-    # transport reader, the chain is framework-side (inject_default_task).
-    assert not hasattr(w, "_default_task")
-
-    # Transport entry present -> it is the prompt text, verbatim.
-    obs2 = Observation(
-        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
-        image_masks={"front": torch.ones(1, dtype=torch.bool)},
-        task=["push red block"],
-    )
-    RecordingPromptBuilder.human_turns = []
-    w.compute_loss(obs2, actions)
-    assert any("push red block" in t for t in RecordingPromptBuilder.human_turns)
-
-    # Transport absent -> the chain's terminal "": empty instruction.
+    w = OpenVLAModelWrapper(model)
     obs = Observation(
         images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
         image_masks={"front": torch.ones(1, dtype=torch.bool)},
-        task=None,
+        tokenized_prompt=torch.tensor([[5, 6, 7, 8, 0, 0]]),
+        tokenized_prompt_mask=torch.tensor([[True, True, True, True, False, False]]),
+        token_loss_mask=torch.tensor([[False, False, False, True, False, False]]),
+        pixel_values=torch.zeros(1, 3, 224, 224),
     )
-    RecordingPromptBuilder.human_turns = []
-    w.compute_loss(obs, actions)
-    assert any("take to ?" in t for t in RecordingPromptBuilder.human_turns) or any(
-        "take to  ?" in t for t in RecordingPromptBuilder.human_turns
+    loss, logs = w.compute_loss(obs, torch.zeros(1, 1, 7))
+
+    assert loss.item() == 1.0 and logs["loss"] == 1.0
+    b = model.last_batch
+    # HF labels: real tokens where supervised, IGNORE_INDEX elsewhere.
+    assert b["labels"].tolist() == [[-100, -100, -100, 8, -100, -100]]
+    assert torch.equal(b["attention_mask"], obs.tokenized_prompt_mask)
+    assert tuple(b["pixel_values"].shape) == (1, 3, 224, 224)
+    assert IGNORE_INDEX == -100
+
+
+def test_predict_selects_unpadded_tokens():
+    # The assemble step pads to the declared budget; upstream predict_action
+    # expects the unpadded input, so the adapter selects real tokens via the
+    # attention mask before delegating.
+    from vla_factory.model.adapters.openvla import (
+        _FINETUNE_STATS_KEY,
+        OpenVLAModelWrapper,
     )
+
+    recorded = {}
+
+    class FakeModel:
+        def parameters(self):
+            return iter([torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))])
+
+        def predict_action(self, input_ids, unnorm_key, pixel_values=None):
+            recorded["input_ids"] = input_ids.clone()
+            recorded["key"] = unnorm_key
+            return torch.tensor([0.5, -0.5, 0.0, 0.25, 0.75, 0.1, 0.3])
+
+    w = OpenVLAModelWrapper(FakeModel())
+    obs = Observation(
+        images={"front": torch.randint(0, 255, (1, 224, 224, 3), dtype=torch.uint8)},
+        image_masks={"front": torch.ones(1, dtype=torch.bool)},
+        tokenized_prompt=torch.tensor([[5, 6, 7, 8, 0, 0]]),
+        tokenized_prompt_mask=torch.tensor([[True, True, True, True, False, False]]),
+        pixel_values=torch.zeros(3, 224, 224),
+    )
+    actions = w.predict_actions(obs)
+
+    # Real tokens only — padding stripped before the upstream call; the key
+    # addresses the identity stats the factory mounted.
+    assert recorded["input_ids"].tolist() == [[5, 6, 7, 8]]
+    assert recorded["key"] == _FINETUNE_STATS_KEY
+    assert tuple(actions.shape) == (1, 1, 7)
 
 
 if __name__ == "__main__":

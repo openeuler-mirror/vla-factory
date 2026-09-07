@@ -207,3 +207,111 @@ class InjectDefaultTask(TransformStep):
         # Only the override link needs materializing; with no default_task
         # configured the chain has nothing to add and the step is dropped.
         return {"default_task": ctx.default_task} if ctx.default_task else None
+
+
+@TransformRegistry.register("assemble_token_action_sequence")
+class AssembleTokenActionSequence(TransformStep):
+    """Token-action models: build the full training/inference token sequence.
+
+    By the time this step runs, ``sample["task"]`` holds the resolved
+    instruction (the dataset link, or the override link materialized by
+    :class:`InjectDefaultTask`) and ``sample["actions"]`` — present at
+    training time, absent at inference — are already normalized to [-1, 1]
+    by ``normalize_vector``. The step formats the model's instruction
+    template as the question turn, appends the discretized action tokens as
+    the answer turn (training only), tokenizes the joint sequence with the
+    checkpoint's own tokenizer, and pads to a fixed ``max_length`` so the
+    batch collator can stack. Emits:
+
+    - ``tokenized_prompt``: input ids (truncated/padded to ``max_length``)
+    - ``tokenized_prompt_mask``: attention mask (True = real token)
+    - ``token_loss_mask``: supervision positions (the action tokens + the
+      stop token), training only — at inference the answer is what the
+      model generates.
+
+    The upstream primitives (``ActionTokenizer``, ``PurePromptBuilder``) are
+    imported lazily: they are TF-free but live in the model-backend stack,
+    so the data layer only touches them inside model environments.
+    """
+
+    def __init__(self, tokenizer_repo=None, max_length: int = 48, template: str = "{task}"):
+        self.tokenizer_repo = tokenizer_repo
+        self.max_length = int(max_length)
+        self.template = template
+        self._tokenizer = None
+        self._action_tokenizer = None
+        self._builder_fn = None
+
+    def _ensure_components(self):
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_repo)
+            from prismatic.vla.action_tokenizer import ActionTokenizer
+
+            self._action_tokenizer = ActionTokenizer(self._tokenizer)
+            from prismatic.models.backbones.llm.prompting import PurePromptBuilder
+
+            self._builder_fn = PurePromptBuilder
+        return self._tokenizer, self._action_tokenizer, self._builder_fn
+
+    def __call__(self, sample: dict) -> dict:
+        tokenizer, action_tokenizer, builder_fn = self._ensure_components()
+
+        task = str(sample.get("task") or "")
+        builder = builder_fn("openvla")
+        # Upstream lowercases the instruction (RLDS ``language_instruction``).
+        builder.add_turn("human", self.template.format(task=task.lower()))
+
+        actions = sample.get("actions")
+        loss_mask = None
+        if actions is not None:
+            flat = np.asarray(actions, dtype=np.float64).reshape(-1)
+            builder.add_turn("gpt", action_tokenizer(flat))
+
+        input_ids = list(
+            tokenizer(builder.get_prompt(), add_special_tokens=True).input_ids
+        )[: self.max_length]
+
+        if actions is not None:
+            # Only the action tokens (+ stop token) carry a loss — the mirror
+            # of upstream RLDSBatchTransform's labels mask.
+            dim = len(np.asarray(actions).reshape(-1))
+            loss_mask = [False] * len(input_ids)
+            for pos in range(max(0, len(input_ids) - (dim + 1)), len(input_ids)):
+                loss_mask[pos] = True
+
+        pad_id = tokenizer.pad_token_id or 0
+        pad_n = self.max_length - len(input_ids)
+        sample["tokenized_prompt"] = np.asarray(
+            input_ids + [pad_id] * pad_n, dtype=np.int64
+        )
+        sample["tokenized_prompt_mask"] = np.asarray(
+            [True] * len(input_ids) + [False] * pad_n, dtype=bool
+        )
+        if loss_mask is not None:
+            sample["token_loss_mask"] = np.asarray(
+                loss_mask + [False] * pad_n, dtype=bool
+            )
+        return sample
+
+    @classmethod
+    def compile_call(cls, cfg: dict, ctx: PlanContext) -> dict | None:
+        template = ctx.metadata.language_template
+        if not template:
+            return None  # not a token-action model; nothing to assemble
+        max_length = ctx.metadata.tokenizer_max_length
+        if not max_length or int(max_length) <= 0:
+            raise ValueError(
+                f"{ctx.metadata.name!r} declares a language_template but no "
+                "positive ModelMetadata.tokenizer_max_length — the sequence "
+                "assembly step cannot size its output."
+            )
+        repo = ctx.metadata.tokenizer_repo or ctx.tokenizer_repo
+        if repo is None:
+            raise ValueError(
+                f"{ctx.metadata.name!r} needs a tokenizer source for sequence "
+                "assembly: declare ModelMetadata.tokenizer_repo, or point the "
+                "recipe's model.path at a base checkpoint that ships one."
+            )
+        return {"tokenizer_repo": repo, "max_length": int(max_length), "template": template}

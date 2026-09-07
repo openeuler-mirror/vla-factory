@@ -25,10 +25,8 @@ from __future__ import annotations
 
 import logging
 
-import numpy as np
 import torch
 import torch.nn as nn
-from PIL import Image
 
 from vla_factory.model.model_interface import ModelMetadata, Observation, VisionSlot
 from vla_factory.model.registry import register_vla
@@ -97,41 +95,32 @@ class OpenVLAModelWrapper(nn.Module):
 
     ``self.model`` is the upstream ``OpenVLAForActionPrediction``; ``nn.Module``
     auto-registers it as a submodule, so ``parameters()`` / ``train()`` / ``to()``
-    recurse automatically. The adapter holds the processor (tokenizer + image
-    transform), the upstream ``ActionTokenizer``, and the prompt-builder class.
+    recurse automatically. The token sequence, the checkpoint processor's
+    image tensors and the dataset statistics all arrive plan-side via
+    ``Observation`` / the mounted norm_stats — the adapter only derives the
+    HF training target and delegates.
     """
 
     def __init__(
         self,
         model,
-        processor,
-        action_tokenizer,
-        prompt_builder_fn,
-        collator,
         stats_key: str = _FINETUNE_STATS_KEY,
-        camera_key=None,
     ):
         super().__init__()
         self.model = model
         self._backend = "prismatic"
-        self._tokenizer = processor.tokenizer
-        self._image_transform = processor.image_processor.apply_transform
-        self._action_tokenizer = action_tokenizer
-        self._prompt_builder_fn = prompt_builder_fn
-        self._collator = collator
         # Both call sites below read norm_stats under this key; the factory
         # mounts IDENTITY stats there (see _inject_identity_action_stats), so
         # predict_action decodes in the normalized space the plan expects.
         self._stats_key = stats_key
-        # Dataset camera feeding the single primary visual slot, from the
-        # resolved assembly camera_mapping ("primary" -> data camera). None
-        # means "not declared": single-camera observations are unambiguous and
-        # fall back to the only image; multi-camera ones fail loudly.
-        self._camera_key = camera_key
 
     @property
     def _device(self):
         return next(self.model.parameters()).device
+
+    @property
+    def _dtype(self):
+        return next(self.model.parameters()).dtype
 
     @property
     def _dtype(self):
@@ -152,78 +141,35 @@ class OpenVLAModelWrapper(nn.Module):
     # ── Training ──────────────────────────────────────────────────
 
     def compute_loss(self, observation, actions, action_is_pad=None):
-        # actions: [B, 1, D], already normalized to [-1, 1] by the plan's
-        # normalize_vector step (quantile over the dataset's own q01/q99 —
-        # the statistics upstream fine-tuning computes at train time). The
-        # ActionTokenizer discretizes them; its np.clip absorbs the eps slack.
+        # The plan's assemble_token_action_sequence step produced the full
+        # training sequence: tokenized_prompt holds input_ids (padded to the
+        # declared tokenizer_max_length), tokenized_prompt_mask the attention
+        # mask, token_loss_mask the supervision positions (action tokens +
+        # stop), pixel_values the checkpoint processor's image tensors.
+        # Labels — HF's training target — are derived from the mask; the
+        # pixel dtype is cast to the weights' (bf16) here.
+        input_ids = observation.tokenized_prompt
+        labels = input_ids.masked_fill(~observation.token_loss_mask, IGNORE_INDEX)
 
-        instances = []
-        for i in range(actions.shape[0]):
-            # Pure transport read: the fallback chain (sample["task"] >
-            # default_task > "") is resolved framework-side (task_tokenize for
-            # prompt models, inject_default_task for prompt-free ones), so the
-            # entries here are final. An absent entry is the chain's terminal
-            # "" — no adapter-side fallback lives here.
-            task = (
-                observation.task[i]
-                if observation.task and i < len(observation.task)
-                else ""
-            )
-            # ActionTokenizer uses np.clip internally; must pass CPU numpy.
-            instances.append(
-                self._build_training_instance(task, actions[i].cpu().numpy(), observation, i)
-            )
-
-        batch = self._collator(instances)
         batch = {
-            k: (v.to(self._device) if isinstance(v, torch.Tensor) else v)
-            for k, v in batch.items()
+            "input_ids": input_ids.to(self._device),
+            "labels": labels.to(self._device),
+            "attention_mask": observation.tokenized_prompt_mask.to(self._device),
+            "pixel_values": observation.pixel_values.to(self._device, dtype=self._dtype),
         }
-
         out = self.model(**batch)
         return out.loss, {"loss": out.loss.item()}
-
-    def _build_training_instance(self, task, normalized_action, observation, index):
-        """Mirror upstream ``RLDSBatchTransform``: chat prompt + action tokens."""
-        prompt_builder = self._prompt_builder_fn("openvla")
-        conversation = [
-            {"from": "human", "value": _task_query(task)},
-            {"from": "gpt", "value": self._action_tokenizer(normalized_action)},
-        ]
-        for turn in conversation:
-            prompt_builder.add_turn(turn["from"], turn["value"])
-
-        input_ids = self._tokenizer(
-            prompt_builder.get_prompt(), add_special_tokens=True
-        ).input_ids
-        labels = torch.tensor(input_ids, dtype=torch.long)
-        # Only the action tokens (+ stop token) carry a loss; the prompt is masked.
-        labels[: -(len(normalized_action) + 1)] = IGNORE_INDEX
-
-        return {
-            "input_ids": torch.as_tensor(input_ids, dtype=torch.long),
-            "labels": labels,
-            "pixel_values": self._image_to_pixel_values(observation, index),
-        }
 
     # ── Inference ─────────────────────────────────────────────────
 
     def predict_actions(self, observation, **kwargs):
-        task = (
-            observation.task[0]
-            if observation.task and observation.task[0]
-            else ""
-        )
-        prompt_builder = self._prompt_builder_fn("openvla")
-        prompt_builder.add_turn("human", _task_query(task))
-        input_ids = self._tokenizer(
-            prompt_builder.get_prompt(), add_special_tokens=True
-        ).input_ids
-        input_ids = torch.as_tensor(
-            input_ids, dtype=torch.long, device=self._device
-        ).unsqueeze(0)
+        # The plan's assemble step tokenized the (answer-less) prompt; select
+        # the real tokens out of the padded sequence — upstream's
+        # predict_action expects the unpadded input.
+        input_ids = observation.tokenized_prompt[observation.tokenized_prompt_mask]
+        input_ids = input_ids.to(self._device).unsqueeze(0)
 
-        pixel_values = self._image_to_pixel_values(observation, 0).unsqueeze(0).to(self._device)
+        pixel_values = observation.pixel_values.to(self._device, dtype=self._dtype)
 
         # predict_action decodes tokens → bin centers with IDENTITY stats
         # mounted by the factory (q01=-1, q99=+1), so it returns actions in
@@ -237,43 +183,14 @@ class OpenVLAModelWrapper(nn.Module):
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _image_to_pixel_values(self, observation, index):
-        # observation.images: {camera: [B, H, W, C] uint8} — raw, no framework
-        # image transforms (OpenVLA's processor does Resize/CenterCrop/Normalize).
-        images = observation.images
-        if self._camera_key is not None:
-            if self._camera_key not in images:
-                raise KeyError(
-                    f"OpenVLA primary camera {self._camera_key!r} missing from "
-                    f"observation; available cameras: {sorted(images)}."
-                )
-            img = images[self._camera_key][index]
-        else:
-            # No resolved camera mapping: unambiguous only for a single camera.
-            if len(images) != 1:
-                raise ValueError(
-                    "OpenVLA expects one primary camera but observation has "
-                    f"{sorted(images)} and no camera_mapping resolved a "
-                    "primary slot. Set overrides.camera_mapping.primary."
-                )
-            img = next(iter(images.values()))[index]
-        arr = img.detach().cpu().numpy().astype(np.uint8)
-        # image_transform yields float32; cast to the model's dtype (bf16) so the
-        # vision backbone (bf16 weights) doesn't hit a float/bf16 conv mismatch.
-        return self._image_transform(Image.fromarray(arr)).to(dtype=self._dtype)
-
 
 # ── Registration ───────────────────────────────────────────────────
 
 # The instruction format OpenVLA was pretrained with (mirrored from upstream
-# RLDSBatchTransform). Declared read-only in ModelMetadata.language_template
-# (contract visibility); formatted at the two construction sites below. The
-# task text is lowercased before formatting, matching upstream.
+# RLDSBatchTransform). Declared read-only in ModelMetadata.language_template —
+# the plan's assemble_token_action_sequence step consumes it (task lowercased
+# before formatting, matching upstream).
 _OPENVLA_TASK_TEMPLATE = "What action should the robot take to {task}?"
-
-
-def _task_query(task: str) -> str:
-    return _OPENVLA_TASK_TEMPLATE.format(task=task.lower())
 
 
 _OPENVLA_PARAMS: dict = {
@@ -296,11 +213,15 @@ _OPENVLA_METADATA = ModelMetadata(
     action_head_type="autoregressive",
     training_paradigm="pretrained_finetune",
     requires_prompt=False,          # OpenVLA builds its own prompt internally (PurePromptBuilder + Llama-2 tokenizer); does not use the framework's task_tokenize pipeline.
-    # Declared read-only for the contract (interface_dict → assembly.json): no
-    # pipeline step consumes it — the prompt is assembled adapter-side from
-    # upstream primitives, and requires_prompt=False keeps task_tokenize out
-    # of the plan.
+    # Declared read-only for the contract (interface_dict → assembly.json).
+    # Consumed by the plan's assemble_token_action_sequence step, which
+    # tokenizes the instruction (+ answer, at training time) with the
+    # checkpoint's own tokenizer; requires_prompt=False keeps the framework's
+    # task_tokenize out of the plan.
     language_template=_OPENVLA_TASK_TEMPLATE,
+    # Fixed sequence budget for the assembled training/inference tokens
+    # (prompt ≲ 32 + 7 action tokens + stop; 48 pads the rest).
+    tokenizer_max_length=48,
     support_lora=True,
     support_full=True,
     support_freeze=True,
@@ -310,15 +231,12 @@ _OPENVLA_METADATA = ModelMetadata(
     # must be reconstructed from the base checkpoint at inference time.
     inference_needs_base_checkpoint=True,
     dim_policy="flexible",         # OpenVLA adapts to the dataset's action width
-    # Framework-side images are kept raw (HWC uint8) and handed to the adapter,
-    # which runs Prismatic's own processor transform. Declaring "stretch" makes
-    # the framework's resize step match this checkpoint's resize-naive strategy
-    # (stretch to 224x224, ignoring aspect ratio): for non-224 sources the step
-    # runs first and the processor's resize then sees a square input — same
-    # geometry as upstream's own transform, only redundant interpolation. A
-    # checkpoint shipped with letterbox/resize-crop would need the framework's
-    # resize vocabulary to grow before it can be declared honestly.
-    image_resize_mode="stretch",
+    # The checkpoint's own processor owns the image contract end-to-end
+    # (resize + per-tower normalize, channel-stacked for the fused
+    # DINOv2+SigLIP backbone) and runs as the plan's checkpoint_image_transform
+    # step on the primary camera. The framework's generic image vocabulary
+    # does not touch these pixels.
+    image_normalize_mode="checkpoint_processor",
     vision_slots=(
         VisionSlot(
             name="primary",
@@ -388,41 +306,16 @@ def _load_openvla(recipe, assembly, upstream, model_name="openvla-7b"):
     if isinstance(dtype, str):
         dtype = getattr(torch, dtype)
 
-    processor = AutoProcessor.from_pretrained(recipe.model.path)
     model = AutoModelForVision2Seq.from_pretrained(
         recipe.model.path, torch_dtype=dtype, low_cpu_mem_usage=True
     )
 
-    action_tokenizer = ActionTokenizer(processor.tokenizer)
-    collator = PaddedCollatorForActionPrediction(
-        model_max_length=getattr(model.config, "llm_max_length", 2048),
-        pad_token_id=getattr(model.config, "pad_token_id", 0) or 0,
-    )
     _require_dataset_action_quantiles(assembly, model_name)
     _inject_identity_action_stats(model, len(assembly.norm_stats.action.q01))
 
     cfg.assert_all_consumed(model_name)
 
-    return OpenVLAModelWrapper(
-        model, processor, action_tokenizer, PurePromptBuilder, collator,
-        camera_key=_resolve_primary_camera(assembly.camera_mapping),
-    )
-
-
-def _resolve_primary_camera(camera_mapping) -> str | None:
-    """Dataset camera feeding the model's ``primary`` visual slot, if declared.
-
-    OpenVLA is a single-camera model: assembly resolution maps the ``primary``
-    slot to a data camera when the recipe provides ``camera_mapping.primary``
-    (or when inference is unambiguous). Returns None when the mapping left the
-    slot unmapped — the wrapper then falls back to a lone image or fails loudly
-    on multi-camera observations.
-    """
-    for entry in camera_mapping.entries:
-        if entry["model_slot"] == "primary":
-            return entry["data_source"]
-    return None
-
+    return OpenVLAModelWrapper(model)
 
 def _require_dataset_action_quantiles(assembly, model_name: str) -> None:
     """Fail fast when the dataset's stats lack action q01/q99.

@@ -297,6 +297,8 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
         task=tasks,
         tokenized_prompt=stacked.get("tokenized_prompt"),
         tokenized_prompt_mask=stacked.get("tokenized_prompt_mask"),
+        token_loss_mask=stacked.get("token_loss_mask"),
+        pixel_values=stacked.get("pixel_values"),
     )
 
     return {

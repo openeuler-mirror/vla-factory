@@ -22,7 +22,7 @@ from ..transform.plan import TransformPipelinePlan, TransformStepCall
 def plan_context(
     schema: DataSchema, norm_stats: NormStats, metadata: ModelMetadata,
     io_spec: ModelIOSpec, default_task: str | None,
-    model_path: str | None = None,
+    model_path: str | None = None, primary_camera: str | None = None,
 ) -> PlanContext:
     """The resolver's half of the context every ``compile_call`` reads.
 
@@ -50,6 +50,7 @@ def plan_context(
         has_action_stats=norm_stats.action is not None,
         default_task=default_task,
         tokenizer_repo=model_path,
+        primary_camera=primary_camera,
     )
 
 
@@ -66,11 +67,9 @@ def _tokenizer_config(ctx: PlanContext) -> dict | None:
     metadata = ctx.metadata
     max_length = metadata.tokenizer_max_length
     if not metadata.requires_prompt:
-        if max_length is not None or metadata.prompt_includes_state:
-            raise ValueError(
-                f"Model {metadata.name!r} declares tokenizer facts but "
-                "requires_prompt=False."
-            )
+        # Prompt-free models don't run task_tokenize. They MAY declare
+        # tokenizer facts for their own sequence-assembly step
+        # (assemble_token_action_sequence), which validates them itself.
         return None
     if metadata.prompt_includes_state:
         if int(ctx.source_state_dim or 0) <= 0:
@@ -130,29 +129,50 @@ def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
     metadata = ctx.metadata
     calls: list[TransformStepCall] = []
 
-    resize_args = TransformRegistry.get("resize_images").compile_call(
-        {"mode": metadata.image_resize_mode or "stretch"}, ctx,
-    )
-    if resize_args is not None:
-        if metadata.image_resize_mode is None:
+    if metadata.image_normalize_mode == "checkpoint_processor":
+        # The checkpoint's own processor owns the image contract end-to-end
+        # (geometry + per-tower normalization, e.g. OpenVLA's fused
+        # DINOv2+SigLIP channel stack). The framework's generic image
+        # vocabulary must not touch these pixels first.
+        if metadata.image_resize_mode is not None:
             raise ValueError(
-                f"Model {metadata.name!r} needs image resizing but declares no "
-                "ModelMetadata.image_resize_mode."
-        )
-        calls.append(TransformStepCall(type="resize_images", args=resize_args))
-
-    if metadata.image_input_range is not None:
-        _append_call(calls, "image_to_float", {}, ctx)
-    if metadata.image_layout is not None:
-        _append_call(calls, "image_layout", {"to": metadata.image_layout}, ctx)
-
-    if metadata.image_normalize_mode is not None:
-        if metadata.image_input_range is None:
-            raise ValueError(
-                f"Model {metadata.name!r} declares image_normalize_mode without "
-                "an image_input_range."
+                f"Model {metadata.name!r} declares both image_resize_mode and "
+                "the checkpoint image transform; the processor owns geometry."
             )
-        _append_call(calls, "image_normalize", {}, ctx)
+        if not ctx.primary_camera:
+            raise ValueError(
+                f"Model {metadata.name!r} needs a resolved primary camera for "
+                "the checkpoint image transform "
+                "(overrides.camera_mapping.primary, or a single-camera dataset)."
+            )
+        _append_call(
+            calls, "checkpoint_image_transform",
+            {"source_key": f"images.{ctx.primary_camera}"}, ctx,
+        )
+    else:
+        resize_args = TransformRegistry.get("resize_images").compile_call(
+            {"mode": metadata.image_resize_mode or "stretch"}, ctx,
+        )
+        if resize_args is not None:
+            if metadata.image_resize_mode is None:
+                raise ValueError(
+                    f"Model {metadata.name!r} needs image resizing but declares no "
+                    "ModelMetadata.image_resize_mode."
+                )
+            calls.append(TransformStepCall(type="resize_images", args=resize_args))
+
+        if metadata.image_input_range is not None:
+            _append_call(calls, "image_to_float", {}, ctx)
+        if metadata.image_layout is not None:
+            _append_call(calls, "image_layout", {"to": metadata.image_layout}, ctx)
+
+        if metadata.image_normalize_mode is not None:
+            if metadata.image_input_range is None:
+                raise ValueError(
+                    f"Model {metadata.name!r} declares image_normalize_mode without "
+                    "an image_input_range."
+                )
+            _append_call(calls, "image_normalize", {}, ctx)
 
     vector_fields = [
         field for field, width in (
@@ -166,6 +186,15 @@ def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
             calls, "normalize_vector", {"fields": vector_fields}, ctx,
         )
 
+    # Prompt-free token-action models: the task chain's override link
+    # materializes first, then the full sequence (question + discretized
+    # answer) is assembled and tokenized against the checkpoint's tokenizer.
+    # Gated on language_template — models without one (ACT) plan neither.
+    if not metadata.requires_prompt:
+        _append_call(calls, "inject_default_task", {}, ctx)
+        if metadata.language_template:
+            _append_call(calls, "assemble_token_action_sequence", {}, ctx)
+
     tokenizer_cfg = _tokenizer_config(ctx)
     if tokenizer_cfg is not None and metadata.prompt_includes_state:
         _append_call(calls, "task_tokenize", tokenizer_cfg, ctx)
@@ -174,14 +203,6 @@ def plan_data_to_model(ctx: PlanContext) -> TransformPipelinePlan:
 
     if tokenizer_cfg is not None and not metadata.prompt_includes_state:
         _append_call(calls, "task_tokenize", tokenizer_cfg, ctx)
-
-    # Prompt-free models never tokenize a prompt, but they may still read the
-    # task text (OpenVLA assembles its own prompt from the raw string). Keep
-    # the fallback chain single-sourced: the default_task link materializes
-    # here instead of being re-implemented inside an adapter. Dropped (no-op)
-    # unless a default_task override is configured.
-    if not metadata.requires_prompt:
-        _append_call(calls, "inject_default_task", {}, ctx)
 
     return TransformPipelinePlan(calls=tuple(calls))
 

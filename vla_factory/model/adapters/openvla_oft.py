@@ -40,19 +40,19 @@ _OPENVLA_OFT_METADATA = ModelMetadata(
     # task_tokenize pipeline is not used, so requires_prompt must stay False
     # (True would trip the assembly resolver's tokenizer_max_length check).
     requires_prompt=False,
-    # Same instruction format as openvla-7b (shared adapter), declared
-    # read-only: no pipeline step consumes it for this prompt-free model.
+    # Same instruction format as openvla-7b (shared adapter), consumed by the
+    # plan's assemble_token_action_sequence step.
     language_template=_OPENVLA_TASK_TEMPLATE,
+    tokenizer_max_length=48,
     support_lora=True,
     support_full=True,
     support_freeze=True,
     install_hint="bash scripts/install.sh --model openvla",
     inference_needs_base_checkpoint=True,
     dim_policy="flexible",
-    # Same image contract as openvla-7b: raw images are handed to the adapter,
-    # which runs Prismatic's processor. "stretch" matches the checkpoint's
-    # resize-naive strategy (see openvla.py for the full reasoning).
-    image_resize_mode="stretch",
+    # Same image contract as openvla-7b: the checkpoint's own processor runs
+    # plan-side (checkpoint_image_transform).
+    image_normalize_mode="checkpoint_processor",
     vision_slots=(
         VisionSlot(
             name="primary",

@@ -243,6 +243,7 @@ class InferenceEngine:
             task=[task] if task is not None else None,
             tokenized_prompt=prompt_tensor,
             tokenized_prompt_mask=prompt_mask_tensor,
+            pixel_values=self._optional_tensor(transformed.get("pixel_values")),
         )
 
     def _optional_tensor(self, value: Any) -> torch.Tensor | None:

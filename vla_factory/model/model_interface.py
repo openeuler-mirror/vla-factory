@@ -185,6 +185,11 @@ class Observation(Generic[T]):
     tokenized_prompt_mask: T | None = None
     token_ar_mask: T | None = None
     token_loss_mask: T | None = None
+    # Model-ready image tensors produced plan-side by the checkpoint's own
+    # processor (image_normalize_mode="checkpoint_processor"). Raw camera
+    # images stay in ``images``; this carries the processor's output contract
+    # (e.g. OpenVLA's fused-backbone channel stack) to the adapter.
+    pixel_values: T | None = None
 
     def to(self, *args, **kwargs):
         """Move every present tensor to a device or dtype."""
@@ -211,6 +216,10 @@ class Observation(Generic[T]):
             token_loss_mask=(
                 self.token_loss_mask.to(*args, **kwargs)
                 if self.token_loss_mask is not None else None
+            ),
+            pixel_values=(
+                self.pixel_values.to(*args, **kwargs)
+                if self.pixel_values is not None else None
             ),
         )
 
