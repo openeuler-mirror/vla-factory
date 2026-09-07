@@ -395,6 +395,8 @@ class TestDataSchemaObservationBoundary:
         )
         engine.preprocessor = lambda sample: sample
         engine.device = torch.device("cpu")
+        # A single-frame engine (n_obs_steps == 1): no observation history.
+        engine._history = None
         return engine
 
     def test_missing_dataschema_camera_fails_before_preprocessing(self):

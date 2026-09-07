@@ -13,6 +13,14 @@ Each sample is a **flat dict of raw numpy arrays** so that PyTorch's
         "action_is_pad":      ndarray[horizon],    # bool, True for padded steps
     }
 
+For models with ``history_frames > 1`` (e.g. diffusion_policy's ``To=2``),
+the frame-level fields carry a leading time axis — ``images.*`` become
+``ndarray[To, H, W, C]`` and ``state`` becomes ``ndarray[To, state_dim]`` —
+while the window-level fields (``actions`` / ``action_is_pad`` / task) stay
+single-valued per sample. The time axis exists only when ``n_obs_steps > 1``:
+single-frame models see exactly the shapes above (decision D8 — existing
+ACT/pi0/openpi paths are bit-identical).
+
 Use :func:`collate_fn` to assemble a batch back into
 ``{"observation": Observation, "actions": Tensor, "action_is_pad": Tensor}``.
 """
@@ -36,6 +44,25 @@ from vla_factory.data.reader.base import FormatReader
 from vla_factory.model.model_interface import Observation
 
 logger = logging.getLogger(__name__)
+
+# Which flat-sample keys belong to one observation frame (transformed and
+# stacked per frame when n_obs_steps > 1) rather than to the whole window
+# (transformed once). Shared by the training dataset and the inference engine;
+# every transform step treats these two groups independently, so this is the
+# single place the split is named.
+_FRAME_KEY_PREFIXES = ("images.", "image_masks.")
+
+
+def is_frame_level_key(key: str) -> bool:
+    """Whether a flat-sample key holds one value per observation frame.
+
+    ``images.<cam>``, ``image_masks.<cam>`` and ``state`` are per-frame;
+    everything else (``actions``, ``action_is_pad``, ``task``, prompt
+    tensors) belongs to the window.
+    """
+    return key == "state" or any(
+        key.startswith(prefix) for prefix in _FRAME_KEY_PREFIXES
+    )
 
 
 @dataclass(frozen=True)
@@ -161,38 +188,77 @@ class VLADataset(torch.utils.data.Dataset):
         obs_start = window.start_frame_index
         obs_end = min(obs_start + window.n_obs_steps, len(frames))
 
-        # Use the last observation frame for images/state
+        # The last observation frame anchors the window: window-level fields
+        # (task, actions) hang off it, exactly like the single-frame path.
         obs_frame = frames[min(obs_end - 1, len(frames) - 1)]
 
-        sample: dict[str, Any] = {}
+        if window.n_obs_steps == 1:
+            sample: dict[str, Any] = self._observation_fields(obs_frame)
+            self._add_task(sample, obs_frame)
+            self._add_action_fields(sample, window, frames, obs_end)
+            # Apply the transform pipeline (state, actions, images.* keys).
+            return self.transforms(sample)
 
-        # Decode images via VideoCodec: VideoRef → numpy HWC uint8.
-        # Model-specific transforms decide layout, scaling, resizing and
-        # normalisation. The dataset layer intentionally stays raw.
-        for cam_name, ref in obs_frame.images.items():
+        # Multi-frame observation (n_obs_steps > 1): every frame runs the
+        # pipeline alone — each image/state transform is written against one
+        # frame's rank — and the frames are stacked afterwards, so no
+        # transform has to know the time axis exists. Window-level fields
+        # are transformed once, in their own pass whose frame-level branches
+        # no-op on the absent keys.
+        frame_samples = [
+            self.transforms(self._observation_fields(frames[pos]))
+            for pos in range(obs_start, obs_end)
+        ]
+        sample = stack_frame_samples(frame_samples)
+        window_sample: dict[str, Any] = {}
+        self._add_task(window_sample, obs_frame)
+        self._add_action_fields(window_sample, window, frames, obs_end)
+        sample.update(self.transforms(window_sample))
+        return sample
+
+    def _observation_fields(self, frame: Frame) -> dict[str, Any]:
+        """Frame-level fields for one observation frame, pre-transform.
+
+        Decode images via VideoCodec: VideoRef → numpy HWC uint8. Model-
+        specific transforms decide layout, scaling, resizing and
+        normalisation; the dataset layer intentionally stays raw.
+        """
+        fields: dict[str, Any] = {}
+        for cam_name, ref in frame.images.items():
             img = self.codec.decode_frame(ref)  # numpy HWC uint8
-            sample[f"images.{cam_name}"] = img
-            sample[f"image_masks.{cam_name}"] = np.array(True, dtype=bool)
-
-        # State vector
-        if obs_frame.state is not None:
-            sample["state"] = obs_frame.state.astype(np.float32)
+            fields[f"images.{cam_name}"] = img
+            fields[f"image_masks.{cam_name}"] = np.array(True, dtype=bool)
+        if frame.state is not None:
+            fields["state"] = frame.state.astype(np.float32)
         else:
-            sample["state"] = None
+            fields["state"] = None
+        return fields
 
-        # Language / task instruction (language-conditioned models: pi0, pi05).
-        # A downstream `task_tokenize` transform turns this into tokenized_prompt.
-        if obs_frame.language is not None:
+    @staticmethod
+    def _add_task(sample: dict[str, Any], frame: Frame) -> None:
+        """Language / task instruction (language-conditioned models: pi0,
+        pi05). A downstream `task_tokenize` transform turns this into
+        tokenized_prompt."""
+        if frame.language is not None:
             sample["task"] = (
-                random.choice(obs_frame.language)
-                if isinstance(obs_frame.language, (tuple, list))
-                else obs_frame.language
+                random.choice(frame.language)
+                if isinstance(frame.language, (tuple, list))
+                else frame.language
             )
 
-        # ── Action frames ─────────────────────────────────────────
-        # Action chunk starts from the last observation frame (delta=0),
-        # matching lerobot's convention: the first predicted action is the
-        # action to take at the current timestep.
+    @staticmethod
+    def _add_action_fields(
+        sample: dict[str, Any],
+        window: SampleWindow,
+        frames: list[Frame],
+        obs_end: int,
+    ) -> None:
+        """Action chunk fields, pre-transform.
+
+        The chunk starts from the last observation frame (delta=0), matching
+        lerobot's convention: the first predicted action is the action to
+        take at the current timestep.
+        """
         action_start = obs_end - 1
         action_end = action_start + window.action_horizon
 
@@ -223,13 +289,35 @@ class VLADataset(torch.utils.data.Dataset):
             sample["actions"] = np.zeros(
                 (window.action_horizon, 0), dtype=np.float32,
             )
-
         sample["action_is_pad"] = np.array(is_pad, dtype=bool)
 
-        # Apply the transform pipeline (state, actions, images.* keys).
-        sample = self.transforms(sample)
 
-        return sample
+def stack_frame_samples(frame_samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """Stack per-frame fields along a new leading time axis.
+
+    Takes transformed frame dicts and returns the frame-level half of a
+    multi-frame sample: ``images.*`` / ``image_masks.*`` / ``state`` gain the
+    time axis; anything else a transform produced for a single frame (e.g. a
+    per-frame tokenized prompt the window pass will regenerate) is dropped.
+    A field that is ``None`` in only some frames is a data-integrity error —
+    stacking would silently drop the missing frames' contribution.
+    """
+    stacked: dict[str, Any] = {}
+    keys = [key for key in frame_samples[0] if is_frame_level_key(key)]
+    for key in keys:
+        values = [fields[key] for fields in frame_samples]
+        present = [value for value in values if value is not None]
+        if not present:
+            stacked[key] = None
+        elif len(present) != len(values):
+            raise ValueError(
+                f"Observation field {key!r} is missing in "
+                f"{len(values) - len(present)} of {len(values)} stacked frames; "
+                "a per-frame field must be present in every frame or none."
+            )
+        else:
+            stacked[key] = np.stack(present, axis=0)
+    return stacked
 
 
 # ── Collation helper ──────────────────────────────────────────────

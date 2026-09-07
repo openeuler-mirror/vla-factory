@@ -55,3 +55,4 @@ venv/
 *.log
 
 .pymarkdown.yml
+.local-deps/

@@ -72,11 +72,13 @@ def make_schema(
 
 
 def _unit_stats(dim: int) -> FeatureStats:
-    # Quantiles are filled in too, so the same fixture satisfies both declared
-    # normalization methods (pi05 resolves against quantile stats).
+    # Quantiles and min/max are filled in too, so the same fixture satisfies
+    # every declared normalization method (pi05 resolves against quantile
+    # stats, diffusion_policy against min/max).
     return FeatureStats(
         mean=[0.0] * dim, std=[1.0] * dim,
         q01=[-1.0] * dim, q99=[1.0] * dim,
+        min=[-1.0] * dim, max=[1.0] * dim,
     )
 
 

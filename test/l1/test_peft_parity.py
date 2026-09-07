@@ -293,7 +293,7 @@ def test_freeze_surface_matches_openpi_semantics():
 
 @pytest.mark.skipif(
     importlib.util.find_spec("openpi") is None,
-    reason="openpi 未安装（bash scripts/install.sh pi0）",
+    reason="openpi 未安装（bash scripts/install.sh --model pi0）",
 )
 def test_scaling_formula_matches_openpi():
     """peft 的 scaling 必须与 openpi ``LoRAConfig.scaling_value`` 算出同一个数。
@@ -336,7 +336,7 @@ def test_scaling_formula_matches_openpi():
 
 @pytest.mark.skipif(
     importlib.util.find_spec("openpi") is None,
-    reason="openpi 未安装（bash scripts/install.sh pi0）",
+    reason="openpi 未安装（bash scripts/install.sh --model pi0）",
 )
 def test_example_recipe_rank_alpha_match_openpi_defaults():
     """示例 recipe 的 r/alpha 应与 openpi 的 paligemma LoRA 默认值一致。"""

@@ -159,7 +159,7 @@ def test_lerobot_pin_has_not_moved():
 
 @pytest.mark.skipif(
     importlib.util.find_spec("openpi") is None,
-    reason="openpi not installed (bash scripts/install.sh pi0)",
+    reason="openpi not installed (bash scripts/install.sh --model pi0)",
 )
 def test_openpi_eps_matches_the_installed_upstream():
     """Re-derive both epsilons from live openpi instead of trusting the header.

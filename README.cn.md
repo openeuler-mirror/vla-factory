@@ -21,15 +21,16 @@ VLA Factory 是一个 **recipe 驱动** 的机器人视觉-语言-动作（VLA�
 
 ## 安装
 
+每个模型生态由安装脚本创建独立的 uv 环境（自动探测 CUDA 驱动版本，并处理
+各模型的特殊步骤，如 openpi 的 transformers 补丁、diffusion_policy 的源码补丁）：
+
 ```bash
 # 在仓库根目录
-pip install -e ".[act]"      # ACT 训练（带 lerobot>=0.5）
+bash scripts/install.sh --model act               # ACT（lerobot + CPU torch）
+bash scripts/install.sh --model pi0               # PI0 / PI0.5（openpi + CUDA torch）
+bash scripts/install.sh --model diffusion_policy  # Diffusion Policy（real-stanford 源码 + CUDA torch）
 
-# PI0 / PI0.5 训练（openpi 栈；openpi 有严格依赖 pin，需走 uv 安装脚本）
-bash scripts/install.sh
-
-# 或，在不需要 openpi patch 安装路径时安装全部 extras
-pip install -e ".[all]"      # 全部模型生态依赖
+# 仅框架开发——不需要任何模型生态
 pip install -e ".[dev]"      # 开发依赖：pytest / pytest-cov / tensorboard
 ```
 
@@ -39,7 +40,7 @@ pip install -e ".[dev]"      # 开发依赖：pytest / pytest-cov / tensorboard
 export VLA_PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple
 export VLA_UV_ATTEMPTS=8
 export VLA_LOCAL_LEROBOT=1   # 避免 GitHub git 长连接 fetch，改用 tarball 源
-bash scripts/install.sh
+bash scripts/install.sh --model <model>
 ```
 
 安装后会注册 `vlafactory-cli` 命令（如 `vlafactory-cli train --config recipe.yaml`）；未安装或从源码运行时，等价的 `vlafactory-cli ...` 同样可用。
@@ -120,7 +121,7 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 | 示例 | 说明 |
 |------|------|
 | `examples/act_lekiwi.yaml` | lekiwi 从零训练 |
-| `examples/pi0.yaml` | openpi pi0 系列 smoke —— 默认 pi0 LoRA;注释里给出切 pi05 与全量微调的开关 |
+| `examples/pi0_lora.yaml` | openpi pi0 系列 smoke —— 默认 pi0 LoRA;注释里给出切 pi05 与全量微调的开关 |
 | `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA 参考训练协议 |
 | `examples/reference.yaml` | 全字段注释模板 |
 
@@ -136,7 +137,8 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 |------|------|-------|------|
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
-| ⬜ **ROS bags** | ⬜ **π-FAST** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ⬜ **GR00T / OpenVLA** | | |
+| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
+| ⬜ **HDF5** | ⬜ **π-FAST** | | |
+| | ⬜ **GR00T / OpenVLA** | | |
 
 ---
