@@ -104,7 +104,7 @@ class ModelMetadata:
     # Image contract. The resolver derives image transforms from these facts;
     # recipes never carry or override a transform step list.
     image_input_range: tuple[float, float] | None = None    # e.g. (-1.0, 1.0)
-    image_normalize_mode: str | None = None                 # "imagenet" | None
+    image_normalize_mode: str | None = None                 # "imagenet" | "checkpoint_processor" | None
     image_layout: Literal["CHW", "HWC"] | None = None
     image_resize_mode: Literal["stretch", "pad"] | None = None
     # Language contract.
