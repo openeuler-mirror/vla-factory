@@ -120,6 +120,18 @@ def test_train_rejects_non_integer_steps(monkeypatch, capsys):
     assert "--steps" in capsys.readouterr().err
 
 
+def test_export_dispatches_checkpoint_and_destination(monkeypatch, capsys):
+    _argv(monkeypatch, "export", "--checkpoint", "run", "--output-dir", "deploy")
+    monkeypatch.setattr(
+        "vla_factory.training.export.export_checkpoint",
+        lambda checkpoint, output_dir: f"{checkpoint}:{output_dir}",
+    )
+
+    cli.main()
+
+    assert "run:deploy" in capsys.readouterr().out
+
+
 # ── list ─────────────────────────────────────────────────────────────
 
 

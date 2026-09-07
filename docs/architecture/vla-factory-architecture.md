@@ -223,7 +223,7 @@ This zone holds only overrides the resolver actually consumes. An adjustment not
 
 ```yaml
 finetuning:
-  strategy: lora                # full | lora | freeze | selective
+  strategy: lora                # full | lora | selective
   config:                       # strictly parsed by the selected strategy
     r: 16
     # Bare config defaults: components="all" (LoRA every component),
@@ -713,11 +713,10 @@ The finetuning layer assembles `Observation` samples from the Canonical IR (`Epi
 The fine-tuning strategy decides which parameters are trainable. It should operate on parameters via `ModelMetadata.components` and `named_parameters()`, not by hardcoding model types. Current core strategies include:
 
 - `full`: full-parameter training.
-- `freeze`: freeze specified components.
 - `selective`: train only specified components.
 - `lora`: for models that support LoRA.
 
-ACT trained from scratch usually uses `full`; pretrained VLA models may use full, freeze, selective, or LoRA.
+ACT trained from scratch usually uses `full`; pretrained VLA models may use full, selective, or LoRA.
 
 **LoRA default behavior contract.** A bare `finetuning: {strategy: lora, config: {r, lora_alpha}}` recipe — no `components`, no `freeze_components`, no `target_modules` — gets LoRA on every declared component. The boundary this contract draws: **LoRA only ever lands inside declared component subtrees; linear layers outside them (for pi0: the state/action/time projections) are never touched by peft and stay full-parameter trained** — including under the default `"all"`, which simply runs the same per-subtree path for every declared component. The three fields have defaults that make this the simplest sensible behavior:
 
@@ -939,7 +938,7 @@ Horizontal expansion includes:
 
 - Data formats: from LeRobot to HDF5, RLDS, ROS bags, Zarr, and mixed multi-source sampling.
 - Model ecosystems: from ACT to OpenPI, OpenVLA, GR00T, SmolVLA, etc.
-- Fine-tuning methods: from full/freeze/selective to LoRA, QLoRA, adapter tuning, and model-specific tuning.
+- Fine-tuning methods: from full/selective to LoRA, QLoRA, adapter tuning, and model-specific tuning.
 - Deployment platforms: from ZMQ simulation and lerobot real robots to more robot middleware, edge devices, and remote inference services.
 - Training and evaluation frameworks: in the post-training stage, integrate with RL and evaluation frameworks such as RLinf, feeding behavior-cloning artifacts into RL or offline evaluation rather than reimplementing RL training inside this framework.
 - Runtime environments: from the CUDA ecosystem to domestic stacks such as OpenEuler + Ascend.

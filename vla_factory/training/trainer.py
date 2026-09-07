@@ -10,12 +10,15 @@ LR scheduling, checkpointing, wandb/tensorboard logging, progress bar.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+from pathlib import Path
 
 import torch
 from transformers import Trainer, TrainingArguments
 
 from vla_factory.user_interface import TrainRecipe
+from vla_factory.utils.constants import WEIGHTS_META_FILE
 
 
 logger = logging.getLogger(__name__)
@@ -35,8 +38,33 @@ class VLATrainer(Trainer):
     """
 
     def __init__(self, *args, **kwargs):
+        self.save_delta_only = kwargs.pop("save_delta_only", False)
+        self.checkpoint_format = kwargs.pop("checkpoint_format", "bare_full")
         super().__init__(*args, **kwargs)
         self._last_loss_dict: dict | None = None
+
+    def _save(self, output_dir=None, state_dict=None):
+        """Let LoRA runs persist only parameters changed by training."""
+        if self.save_delta_only:
+            parameters = dict(self.model.named_parameters())
+            trainable = {name for name, parameter in parameters.items() if parameter.requires_grad}
+            state_dict = {
+                key: value.detach().cpu().contiguous()
+                for key, value in self.model.state_dict().items()
+                if key in trainable or key not in parameters
+            }
+        super()._save(output_dir, state_dict)
+        path = Path(output_dir or self.args.output_dir) / WEIGHTS_META_FILE
+        path.write_text(json.dumps({"format": self.checkpoint_format}) + "\n")
+
+    def _save_checkpoint(self, model, trial):
+        """Log the checkpoint only after Trainer has finished writing it."""
+        super()._save_checkpoint(model, trial)
+        if self.args.should_save:
+            logger.info(
+                "Checkpoint complete: %s",
+                Path(self._get_output_dir(trial=trial)) / f"checkpoint-{self.state.global_step}",
+            )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         obs = inputs["observation"]

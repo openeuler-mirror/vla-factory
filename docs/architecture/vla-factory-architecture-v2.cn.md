@@ -477,7 +477,7 @@ YAML，随资产变的进对应注册表，随组合变的进 binding 层（能�
   FormatReader schema + sidecar meta ──┐
   embodiment profile ──────────────────┼──▶ BindingResolver ──▶ BindingPlan
   model interface + base contract ─────┘         │
-                                                 ├──▶ freeze: inference_metadata/binding.json
+                                                 ├──▶ selective: inference_metadata/binding.json
                                                  ▼
   Manifest + Sampler ──▶ VLADataset ──▶ TransformPipeline(plan) ──▶ Trainer batch
       ──▶ model.compute_loss ──▶ loss / metrics / checkpoint

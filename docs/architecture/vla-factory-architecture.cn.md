@@ -222,7 +222,7 @@ overrides:                   # 可选，默认留空
 
 ```yaml
 finetuning:
-  strategy: lora                # full | lora | freeze | selective
+  strategy: lora                # full | lora | selective
   config:                       # 由选中的策略严格解析
     r: 16
     # 只写 r 即可：components 默认 "all"（对所有组件打 LoRA）、
@@ -727,11 +727,10 @@ parse recipe
 微调策略负责决定哪些参数可训练。它应基于 `ModelMetadata.components` 和 `named_parameters()` 操作参数，而不是依赖硬编码模型类型。当前核心策略包括：
 
 - `full`：全参数训练。
-- `freeze`：冻结指定组件。
 - `selective`：只训练指定组件。
 - `lora`：面向支持 LoRA 的模型扩展。
 
-ACT 从零训练通常使用 `full`；预训练 VLA 模型可使用 full、freeze、selective 或 LoRA。
+ACT 从零训练通常使用 `full`；预训练 VLA 模型可使用 full、selective 或 LoRA。
 
 **LoRA 默认行为契约。** 一份只写了 `finetuning: {strategy: lora, config: {r, lora_alpha}}` 的 recipe——不写 `components`、不写 `freeze_components`、不写 `target_modules`——得到的是「对每个已声明组件打 LoRA」。该契约划定的边界：**LoRA 只落在已声明组件的子树内；子树外的线性层（pi0 的 state/action/time 投影层）从不被 peft 触碰，保持全参训练**——默认 `"all"` 也不例外，它只是对每个已声明组件各走一遍同一的单子树路径。三个字段都有默认值，使这成为最简且合理的行为：
 
@@ -951,7 +950,7 @@ VLA Factory 是一个工程框架，也是一个研究载体。它借助统一�
 
 - 数据格式：从 LeRobot 扩展到 HDF5、RLDS、ROS bags、Zarr 和混合多源采样。
 - 模型生态：从 ACT 扩展到 OpenPI、OpenVLA、GR00T、SmolVLA 等。
-- 微调方式：从 full/freeze/selective 扩展到 LoRA、QLoRA、adapter tuning 和模型专属 tuning。
+- 微调方式：从 full/selective 扩展到 LoRA、QLoRA、adapter tuning 和模型专属 tuning。
 - 部署平台：从 ZMQ 仿真和 lerobot 真机扩展到更多机器人中间件、边缘设备和远程推理服务。
 - 训练与评估框架：在后训练阶段对接 RLinf 等强化学习与评估框架，把行为克隆产物接入 RL 或离线评估，而不是在本框架内重新实现 RL 训练。
 - 运行环境：从 CUDA 生态扩展到 OpenEuler + Ascend 等国产化环境。

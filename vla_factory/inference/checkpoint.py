@@ -2,20 +2,52 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 from vla_factory.assembly import ResolvedAssembly
 from vla_factory.user_interface import TrainRecipe, parse_recipe
 from vla_factory.utils.constants import (
     ASSEMBLY_FILE,
-    FINAL_DIR,
     INFERENCE_META_DIR,
     MODEL_WEIGHTS_FILE,
     RECIPE_FILE,
+    WEIGHTS_META_FILE,
 )
+
+_WEIGHT_FORMATS = {"bare_full", "lora_wrapped_full", "lora_delta"}
+
+
+def checkpoint_format(weights: str | Path) -> str | None:
+    """Return the declared weight shape; ``None`` is legacy inference."""
+    directory = Path(weights).parent
+    marker = directory / WEIGHTS_META_FILE
+    if marker.exists():
+        try:
+            value = json.loads(marker.read_text(encoding="utf-8"))["format"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ValueError(f"Invalid {marker}: {exc}") from exc
+        if value not in _WEIGHT_FORMATS:
+            raise ValueError(f"Invalid weight format in {marker}: {value!r}")
+        return value
+    return None
+
+
+def validate_delta_load(model: nn.Module, result) -> None:
+    """A delta may omit frozen parameters, never trainable state or buffers."""
+    if result.unexpected_keys:
+        raise ValueError(f"Delta checkpoint has unknown parameters: {result.unexpected_keys}")
+    parameters = dict(model.named_parameters())
+    invalid = [
+        key for key in result.missing_keys
+        if key not in parameters or parameters[key].requires_grad
+    ]
+    if invalid:
+        raise ValueError(f"Delta checkpoint is missing trainable state: {invalid}")
 
 
 def load_inference_metadata(
@@ -66,7 +98,6 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
         raise FileNotFoundError(f"Checkpoint path does not exist: {path}")
 
     candidates = [
-        path / FINAL_DIR / MODEL_WEIGHTS_FILE,
         path / MODEL_WEIGHTS_FILE,
         path / "pytorch_model.bin",
         path / "model.safetensors",
@@ -74,13 +105,14 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
     for checkpoint_dir in sorted(
         path.glob("checkpoint-*"), key=_checkpoint_sort_key, reverse=True
     ):
-        candidates.extend(
-            [
-                checkpoint_dir / MODEL_WEIGHTS_FILE,
-                checkpoint_dir / "pytorch_model.bin",
-                checkpoint_dir / "model.safetensors",
-            ]
-        )
+        if _is_complete_checkpoint(checkpoint_dir):
+            candidates.extend(
+                [
+                    checkpoint_dir / MODEL_WEIGHTS_FILE,
+                    checkpoint_dir / "pytorch_model.bin",
+                    checkpoint_dir / "model.safetensors",
+                ]
+            )
 
     for candidate in candidates:
         if candidate.exists():
@@ -88,7 +120,7 @@ def resolve_checkpoint_path(path: str | Path) -> Path:
 
     raise FileNotFoundError(
         f"No model weights found under {path}. Expected "
-        f"{FINAL_DIR}/{MODEL_WEIGHTS_FILE}, {MODEL_WEIGHTS_FILE}, "
+        f"{MODEL_WEIGHTS_FILE}, "
         "or Trainer checkpoint weights."
     )
 
@@ -120,8 +152,17 @@ def _checkpoint_sort_key(path: Path) -> tuple[int, str]:
     return step, path.name
 
 
+def _is_complete_checkpoint(path: Path) -> bool:
+    return (path / "trainer_state.json").is_file() and any(
+        (path / name).is_file()
+        for name in (MODEL_WEIGHTS_FILE, "pytorch_model.bin", "model.safetensors")
+    )
+
+
 __all__ = [
     "load_checkpoint_state_dict",
+    "checkpoint_format",
     "load_inference_metadata",
     "resolve_checkpoint_path",
+    "validate_delta_load",
 ]

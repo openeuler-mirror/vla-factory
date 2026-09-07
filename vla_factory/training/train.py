@@ -16,10 +16,7 @@ from vla_factory.assembly import resolve_assembly
 from vla_factory.model.model_interface import ModelMetadata
 from vla_factory.model.registry import get_entry
 from vla_factory.user_interface import TrainRecipe, merge_model_config, parse_recipe
-from vla_factory.training.checkpoint import (
-    save_final_model,
-    save_training_contract,
-)
+from vla_factory.training.checkpoint import save_training_contract
 from vla_factory.training.dataloader import create_dataloader
 from vla_factory.training.strategies import get_strategy
 from vla_factory.training.trainer import VLATrainer, build_training_args
@@ -59,6 +56,8 @@ def train(
     strategy = get_strategy(recipe.finetuning.strategy)
     strategy_config = strategy.parse_config(recipe.finetuning.config)
     _validate_training_request(recipe, metadata)
+    if recipe.output.save_delta_only and recipe.finetuning.strategy != "lora":
+        raise ValueError("output.save_delta_only is only supported by finetuning.strategy='lora'")
 
     output_path = _prepare_output_directory(recipe)
     save_training_contract(output_path, recipe, assembly)
@@ -72,6 +71,12 @@ def train(
         args=build_training_args(recipe),
         train_dataset=train_loader.dataset,
         data_collator=train_loader.collate_fn,
+        save_delta_only=recipe.output.save_delta_only,
+        checkpoint_format=(
+            "lora_delta" if recipe.output.save_delta_only else
+            "lora_wrapped_full" if recipe.finetuning.strategy == "lora" else
+            "bare_full"
+        ),
     )
     logger.info(
         "Starting training: %d steps, batch_size=%d",
@@ -79,7 +84,10 @@ def train(
         recipe.training.batch_size,
     )
     trainer.train()
-    save_final_model(output_path, model, strategy)
+    final_step = trainer.state.global_step
+    final_checkpoint = output_path / f"checkpoint-{final_step}"
+    if not final_checkpoint.is_dir():
+        trainer._save_checkpoint(model, trial=None)
     return trainer.state.log_history[-1] if trainer.state.log_history else {}
 
 
@@ -110,6 +118,10 @@ def _validate_training_request(
     recipe: TrainRecipe,
     metadata: ModelMetadata,
 ) -> None:
+    if recipe.output.save_delta_only and not recipe.model.path:
+        raise ValueError(
+            "output.save_delta_only requires model.path to rebuild the base model"
+        )
     if metadata.training_paradigm == "pretrained_finetune" and not recipe.model.path:
         raise ValueError(
             f"Model {recipe.model.name!r} is finetune-only "

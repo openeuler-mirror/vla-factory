@@ -31,7 +31,7 @@ from vla_factory.assembly import resolve_from_facts as resolve_assembly
 from vla_factory.model.model_interface import ModelMetadata, VisionSlot
 from vla_factory.model.registry import ModelEntry, ModelRegistry
 from vla_factory.utils.constants import (
-    ASSEMBLY_FILE, FINAL_DIR, INFERENCE_META_DIR, MODEL_WEIGHTS_FILE, RECIPE_FILE,
+    ASSEMBLY_FILE, INFERENCE_META_DIR, MODEL_WEIGHTS_FILE, RECIPE_FILE,
 )
 
 DATA_ACTION_DIM = 8
@@ -95,9 +95,7 @@ def padded_checkpoint(tmp_path):
         (meta_dir / RECIPE_FILE).write_text(
             f"model:\n  name: {_PADDED_METADATA.name}\n  config: {{}}\n"
         )
-        final_dir = tmp_path / FINAL_DIR
-        final_dir.mkdir(parents=True)
-        torch.save(_PaddedStubModel().state_dict(), final_dir / MODEL_WEIGHTS_FILE)
+        torch.save(_PaddedStubModel().state_dict(), tmp_path / MODEL_WEIGHTS_FILE)
         yield tmp_path, assembly
     finally:
         if previous_entry is None:

@@ -130,7 +130,7 @@ def _try_import_lerobot():
 def _load_state_dict_file(path: str | Path) -> dict:
     """Load a state dict from a ``.pt`` or ``.safetensors`` checkpoint.
 
-    ``final/model.pt`` (written by ``torch.save`` in ``train.py``) and
+    ``model.pt`` (written by ``vlafactory-cli export``) and
     ``checkpoint-*/model.safetensors`` (written by the HF Trainer every
     ``save_steps``) are both supported as ``model.path`` sources.
     """

@@ -9,6 +9,7 @@ INFERENCE_META_DIR = "inference_metadata"
 ASSEMBLY_FILE = "assembly.json"
 RECIPE_FILE = "recipe.yaml"
 
-# Final model save directory (relative to output_dir)
-FINAL_DIR = "final"
+# Declares whether weights are a bare full model, a wrapped LoRA model, or a
+# LoRA delta.  It makes loading independent of the checkpoint directory name.
+WEIGHTS_META_FILE = "weights.json"
 MODEL_WEIGHTS_FILE = "model.pt"

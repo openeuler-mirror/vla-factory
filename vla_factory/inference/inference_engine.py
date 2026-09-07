@@ -14,8 +14,10 @@ from vla_factory.assembly.transform import TransformContext, build_pipeline
 from vla_factory.data.data_schema import resolve_vector_keys
 from vla_factory.inference.checkpoint import (
     load_checkpoint_state_dict,
+    checkpoint_format,
     load_inference_metadata,
     resolve_checkpoint_path,
+    validate_delta_load,
 )
 from vla_factory.inference.execution import ActionChunk
 from vla_factory.model.model_interface import Observation
@@ -81,10 +83,15 @@ class InferenceEngine:
         self.schema = assembly.schema
         self.norm_stats = assembly.norm_stats
 
-        # At inference time the target checkpoint contains the complete model
-        # state. Loading recipe.model.path first would unnecessarily depend on
-        # the original pretrained checkpoint still being available.
-        recipe = replace(recipe, model=replace(recipe.model, path=None))
+        checkpoint_file = resolve_checkpoint_path(checkpoint_path)
+        weight_format = checkpoint_format(checkpoint_file)
+        is_delta = weight_format == "lora_delta"
+        # Full checkpoints are self-contained; a delta checkpoint must first
+        # construct its declared base model.
+        if not is_delta:
+            recipe = replace(recipe, model=replace(recipe.model, path=None))
+        elif not recipe.model.path:
+            raise ValueError("Delta checkpoint requires model.path in its saved recipe")
         self.recipe = recipe
 
         self.state_keys, self.action_keys = resolve_vector_keys(self.schema)
@@ -98,13 +105,12 @@ class InferenceEngine:
         entry = get_entry(recipe.model.name)
         assembly.check_model_compatibility(entry.metadata)
         model = entry.factory(recipe=recipe, assembly=assembly)
-        checkpoint_file = resolve_checkpoint_path(checkpoint_path)
         # Trainer checkpoints retain strategy-owned wrappers so training can
         # resume. Recreate those wrappers before loading intermediate weights;
-        # final/model.pt has already been finalized for the bare model.
         if (
             recipe.finetuning.strategy == "lora"
-            and checkpoint_file.parent.name.startswith("checkpoint-")
+            and (weight_format in {"lora_delta", "lora_wrapped_full"}
+                 or (weight_format is None and checkpoint_file.parent.name.startswith("checkpoint-")))
         ):
             strategy = get_strategy(recipe.finetuning.strategy)
             strategy_config = strategy.parse_config(recipe.finetuning.config)
@@ -112,7 +118,9 @@ class InferenceEngine:
                 model, strategy_config, entry.metadata
             )
         state_dict = load_checkpoint_state_dict(checkpoint_file)
-        model.load_state_dict(state_dict, strict=True)
+        result = model.load_state_dict(state_dict, strict=not is_delta)
+        if is_delta:
+            validate_delta_load(model, result)
         model.to(self.device)
         model.eval()
         self._model = model

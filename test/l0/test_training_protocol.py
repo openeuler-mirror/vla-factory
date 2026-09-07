@@ -32,6 +32,131 @@ training:
     assert training.max_grad_norm == pytest.approx(1.0)
 
 
+def test_delta_only_checkpointing_is_opt_in():
+    recipe = parse_recipe_from_string(
+        """
+model: {name: pi0}
+output:
+  save_delta_only: true
+"""
+    )
+    assert recipe.output.save_delta_only is True
+
+
+def test_delta_only_requires_a_base_checkpoint():
+    from vla_factory.model.model_interface import ModelMetadata
+    from vla_factory.training.train import _validate_training_request
+
+    recipe = parse_recipe_from_string(
+        """
+model: {name: act}
+finetuning: {strategy: lora}
+output: {save_delta_only: true}
+"""
+    )
+    with pytest.raises(ValueError, match="requires model.path"):
+        _validate_training_request(recipe, ModelMetadata(name="act", training_paradigm="from_scratch"))
+
+
+def test_delta_only_trainer_saves_only_trainable_parameters(tmp_path):
+    pytest.importorskip("transformers")
+    from transformers import TrainingArguments
+
+    from vla_factory.training.trainer import VLATrainer
+
+    model = torch.nn.Linear(2, 1)
+    model.bias.requires_grad = False
+    trainer = VLATrainer(
+        model=model,
+        args=TrainingArguments(output_dir=str(tmp_path), report_to=[]),
+        save_delta_only=True,
+        checkpoint_format="lora_delta",
+    )
+    trainer._save(str(tmp_path))
+
+    assert json.loads((tmp_path / "weights.json").read_text()) == {"format": "lora_delta"}
+    assert (tmp_path / "model.safetensors").is_file()
+    from safetensors.torch import load_file
+    assert set(load_file(tmp_path / "model.safetensors")) == {"weight"}
+
+
+def test_delta_only_trainer_keeps_persistent_buffers(tmp_path):
+    pytest.importorskip("transformers")
+    from transformers import TrainingArguments
+    from safetensors.torch import load_file
+
+    from vla_factory.training.trainer import VLATrainer
+
+    model = torch.nn.BatchNorm1d(2)
+    model.register_buffer("nonpersistent", torch.zeros(2), persistent=False)
+    trainer = VLATrainer(
+        model=model, args=TrainingArguments(output_dir=str(tmp_path), report_to=[]),
+        save_delta_only=True, checkpoint_format="lora_delta",
+    )
+    trainer._save(str(tmp_path))
+    saved = load_file(tmp_path / "model.safetensors")
+    assert set(saved) == set(model.state_dict())
+    assert "nonpersistent" not in saved
+
+
+def test_delta_load_rejects_missing_trainable_parameters_and_buffers():
+    from vla_factory.inference.checkpoint import validate_delta_load
+
+    model = torch.nn.BatchNorm1d(2)
+    result = model.load_state_dict({}, strict=False)
+    with pytest.raises(ValueError, match="missing trainable state"):
+        validate_delta_load(model, result)
+
+
+def test_delta_load_allows_missing_frozen_parameters(tmp_path):
+    from vla_factory.inference.checkpoint import validate_delta_load
+
+    model = torch.nn.Linear(2, 1)
+    model.bias.requires_grad = False
+    result = model.load_state_dict({"weight": model.weight.detach()}, strict=False)
+    validate_delta_load(model, result)
+
+
+def test_weight_format_is_independent_of_directory_name(tmp_path):
+    from vla_factory.inference.checkpoint import checkpoint_format
+
+    weights = tmp_path / "moved-anywhere" / "model.safetensors"
+    weights.parent.mkdir()
+    (weights.parent / "weights.json").write_text('{"format": "lora_wrapped_full"}')
+    assert checkpoint_format(weights) == "lora_wrapped_full"
+
+
+def test_transformers_checkpoint_private_api_signature_is_pinned():
+    import inspect
+    from transformers import Trainer
+
+    assert list(inspect.signature(Trainer._save_checkpoint).parameters) == [
+        "self", "model", "trial",
+    ]
+
+
+def test_checkpoint_save_reports_completed_location(monkeypatch, tmp_path, caplog):
+    import logging
+    pytest.importorskip("transformers")
+    from transformers import Trainer, TrainingArguments
+
+    from vla_factory.training.trainer import VLATrainer
+
+    def fake_save_checkpoint(self, model, trial):
+        (tmp_path / f"checkpoint-{self.state.global_step}").mkdir()
+
+    monkeypatch.setattr(Trainer, "_save_checkpoint", fake_save_checkpoint)
+    trainer = VLATrainer(
+        model=torch.nn.Linear(2, 1),
+        args=TrainingArguments(output_dir=str(tmp_path), report_to=[]),
+    )
+    trainer.state.global_step = 7
+    caplog.set_level(logging.INFO)
+    trainer._save_checkpoint(trainer.model, trial=None)
+
+    assert "Checkpoint complete" in caplog.text
+
+
 def test_removed_optimizer_and_ema_fields_are_rejected():
     with pytest.raises(ValueError):
         parse_recipe_from_string(
@@ -133,4 +258,18 @@ def test_raw_trainer_checkpoint_is_available_for_resume_and_inference(tmp_path):
     checkpoint = tmp_path / "checkpoint-7"
     checkpoint.mkdir()
     torch.save(model.state_dict(), checkpoint / "pytorch_model.bin")
+    (checkpoint / "trainer_state.json").write_text("{}")
     assert resolve_checkpoint_path(tmp_path) == checkpoint / "pytorch_model.bin"
+
+
+def test_incomplete_newer_checkpoint_is_skipped(tmp_path):
+    from vla_factory.inference.checkpoint import resolve_checkpoint_path
+
+    complete = tmp_path / "checkpoint-7"
+    complete.mkdir()
+    torch.save({}, complete / "pytorch_model.bin")
+    (complete / "trainer_state.json").write_text("{}")
+    incomplete = tmp_path / "checkpoint-9"
+    incomplete.mkdir()
+    torch.save({}, incomplete / "pytorch_model.bin")
+    assert resolve_checkpoint_path(tmp_path) == complete / "pytorch_model.bin"

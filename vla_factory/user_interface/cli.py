@@ -112,6 +112,10 @@ def main():
     train_parser.add_argument("--batch-size", type=int, default=None, help="Override batch_size.")
     train_parser.add_argument("--output-dir", type=str, default=None, help="Override output_dir.")
 
+    export_parser = subparsers.add_parser("export", help="Export one checkpoint for deployment.")
+    export_parser.add_argument("--checkpoint", required=True, help="Training checkpoint or run root.")
+    export_parser.add_argument("--output-dir", required=True, help="Empty destination directory.")
+
     # ── list ──
     list_parser = subparsers.add_parser(
         "list",
@@ -288,6 +292,10 @@ def main():
             override_output_dir=args.output_dir,
         )
         print(f"Training complete. Final metrics: {metrics}")
+
+    elif args.command == "export":
+        from vla_factory.training.export import export_checkpoint
+        print(f"Exported deployment model to {export_checkpoint(args.checkpoint, args.output_dir)}")
 
     elif args.command == "list":
         if args.config:
