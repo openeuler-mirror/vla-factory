@@ -36,6 +36,7 @@ from .registry import TransformRegistry
 # Fallbacks for configs that do not declare `eps` (see module docstring).
 DEFAULT_ZSCORE_EPS = 1e-8    # lerobot NormalizationProcessor
 DEFAULT_QUANTILE_EPS = 1e-6  # openpi transforms.py::_normalize_quantile
+DEFAULT_MINMAX_EPS = 1e-4    # diffusion_policy normalizer.py::_fit range_eps
 
 # ModelMetadata.vector_normalization vocabulary → NormalizeVector method name.
 # Public: the composition resolver plans the same mapping when it emits a
@@ -43,6 +44,7 @@ DEFAULT_QUANTILE_EPS = 1e-6  # openpi transforms.py::_normalize_quantile
 NORMALIZATION_TO_METHOD = {
     "mean_std": "zscore",
     "quantile": "quantile",
+    "min_max": "min_max",
 }
 
 # ImageNet normalization — lerobot overrides image stats with these when
@@ -197,6 +199,15 @@ class NormalizeVector(TransformStep):
     - ``method="quantile"``: ``(x - q01) / (q99 - q01 + eps) * 2 - 1`` — maps
       the 1st..99th percentile range to [-1, 1], matching openpi's
       ``use_quantile_norm`` for pi05 (openpi transforms.py).
+    - ``method="min_max"``: ``(x - min) / (max - min + eps) * 2 - 1`` — maps
+      the observed range to [-1, 1], matching diffusion_policy's
+      ``LinearNormalizer(mode='limits')`` (diffusion_policy
+      model/common/normalizer.py::_fit). The upstream uses a range *threshold*
+      for constant dims (``range < range_eps`` → range replaced by 2, mapping
+      the dim to 0); this implementation follows the framework's additive-eps
+      convention instead, so a constant dim maps to -1. Both round-trip back
+      to the same constant exactly; the deviation on live dims is bounded by
+      ``eps / range`` (~1e-4 for a unit-range action dim).
 
     ``eps`` is the upstream contract described in the module docstring:
     declare it per model in ``ModelMetadata.vector_normalization_eps``. Omitted,
@@ -211,13 +222,17 @@ class NormalizeVector(TransformStep):
         method: str = "zscore",
         eps: float | None = None,
     ) -> None:
-        if method not in ("zscore", "quantile"):
+        if method not in ("zscore", "quantile", "min_max"):
             raise ValueError(f"Unsupported normalize_vector method: {method!r}")
         self._stats = stats
         self.fields = tuple(fields)
         self.method = method
         if eps is None:
-            eps = DEFAULT_QUANTILE_EPS if method == "quantile" else DEFAULT_ZSCORE_EPS
+            eps = (
+                DEFAULT_QUANTILE_EPS if method == "quantile"
+                else DEFAULT_MINMAX_EPS if method == "min_max"
+                else DEFAULT_ZSCORE_EPS
+            )
         self.eps = float(eps)
 
     @classmethod
@@ -262,6 +277,9 @@ class NormalizeVector(TransformStep):
         if self.method == "quantile":
             q01, q99 = _require_quantiles(stats, field_name)
             return (x - q01) / (q99 - q01 + self.eps) * 2.0 - 1.0
+        if self.method == "min_max":
+            vmin, vmax = _require_min_max(stats, field_name)
+            return (x - vmin) / (vmax - vmin + self.eps) * 2.0 - 1.0
         mean = np.array(stats.mean, dtype=np.float32)
         std = np.array(stats.std, dtype=np.float32) + self.eps
         return (x - mean) / std
@@ -283,14 +301,22 @@ class NormalizeVector(TransformStep):
             return None
         if not ctx.has_action_stats:
             return None
-        name = ("unnormalize_action_quantile" if args.get("method") == "quantile"
-                else "unnormalize_action")
+        method = args.get("method")
+        name = (
+            "unnormalize_action_quantile" if method == "quantile"
+            else "unnormalize_action_min_max" if method == "min_max"
+            else "unnormalize_action"
+        )
         return name, {"stats_ref": "norm_stats", "eps": args.get("eps")}
 
 
 def _require_quantiles(stats, field_name: str):
     """Return (q01, q99) arrays or fail early with an actionable message."""
-    if not stats.q01 or not stats.q99:
+    # Same array-safe emptiness check as _require_min_max.
+    if (
+        stats.q01 is None or stats.q99 is None
+        or len(stats.q01) == 0 or len(stats.q99) == 0
+    ):
         raise ValueError(
             f"normalize_vector method='quantile' needs q01/q99 statistics for "
             f"{field_name!r}, but the dataset stats do not provide them. "
@@ -300,6 +326,25 @@ def _require_quantiles(stats, field_name: str):
     return (
         np.array(stats.q01, dtype=np.float32),
         np.array(stats.q99, dtype=np.float32),
+    )
+
+
+def _require_min_max(stats, field_name: str):
+    """Return (min, max) arrays or fail early with an actionable message."""
+    # None/emptiness check that also holds when the fields carry numpy arrays
+    # (truth-testing an array is ambiguous).
+    if (
+        stats.min is None or stats.max is None
+        or len(stats.min) == 0 or len(stats.max) == 0
+    ):
+        raise ValueError(
+            f"normalize_vector method='min_max' needs min/max statistics for "
+            f"{field_name!r}, but the dataset stats do not provide them. "
+            "Regenerate the dataset stats or use another vector_normalization."
+        )
+    return (
+        np.array(stats.min, dtype=np.float32),
+        np.array(stats.max, dtype=np.float32),
     )
 
 
@@ -335,4 +380,39 @@ class UnnormalizeActionQuantileStep(TransformStep):
             return sample
         q01, q99 = _require_quantiles(self._stats.action, "actions")
         sample["actions"] = (actions + 1.0) / 2.0 * (q99 - q01 + self.eps) + q01
+        return sample
+
+
+@TransformRegistry.register("unnormalize_action_min_max")
+class UnnormalizeActionMinMaxStep(TransformStep):
+    """Reverse of min-max normalisation for the ``actions`` field.
+
+    ``(x + 1) / 2 * (max - min + eps) + min`` — the exact inverse of
+    NormalizeVector's min_max branch (diffusion_policy ``LinearNormalizer``
+    ``mode='limits'`` semantics). ``eps`` must match the forward step's.
+    """
+
+    def __init__(self, stats: NormStats, eps: float = DEFAULT_MINMAX_EPS) -> None:
+        self._stats = stats
+        self.eps = float(eps)
+
+    @classmethod
+    def from_call(cls, args: dict, ctx=None) -> "UnnormalizeActionMinMaxStep":
+        """``stats_ref`` names the statistics; the object itself comes from the
+        runtime context, never from the serialized call."""
+        stats = _stats_from(ctx)
+        if stats is None:
+            raise ValueError(
+                "UnnormalizeActionMinMaxStep needs dataset statistics; none were provided by the "
+                "transform context."
+            )
+        eps = args.get("eps")
+        return cls(stats, eps=DEFAULT_MINMAX_EPS if eps is None else eps)
+
+    def __call__(self, sample: dict) -> dict:
+        actions = sample.get("actions")
+        if actions is None or self._stats.action is None:
+            return sample
+        vmin, vmax = _require_min_max(self._stats.action, "actions")
+        sample["actions"] = (actions + 1.0) / 2.0 * (vmax - vmin + self.eps) + vmin
         return sample

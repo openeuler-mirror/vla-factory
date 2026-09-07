@@ -655,13 +655,14 @@ def test_model_image_size_without_resize_policy_fails():
 
 
 def test_unimplementable_normalization_fails_with_a_message_not_a_keyerror():
-    """``min_max`` is a legal ``vector_normalization`` value that no
-    NormalizeVector method implements."""
+    """A declared-but-unimplemented ``vector_normalization`` value (min_max
+    was this case before diffusion_policy landed) fails with the actionable
+    message rather than a KeyError."""
     metadata = ModelMetadata(
         name="stub", action_horizon=1, requires_prompt=False,
-        vector_normalization="min_max",
+        vector_normalization="robust_scaler",
     )
-    stats = FeatureStats(min=[0.0] * 6, max=[1.0] * 6)
+    stats = FeatureStats(mean=[0.0] * 6, std=[1.0] * 6)
     with pytest.raises(ValueError, match="no NormalizeVector method"):
         resolve_assembly(
             _schema_with_cameras(), NormStats(state=stats, action=stats), metadata,

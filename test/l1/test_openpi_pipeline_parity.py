@@ -39,7 +39,7 @@ pytestmark = pytest.mark.l1
 
 if importlib.util.find_spec("openpi") is None:
     pytest.skip(
-        "pipeline parity 需要 openpi（bash scripts/install.sh pi0）",
+        "pipeline parity 需要 openpi（bash scripts/install.sh --model pi0）",
         allow_module_level=True,
     )
 

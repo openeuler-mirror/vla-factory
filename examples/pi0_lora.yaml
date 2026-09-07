@@ -7,7 +7,7 @@
 # Run in the uv-installed pi env (see scripts/install.sh):
 #   source .venv/bin/activate   # (or wherever install.sh created it)
 #   HF_HUB_OFFLINE=1 HF_HUB_ENABLE_HF_TRANSFER=1 \
-#     vlafactory-cli train --config examples/pi0.yaml
+#     vlafactory-cli train --config examples/pi0_lora.yaml
 #
 # ── Variant A: pi05 instead of pi0 ────────────────────────────────────────
 #   Set model.name: pi05 and model.path: lerobot/pi05_base. The pi05 profile

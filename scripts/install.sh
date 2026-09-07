@@ -2,15 +2,16 @@
 # install.sh — set up vla-factory model environment(s) with uv.
 #
 # Usage:
-#   bash scripts/install.sh [--model {act|pi0|pi05|openvla}] [--venv <dir>] [-y|--yes]
+#   bash scripts/install.sh [--model {act|pi0|pi05|openvla|diffusion_policy}] [--venv <dir>] [-y|--yes]
 #
-#   --model   act | pi0 | pi05 | openvla
-#             Omit it to install ALL model environments (act, pi0, pi05) —
-#             the script prints what will be installed and asks for
-#             confirmation (yes/y) before proceeding. Use -y/--yes to skip
-#             the prompt in non-interactive contexts. (openvla is excluded
-#             from the all-models batch: it pins its own transformers/peft,
-#             so it must be installed explicitly --model openvla.)
+#   --model   act | pi0 | pi05 | openvla | diffusion_policy
+#             Omit it to install ALL model environments (act, pi0, pi05,
+#             diffusion_policy) — the script prints what will be installed
+#             and asks for confirmation (yes/y) before proceeding.
+#             Use -y/--yes to skip the prompt in non-interactive contexts.
+#             (openvla is excluded from the all-models batch: it pins its
+#             own transformers/peft, so it must be installed explicitly
+#             --model openvla.)
 #   --venv    venv directory    (default: ./.{model}, e.g. ./.act;
 #                                only valid together with --model)
 #   -y|--yes  assume yes at the all-models confirmation prompt
@@ -23,6 +24,8 @@
 #   openvla prismatic (pinned git source) + CUDA torch + transformers==4.40.1 /
 #           peft==0.11.1 (upstream OpenVLA pins these; its own venv keeps them
 #           from clashing with the framework's newer transformers).
+#   diffusion_policy  real-stanford source (pinned commit, namespace-package
+#                     patch) + robomimic/diffusers + CUDA torch.
 #
 # Override torch backend for pi0/openvla: VLA_TORCH_BACKEND=cu126|cu128
 # Override PyPI mirror:           VLA_PYPI_INDEX=https://...
@@ -49,26 +52,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$VENV_DIR" && -z "$MODEL" ]]; then
-  echo "install.sh: --venv is only valid together with --model (all-models mode uses ./.act ./.pi0 ./.pi05)"
+  echo "install.sh: --venv is only valid together with --model (all-models mode uses ./.act ./.pi0 ./.pi05 ./.diffusion_policy)"
   exit 1
 fi
 
 case "$MODEL" in
-  act|pi0|pi05|openvla|"") ;;
-  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|openvla)"; exit 1 ;;
+  act|pi0|pi05|openvla|diffusion_policy|"") ;;
+  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|openvla|diffusion_policy)"; exit 1 ;;
 esac
 
 # ── All-models mode: notice + confirmation ───────────────────────────
 
 if [[ -z "$MODEL" ]]; then
-  MODELS=(act pi0 pi05)
+  MODELS=(act pi0 pi05 diffusion_policy)
   echo ""
   echo "== no --model given: installing ALL model environments =="
-  echo "   act   -> ./.act   (lerobot + CPU torch)"
-  echo "   pi0   -> ./.pi0   (openpi + CUDA torch)"
-  echo "   pi05  -> ./.pi05  (openpi + CUDA torch)"
+  echo "   act               -> ./.act               (lerobot + CPU torch)"
+  echo "   pi0               -> ./.pi0               (openpi + CUDA torch)"
+  echo "   pi05              -> ./.pi05              (openpi + CUDA torch)"
+  echo "   diffusion_policy  -> ./.diffusion_policy  (real-stanford + robomimic + CUDA torch)"
   echo ""
-  echo "This creates 3 separate venvs and downloads multi-GB dependencies"
+  echo "This creates 4 separate venvs and downloads multi-GB dependencies"
   echo "(torch CUDA wheels, openpi source); it can take a long while and"
   echo "use significant disk space."
   echo ""
@@ -77,7 +81,7 @@ if [[ -z "$MODEL" ]]; then
   elif [ ! -t 0 ]; then
     echo "install.sh: stdin is not a terminal — refusing to install everything"
     echo "without confirmation. Re-run with -y/--yes, or pick one model:"
-    echo "  bash scripts/install.sh --model {act|pi0|pi05}"
+    echo "  bash scripts/install.sh --model {act|pi0|pi05|diffusion_policy}"
     exit 1
   else
     read -r -p "Proceed with installing ALL environments? [yes/y] " answer || true
@@ -85,7 +89,7 @@ if [[ -z "$MODEL" ]]; then
     ans="${ans,,}"
     case "$ans" in
       yes|y) ;;
-      *) echo "Cancelled. Install a single environment with: bash scripts/install.sh --model {act|pi0|pi05}"; exit 1 ;;
+      *) echo "Cancelled. Install a single environment with: bash scripts/install.sh --model {act|pi0|pi05|diffusion_policy}"; exit 1 ;;
     esac
   fi
 else
@@ -115,6 +119,12 @@ LEROBOT_DIR=".local-deps/lerobot"
 # OpenVLA/Prismatic is pinned to a known-good commit for reproducibility.
 OPENVLA_REF="${OPENVLA_REF:-c8f03f48af692657d3060c19588038c7220e9af9}"
 OPENVLA_DIR=".local-deps/openvla"
+# diffusion_policy: likewise pinned to a known-good commit (no release tags
+# upstream). The upstream repo has no __init__.py anywhere, so a plain
+# `pip install git+...` yields an empty wheel — setup.py must be patched to
+# namespace packages before the editable install (see the branch below).
+DIFFUSION_POLICY_REF="5ba07ac6661db573af695b419a7947ecb704690f"
+DIFFUSION_POLICY_DIR=".local-deps/diffusion_policy"
 
 # ── Shared helpers ───────────────────────────────────────────────────
 
@@ -233,10 +243,11 @@ install_one_model() {
     echo ""
     echo "Activate and run:"
     echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
-    echo "  vlafactory-cli train --config examples/act.yaml"
+    echo "  vlafactory-cli train --config examples/act_lekiwi.yaml"
     return 0
   fi
 
+  # ═══════════════════════════════════════════════════════════════════
   # ═══════════════════════════════════════════════════════════════════
   #  OPENVLA — prismatic source + CUDA torch + transformers<5
   # ═══════════════════════════════════════════════════════════════════
@@ -306,7 +317,76 @@ install_one_model() {
     echo "  vlafactory-cli train --config examples/openvla.yaml"
     return 0
   fi
+  # ═══════════════════════════════════════════════════════════════════
+  #  DIFFUSION_POLICY — real-stanford source (namespace-package patch)
+  #     + robomimic/diffusers + CUDA torch
+  # ═══════════════════════════════════════════════════════════════════
+  if [[ "$model" == "diffusion_policy" ]]; then
+    echo ""
+    echo "== installing diffusion_policy (real-stanford + robomimic + CUDA torch) =="
 
+    local dp_tarball=".local-deps/diffusion_policy.tar.gz"
+    if [[ -f "$DIFFUSION_POLICY_DIR/setup.py" && "$(cat "$DIFFUSION_POLICY_DIR/.vla-pin" 2>/dev/null)" == "$DIFFUSION_POLICY_REF" ]]; then
+      echo "diffusion_policy source present at $DIFFUSION_POLICY_DIR (pin ${DIFFUSION_POLICY_REF:0:8})."
+    else
+      rm -rf "$DIFFUSION_POLICY_DIR"
+      echo "downloading diffusion_policy tarball @ ${DIFFUSION_POLICY_REF:0:8}..."
+      mkdir -p .local-deps
+      curl -fSL \
+        --retry 8 --retry-delay 3 --retry-all-errors --retry-connrefused \
+        --continue-at - \
+        -o "$dp_tarball" \
+        "https://github.com/real-stanford/diffusion_policy/archive/${DIFFUSION_POLICY_REF}.tar.gz"
+      tar xzf "$dp_tarball" -C .local-deps
+      rm -f "$dp_tarball"
+      mv ".local-deps/diffusion_policy-${DIFFUSION_POLICY_REF}" "$DIFFUSION_POLICY_DIR"
+      printf '%s\n' "$DIFFUSION_POLICY_REF" > "$DIFFUSION_POLICY_DIR/.vla-pin"
+    fi
+
+    # The upstream repo ships no __init__.py (PEP 420 namespace layout), so
+    # find_packages() finds nothing and a build yields an empty wheel. Patch
+    # setup.py to discover namespace packages; fail loudly if the anchor line
+    # moved rather than silently producing that empty wheel.
+    if grep -q '^from setuptools import setup, find_packages$' "$DIFFUSION_POLICY_DIR/setup.py"; then
+      sed -i \
+        's/^from setuptools import setup, find_packages$/from setuptools import setup, find_namespace_packages as find_packages/' \
+        "$DIFFUSION_POLICY_DIR/setup.py"
+    elif ! grep -q 'find_namespace_packages as find_packages' "$DIFFUSION_POLICY_DIR/setup.py"; then
+      echo "install.sh: diffusion_policy setup.py no longer matches the patch anchor" >&2
+      echo "(upstream @ $DIFFUSION_POLICY_REF changed its packaging?) — inspect manually." >&2
+      return 1
+    fi
+
+    local cuda_index="${VLA_TORCH_BACKEND:-$(detect_cuda_index)}"
+    case "$cuda_index" in
+      cu126|cu128) ;;
+      *) echo "install.sh: unsupported VLA_TORCH_BACKEND '$cuda_index' (expected cu126|cu128)"; return 1 ;;
+    esac
+    local dp_uv_flags=(
+      --default-index "$UV_DEFAULT_INDEX"
+      --torch-backend "$cuda_index"
+      --index-strategy first-index
+      --no-sources-package torch
+      --no-sources-package torchvision
+    )
+
+    # Upstream first (no install_requires of its own), then the ecosystem
+    # deps + vla-factory itself via the [diffusion_policy,dev] extra.
+    retry_uv pip install "${dp_uv_flags[@]}" "$DIFFUSION_POLICY_DIR"
+    retry_uv pip install "${dp_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} -e ".[diffusion_policy,dev]"
+
+    install_torchcodec
+
+    echo ""
+    echo "Done."
+    echo "  venv:   $(cd "$venv_dir" && pwd)"
+    echo "  python: $(cd "$venv_dir" && pwd)/bin/python"
+    echo ""
+    echo "Activate and run:"
+    echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
+    echo "  vlafactory-cli train --config <recipe.yaml>"
+    return 0
+  fi
   #  PI0 / PI05 — full: openpi source + CUDA torch + transformers patch
   # ═══════════════════════════════════════════════════════════════════
 
@@ -410,7 +490,7 @@ install_one_model() {
   echo ""
   echo "Activate and run:"
   echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
-  echo "  vlafactory-cli train --config examples/$model.yaml"
+  echo "  vlafactory-cli train --config examples/pi0_lora.yaml"
 }
 
 # All-models mode reports per-model outcome and keeps going past failures

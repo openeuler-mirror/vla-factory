@@ -73,7 +73,7 @@ act = ["lerobot==0.4.4"]
 # known-good commit for reproducibility. It also imports pytest at runtime
 # (gemma_pytorch.py), so pytest is listed here even though it's a test dep.
 # NOTE: `pip install -e ".[pi0]"` does NOT work — openpi's strict pins + the
-# in-place transformers patch require the uv installer: `bash scripts/install.sh pi0`.
+# in-place transformers patch require the uv installer: `bash scripts/install.sh --model pi0`.
 pi0 = [
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
     "pytest>=7",
@@ -81,6 +81,21 @@ pi0 = [
 pi05 = [
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
     "pytest>=7",
+]
+# diffusion_policy wraps real-stanford's DiffusionUnetHybridImagePolicy. The
+# upstream repo ships no __init__.py anywhere (PEP 420 namespace layout), so
+# `pip install git+...` produces an empty wheel — the package itself is only
+# installable via scripts/install.sh, which downloads the pinned commit,
+# patches its setup.py (find_packages -> find_namespace_packages) and installs
+# it from that source tree. This extra carries only the ecosystem dependencies:
+# robomimic
+# (observation encoder factory — clean on PyPI, no gym/mujoco in its deps),
+# diffusers (DDPM scheduler), zarr + einops (upstream module-level imports).
+diffusion_policy = [
+    "robomimic==0.3.0",
+    "diffusers>=0.31",
+    "zarr>=2.12",
+    "einops>=0.7",
 ]
 # RoboTwin native hdf5 datasets (episode*.hdf5 with embedded JPEG streams).
 # Only h5py is needed to read the data; the RoboTwin simulator itself runs in
@@ -103,6 +118,10 @@ openvla = []
 all = [
     "lerobot==0.4.4",
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "robomimic==0.3.0",
+    "diffusers>=0.31",
+    "zarr>=2.12",
+    "einops>=0.7",
     "h5py>=3.0",
     "pytest>=7",
 ]

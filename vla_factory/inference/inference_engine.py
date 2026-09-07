@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from vla_factory.inference.checkpoint import (
 from vla_factory.inference.execution import ActionChunk
 from vla_factory.model.model_interface import Observation
 from vla_factory.model.registry import get_entry
+from vla_factory.training.dataset import stack_frame_samples
 from vla_factory.training.strategies import get_strategy
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,15 @@ class InferenceEngine:
         self.action_horizon = io_spec.action_horizon
         self.model_output_dim = io_spec.action_dim
         self.execution_action_dim = self.schema.action_dim
+        # Models with history_frames > 1 condition on a trailing window of
+        # frames (diffusion_policy's To). Deployment sends one frame per
+        # step, so the engine keeps the history itself; the time axis is
+        # materialised only on this >1 branch (decision D8) and the
+        # single-frame path stays shape-identical to before.
+        self.n_obs_steps = max(1, int(io_spec.n_obs_steps))
+        self._history: deque[dict[str, Any]] | None = (
+            deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
+        )
         self.num_inference_steps = int(
             (recipe.model.config or {}).get("num_inference_steps", 1)
         )
@@ -150,13 +161,14 @@ class InferenceEngine:
         logger.info(
             "InferenceEngine ready: model=%s checkpoint=%s cameras=%s "
             "execution_action_dim=%d model_output_dim=%d "
-            "action_horizon=%d inference_steps=%d device=%s",
+            "action_horizon=%d n_obs_steps=%d inference_steps=%d device=%s",
             recipe.model.name,
             checkpoint_file,
             self.camera_keys,
             self.execution_action_dim,
             self.model_output_dim,
             self.action_horizon,
+            self.n_obs_steps,
             self.num_inference_steps,
             self.device,
         )
@@ -167,18 +179,67 @@ class InferenceEngine:
         )
 
     def predict(self, observation: ObsDict) -> ActionChunk:
-        """Run inference and return a strict ``[horizon, action_dim]`` chunk."""
+        """Run inference and return a strict ``[horizon, action_dim]`` chunk.
+
+        For ``n_obs_steps > 1`` checkpoints the engine maintains the trailing
+        observation window internally: consecutive calls step the history,
+        and :meth:`reset` clears it at episode boundaries. Callers that own
+        the frame sequence (offline evaluation, stepping far between
+        predictions) should use :meth:`predict_window` instead.
+        """
         return self._predict_chunk(observation)
+
+    def predict_window(self, observations: Sequence[ObsDict]) -> ActionChunk:
+        """Run inference on an explicitly assembled observation window.
+
+        The caller supplies exactly ``n_obs_steps`` observations, oldest
+        first, already aligned to the prediction position (with the episode
+        start front-filled by frame repetition). This bypasses — and does not
+        update — the internal history: an evaluation stepping by
+        ``action_horizon`` between predictions must not leave strides of
+        unseen frames in the window.
+        """
+        if len(observations) != self.n_obs_steps:
+            raise ValueError(
+                f"predict_window needs exactly n_obs_steps={self.n_obs_steps} "
+                f"observations, got {len(observations)}."
+            )
+        if self._history is None:
+            model_observation = self._single_observation(observations[0])
+            return self._run_model(model_observation, observations[0])
+        window = [self._transform_frame(obs) for obs in observations]
+        model_observation = self._stacked_observation(window, observations[-1])
+        return self._run_model(model_observation, observations[-1])
 
     def reset(self) -> None:
         """Reset model-side inference state.
 
-        Chunk playback state belongs to the separate execution policy.
+        Chunk playback state belongs to the separate execution policy. This
+        clears the observation history so a new episode's trailing window is
+        not seeded with the previous episode's frames.
         """
-        return None
+        if self._history is not None:
+            self._history.clear()
 
     def _obs_to_observation(self, observation: ObsDict) -> Observation:
         """Apply the saved forward pipeline and construct a model observation."""
+        if self._history is None:
+            return self._single_observation(observation)
+
+        # Multi-frame deployment path: transform the incoming frame once,
+        # let the history assemble the trailing window.
+        self._history.append(self._transform_frame(observation))
+        window = list(self._history)
+        if len(window) < self.n_obs_steps:
+            # Episode start: repeat the oldest frame. Training never sees a
+            # partial window (build_episode_windows starts at full ones), so
+            # this fill convention is what keeps step 0 well-defined — the
+            # same first-frame repeat diffusion_policy's eval loops use.
+            window = [window[0]] * (self.n_obs_steps - len(window)) + window
+        return self._stacked_observation(window, observation)
+
+    def _validated_frame_sample(self, observation: ObsDict) -> dict[str, Any]:
+        """Validate one raw observation against the schema → flat frame dict."""
         missing_cameras = [
             key for key in self.camera_keys if key not in observation.video
         ]
@@ -211,6 +272,16 @@ class InferenceEngine:
         }
         if observation.state is not None:
             sample["state"] = observation.state.astype(np.float32)
+        return sample
+
+    def _transform_frame(self, observation: ObsDict) -> dict[str, Any]:
+        """Forward-pipeline one frame. Window-level transform branches no-op
+        on this frame-only dict; the language half runs in its own pass."""
+        return self.preprocessor(self._validated_frame_sample(observation))
+
+    def _single_observation(self, observation: ObsDict) -> Observation:
+        """Single-frame path (``n_obs_steps == 1``) — the original contract."""
+        sample = self._validated_frame_sample(observation)
         task = resolve_inference_language(observation.language)
         if task is not None:
             sample["task"] = task
@@ -246,6 +317,55 @@ class InferenceEngine:
             pixel_values=self._optional_tensor(transformed.get("pixel_values")),
         )
 
+    def _stacked_observation(
+        self, window: list[dict[str, Any]], current: ObsDict,
+    ) -> Observation:
+        """Build the time-stacked observation from transformed frames.
+
+        Mirrors the training side exactly: per-frame transforms, then the
+        time axis. The prompt is window-level — resolved from the current
+        frame's language and run through the pipeline in its own pass,
+        together with the current (last) frame's state, which
+        ``task_tokenize``'s discrete_state mode reads.
+        """
+        stacked = stack_frame_samples(window)
+        images: dict[str, torch.Tensor] = {}
+        for camera in self.camera_keys:
+            array = stacked[f"images.{camera}"]
+            images[camera] = (
+                torch.as_tensor(np.ascontiguousarray(array))
+                .unsqueeze(0)
+                .to(self.device)
+            )
+        image_masks = {
+            camera: torch.ones(
+                (1, self.n_obs_steps), dtype=torch.bool, device=self.device
+            )
+            for camera in self.camera_keys
+        }
+
+        state_tensor = self._optional_tensor(stacked.get("state"))
+
+        language_sample: dict[str, Any] = {}
+        task = resolve_inference_language(current.language)
+        if task is not None:
+            language_sample["task"] = task
+        if stacked.get("state") is not None:
+            language_sample["state"] = stacked["state"][-1]
+        language = self.preprocessor(language_sample)
+        prompt_tensor = self._optional_tensor(language.get("tokenized_prompt"))
+        prompt_mask_tensor = self._optional_tensor(
+            language.get("tokenized_prompt_mask")
+        )
+
+        return Observation(
+            images=images,
+            image_masks=image_masks,
+            state=state_tensor,
+            tokenized_prompt=prompt_tensor,
+            tokenized_prompt_mask=prompt_mask_tensor,
+        )
+
     def _optional_tensor(self, value: Any) -> torch.Tensor | None:
         if value is None:
             return None
@@ -258,6 +378,13 @@ class InferenceEngine:
     @torch.inference_mode()
     def _predict_chunk(self, observation: ObsDict) -> ActionChunk:
         model_observation = self._obs_to_observation(observation)
+        return self._run_model(model_observation, observation)
+
+    @torch.inference_mode()
+    def _run_model(
+        self, model_observation: Observation, observation: ObsDict,
+    ) -> ActionChunk:
+        """Model call + planned postprocess — shared by every entry point."""
         actions = self._model.predict_actions(
             model_observation,
             num_steps=self.num_inference_steps,

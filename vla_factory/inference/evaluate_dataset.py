@@ -47,8 +47,9 @@ def infer_dataset_sample(
     )
     episode = reader.read_episode(data_path, episode_index, codec)
     frames = episode.load_frames()
-    observation_frame = frames[frame_index]
-    observation = _frame_observation(observation_frame, engine.camera_keys, codec)
+    observations = _trailing_window_observations(
+        frames, frame_index, engine.camera_keys, codec, engine.n_obs_steps,
+    )
 
     target_actions = _target_chunk(
         frames,
@@ -56,7 +57,7 @@ def infer_dataset_sample(
         action_horizon=engine.action_horizon,
         action_dim=engine.execution_action_dim,
     )
-    predicted_actions = engine.predict(observation).values
+    predicted_actions = engine.predict_window(observations).values
 
     output_path: Path | None = None
     if output is not None:
@@ -121,8 +122,9 @@ def evaluate_dataset(
         frame_reports: list[dict[str, Any]] = []
 
         for frame_index in range(0, episode_length, engine.action_horizon):
-            observation = _frame_observation(
-                frames[frame_index], engine.camera_keys, codec
+            observations = _trailing_window_observations(
+                frames, frame_index, engine.camera_keys, codec,
+                engine.n_obs_steps,
             )
             valid_length = min(
                 frame_index + engine.action_horizon, episode_length
@@ -136,7 +138,7 @@ def evaluate_dataset(
                 continue
 
             target_actions = np.stack(targets, axis=0)
-            predicted_actions = engine.predict(observation).values[
+            predicted_actions = engine.predict_window(observations).values[
                 : len(target_actions)
             ]
             frame_losses = np.abs(predicted_actions - target_actions).mean(axis=1)
@@ -201,6 +203,32 @@ def _frame_observation(frame, camera_keys: tuple[str, ...], codec) -> ObsDict:
         video[camera] = codec.decode_frame(reference)
     state = frame.state.astype(np.float32) if frame.state is not None else None
     return ObsDict(video=video, state=state, language=frame.language)
+
+
+def _trailing_window_observations(
+    frames,
+    frame_index: int,
+    camera_keys: tuple[str, ...],
+    codec,
+    n_obs_steps: int,
+) -> list[ObsDict]:
+    """Assemble the trailing observation window ending at ``frame_index``.
+
+    Evaluation steps between predictions by ``action_horizon``, so the
+    engine-internal history would hold frames many strides apart — useless
+    as a temporal window. The dataset owns the truth here: the window is the
+    last ``n_obs_steps`` real frames, front-filled by repeating the earliest
+    available frame (the episode-start convention, matching training windows
+    and diffusion_policy's eval loops).
+    """
+    window_start = max(0, frame_index - n_obs_steps + 1)
+    window = [
+        _frame_observation(frames[index], camera_keys, codec)
+        for index in range(window_start, frame_index + 1)
+    ]
+    while len(window) < n_obs_steps:
+        window.insert(0, window[0])
+    return window
 
 
 def _target_chunk(
