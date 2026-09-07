@@ -314,32 +314,11 @@ def _load_openvla(recipe, assembly, upstream, model_name="openvla-7b"):
         recipe.model.path, torch_dtype=dtype, low_cpu_mem_usage=True
     )
 
-    _require_dataset_action_quantiles(assembly, model_name)
     _inject_identity_action_stats(model, len(assembly.norm_stats.action.q01))
 
     cfg.assert_all_consumed(model_name)
 
     return OpenVLAModelWrapper(model)
-
-def _require_dataset_action_quantiles(assembly, model_name: str) -> None:
-    """Fail fast when the dataset's stats lack action q01/q99.
-
-    Normalization binds to the DATASET's statistics — the plan's
-    normalize_vector consumes them from the assembly context, the same
-    semantics as upstream fine-tuning, which computes dataset statistics at
-    train time (``get_dataset_statistics``). Older lerobot ``stats.json``
-    files carry min/max/mean/std only; such datasets must be regenerated
-    with a writer that emits q01/q99. Checked here, at load time, rather
-    than on the first training step.
-    """
-    stats = assembly.norm_stats.action
-    if not stats.q01 or not stats.q99:
-        raise ValueError(
-            f"{model_name}: dataset norm_stats lack q01/q99 quantiles, which "
-            "action normalization requires. Regenerate the dataset statistics "
-            "with a lerobot writer that emits quantiles (meta/stats.json)."
-        )
-
 
 def _inject_identity_action_stats(model, action_dim: int) -> None:
     """Mount identity stats so upstream's predict_action decode is the

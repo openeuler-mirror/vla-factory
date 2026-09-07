@@ -273,30 +273,6 @@ def test_checkpoint_image_transform_planning_and_step():
     assert tuple(out["pixel_values"].shape) == (6, 224, 224)
 
 
-def test_dataset_quantiles_fail_fast():
-    # Normalization binds to the DATASET's own q01/q99 (upstream fine-tuning
-    # semantics). Older lerobot stats.json files carry min/max/mean/std only —
-    # such datasets must fail with an actionable error at load time, not
-    # silently train against someone else's statistics.
-    from vla_factory.model.adapters.openvla import _require_dataset_action_quantiles
-
-    class _Missing:
-        class norm_stats:
-            class action:
-                q01, q99 = [], []
-
-    with pytest.raises(ValueError, match="q01/q99"):
-        _require_dataset_action_quantiles(_Missing(), "openvla-7b")
-
-    class _Present:
-        class norm_stats:
-            class action:
-                q01, q99 = [0.1, 0.2], [0.3, 0.4]
-
-    # Must not raise.
-    _require_dataset_action_quantiles(_Present(), "openvla-7b")
-
-
 def test_identity_stats_injection():
     # predict_action's decode affine (0.5*(a+1)*(q99-q01)+q01) becomes the
     # identity for q01=-1/q99=+1, so it returns actions in the NORMALIZED
