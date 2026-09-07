@@ -126,6 +126,8 @@ class OpenVLAModelWrapper(nn.Module):
     def _dtype(self):
         return next(self.model.parameters()).dtype
 
+    # ── Protocol surface (framework vocabulary) ───────────────────
+
     def forward(self, observation, actions, action_is_pad=None):
         return self.compute_loss(observation, actions, action_is_pad=action_is_pad)
 
@@ -138,9 +140,15 @@ class OpenVLAModelWrapper(nn.Module):
         except TypeError:
             return self.model.gradient_checkpointing_enable()
 
-    # ── Training ──────────────────────────────────────────────────
-
     def compute_loss(self, observation, actions, action_is_pad=None):
+        return self._compute_loss_openvla(observation, actions, action_is_pad)
+
+    def predict_actions(self, observation, **kwargs):
+        return self._predict_openvla(observation)
+
+    # ── OpenVLA-specific translation + delegation ─────────────────
+
+    def _compute_loss_openvla(self, observation, actions, action_is_pad=None):
         # The plan's assemble_token_action_sequence step produced the full
         # training sequence: tokenized_prompt holds input_ids (padded to the
         # declared tokenizer_max_length), tokenized_prompt_mask the attention
@@ -160,9 +168,7 @@ class OpenVLAModelWrapper(nn.Module):
         out = self.model(**batch)
         return out.loss, {"loss": out.loss.item()}
 
-    # ── Inference ─────────────────────────────────────────────────
-
-    def predict_actions(self, observation, **kwargs):
+    def _predict_openvla(self, observation):
         # The plan's assemble step tokenized the (answer-less) prompt; select
         # the real tokens out of the padded sequence — upstream's
         # predict_action expects the unpadded input.
@@ -180,8 +186,6 @@ class OpenVLAModelWrapper(nn.Module):
             input_ids, self._stats_key, pixel_values=pixel_values
         )
         return torch.as_tensor(actions, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-
-    # ── Helpers ───────────────────────────────────────────────────
 
 
 # ── Registration ───────────────────────────────────────────────────
