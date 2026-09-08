@@ -806,13 +806,13 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 模型环境由 `scripts/install.sh` 封装，推荐入口：
 
 ```bash
-bash scripts/install.sh [venv_dir] [model]
-# 默认：venv_dir=.venv，model=pi0
+bash scripts/install.sh [--model {act|pi0|pi05}] [--venv <dir>] [-y|--yes]
+# venv 默认 ./.{model}（如 ./.act）；省略 --model 则安装全部（会先确认）
 ```
 
 脚本依次完成：
 
-- 用 `uv venv --python 3.12` 创建虚拟环境（默认 `.venv`）并激活。
+- 用 `uv venv --python 3.12` 创建虚拟环境（默认 `./.{model}`）并激活。
 - 按 GPU 的 **compute capability**（而非驱动 CUDA 版本）自动选 torch CUDA wheel 后端：Blackwell（sm_100 及以上，如 RTX 5090 sm_120）→ `cu128`；其它（Hopper sm_90 及更早）→ `cu126`。可用 `VLA_TORCH_BACKEND=cu126|cu128` 覆盖。之所以看 compute cap 而非驱动版本，是因为 Blackwell 卡驱动报 CUDA 12.4，但需要 cu128 的 torch 2.8+ 才带 sm_100/sm_120 kernel。
 - 自动探测 PyPI 镜像（国内网络走清华，否则 PyPI），可用 `VLA_PYPI_INDEX` 覆盖。
 - 把 openpi（以及 `VLA_LOCAL_LEROBOT=1` 时的 lerobot）以 tarball 下到 `.local-deps/` 再从本地路径安装，规避 GitHub git transport 在弱网下的不稳定；openpi 固定到已知可用 commit。

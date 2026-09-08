@@ -794,13 +794,13 @@ Core dependencies cover only configuration parsing, the data pipeline, PyTorch t
 Model environments are wrapped by `scripts/install.sh`, the recommended entry point:
 
 ```bash
-bash scripts/install.sh [venv_dir] [model]
-# defaults: venv_dir=.venv, model=pi0
+bash scripts/install.sh [--model {act|pi0|pi05}] [--venv <dir>] [-y|--yes]
+# venv defaults to ./.{model} (e.g. ./.act); omit --model to install all (asks first)
 ```
 
 The script performs, in order:
 
-- Creates a virtual environment with `uv venv --python 3.12` (default `.venv`) and activates it.
+- Creates a virtual environment with `uv venv --python 3.12` (default `./.{model}`) and activates it.
 - Auto-selects the torch CUDA wheel backend by the GPU's **compute capability** (not the driver CUDA version): Blackwell (sm_100 and above, e.g. RTX 5090 sm_120) → `cu128`; others (Hopper sm_90 and earlier) → `cu126`. Override with `VLA_TORCH_BACKEND=cu126|cu128`. The reason for checking compute capability rather than driver version is that a Blackwell card reports driver CUDA 12.4 but needs cu128's torch 2.8+ to get sm_100/sm_120 kernels.
 - Auto-detects a PyPI mirror (Tsinghua for CN networks, otherwise PyPI); override with `VLA_PYPI_INDEX`.
 - Downloads openpi (and lerobot when `VLA_LOCAL_LEROBOT=1`) as a tarball into `.local-deps/` and installs from a local path, avoiding GitHub git-transport instability on weak networks; openpi is pinned to a known-good commit.

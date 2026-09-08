@@ -17,7 +17,7 @@ Everything else (thin composition wrapper, camera_mapping translation, weight
 loading from a pytorch safetensors port such as ``lerobot/pi05_base``) is
 shared by :mod:`vla_factory.model.adapters.openpi`.
 
-Requires openpi (uv install):: bash scripts/install.sh .venv pi05
+Requires openpi (uv install):: bash scripts/install.sh --model pi05
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ _PI05_METADATA = ModelMetadata(
     support_lora=True,
     support_full=True,
     support_freeze=True,
-    install_hint="bash scripts/install.sh .venv pi05",
+    install_hint="bash scripts/install.sh --model pi05",
     # ── Interface contract (model-module §4.3) ──
     # Same vision/dim contract as pi0; differs in vector normalization: pi05
     # uses quantile (q01/q99 → [-1,1]) normalization (openpi use_quantile_norm).
