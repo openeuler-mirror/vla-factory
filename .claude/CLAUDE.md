@@ -201,7 +201,7 @@ Two install paths, by ecosystem friction:
 
 - **ACT** (lerobot's `ACTPolicy`, standard PyPI, pip-friendly):
   `pip install -e ".[act]"`.
-- **pi0 / pi05** (openpi's `PI0Pytorch`): `bash scripts/install.sh pi0`.
+- **pi0 / pi05** (openpi's `PI0Pytorch`): `bash scripts/install.sh --model pi0`.
   A plain `pip install -e ".[pi0]"` **does not work** — openpi's strict `==`
   pins + in-place `transformers` patch require the **uv** installer
   (PubGrub resolver). The script auto-detects the local CUDA driver and
