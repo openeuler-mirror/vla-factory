@@ -98,22 +98,15 @@ vlafactory-cli evaluate --checkpoint outputs/act_so101_banana \
 ### 4. Deploy a Checkpoint
 
 ```bash
-# Simulator platform
-vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
-    --platform simulator --strategy receding_horizon
-
 # lerobot real-robot platform
 vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
-
-# RoboTwin simulator platform
-vlafactory-cli deploy --checkpoint outputs/act_robotwin \
-    --platform robotwin --port 9999
 ```
 
-RoboTwin runs in a separate simulator environment and connects to the model
-server over TCP. See the [RoboTwin platform tutorial](./docs/tutorial/robotwin.md)
-for installation, native dataset, and evaluation instructions.
+Other simulator platforms (RoboTwin 2.0, RoboCasa365) run in separate
+simulator environments and connect to the model server over TCP. See the
+platform tutorials under [`docs/tutorial/`](./docs/tutorial/) for installation,
+native dataset, and evaluation instructions.
 
 ---
 
@@ -139,9 +132,9 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 | Data | Model | Algorithm | Deployment |
 |------|-------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** · ⬜ **π-FAST** | ✅ **LoRA SFT** | ✅ **LeRobot** |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** · ⬜ **π-FAST** | ✅ **LoRA SFT** | |
 
 ---

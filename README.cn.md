@@ -96,21 +96,14 @@ vlafactory-cli evaluate --checkpoint outputs/act_so101_banana \
 ### 4. 部署 Checkpoint
 
 ```bash
-# 仿真器平台
-vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
-    --platform simulator --strategy receding_horizon
-
 # lerobot 真机平台
 vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
-
-# RoboTwin 仿真平台
-vlafactory-cli deploy --checkpoint outputs/act_robotwin \
-    --platform robotwin --port 9999
 ```
 
-RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、训练数据和评测
-步骤见 [RoboTwin 平台教程](./docs/tutorial/robotwin.cn.md)。
+其他仿真平台（RoboTwin 2.0、RoboCasa365）使用独立仿真环境通过 TCP 连接
+模型服务，完整安装、训练数据和评测步骤见 [`docs/tutorial/`](./docs/tutorial/)
+下的各平台教程。
 
 ---
 
@@ -135,7 +128,7 @@ RoboTwin 使用独立仿真环境通过 TCP 连接模型服务，完整安装、
 
 | 数据 | 模型 | 算法 | 部署 |
 |------|------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
 | ⬜ **HDF5** | ⬜ **π-FAST** | | |
