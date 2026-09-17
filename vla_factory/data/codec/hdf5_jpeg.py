@@ -30,6 +30,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..data_schema import VideoRef
+from .base import OpenHandleLRU
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -130,28 +131,36 @@ class Hdf5JpegCodec:
     """Decode JPEG frames stored inside RoboTwin episode hdf5 files.
 
     Caching mirrors :class:`PyAVCodec`: a per-hdf5-file cache of open handles
-    plus a decoded-frame LRU (``max_cached_per_video``, default 32).
+    plus a decoded-frame LRU (``max_cached_per_video``, default 32). The
+    open set is bounded by a file-level LRU (``max_open_videos``): every
+    entry holds an open h5py handle (an fd), so an unbounded registry
+    eventually exhausts fds.
     """
 
     def __init__(
         self,
         rgb_key_template: str = "/observation/{stream}/rgb",
         max_cached_per_video: int = 32,
+        max_open_videos: int = 32,
     ) -> None:
         self._rgb_key_template = rgb_key_template
         self._max_cached = max_cached_per_video
-        self._caches: dict[Path, _Hdf5FrameCache] = {}
+        self._caches: OpenHandleLRU[Path, _Hdf5FrameCache] = OpenHandleLRU(
+            max_open_videos
+        )
 
     @property
     def name(self) -> str:
         return "hdf5_jpeg"
 
     def _get_cache(self, path: Path) -> _Hdf5FrameCache:
-        if path not in self._caches:
-            self._caches[path] = _Hdf5FrameCache(
+        cache = self._caches.get(path)
+        if cache is None:
+            cache = _Hdf5FrameCache(
                 path, self._rgb_key_template, max_cached=self._max_cached
             )
-        return self._caches[path]
+            self._caches.put(path, cache)
+        return cache
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode one frame -> numpy HWC uint8 RGB.
@@ -170,9 +179,7 @@ class Hdf5JpegCodec:
 
     def close(self) -> None:
         """Close all open hdf5 handles and clear the frame LRUs."""
-        for cache in self._caches.values():
-            cache.close()
-        self._caches.clear()
+        self._caches.close()
 
     def __del__(self) -> None:
         self.close()

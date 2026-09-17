@@ -21,9 +21,18 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..data_schema import VideoRef
+from .base import OpenHandleLRU
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
+
+# Decoding forward is only cheaper than a keyframe-aligned seek when the gap
+# is smaller than the keyframe interval (a seek re-decodes from the nearest
+# keyframe before the target). Gaps beyond this many frames re-seek instead:
+# uniform random access used to turn far-forward jumps into O(gap) sequential
+# decodes (~1.4 s/frame on 640x480 H.264 robot videos, 118x slower than
+# torchcodec).
+_MAX_DECODE_FORWARD_GAP = 12
 
 
 class _VideoFrameCache:
@@ -113,45 +122,44 @@ class _VideoFrameCache:
         """Seek to a target frame index.
 
         On return the decoder is positioned so the caller's next ``next()``
-        yields frame ``frame_idx``.
+        yields frame ``frame_idx``. Always issues a fresh container seek:
+        av's keyframe-aligned seek lands at some frame L <= target whether
+        we approach from before or after it, so the same path serves
+        backward access and far-forward jumps.
         """
         self._ensure_open()
-        # Flush existing decoder state
-        if self._current_pos > frame_idx or self._current_pos == 0:
-            # Seek backward or initial seek. av's seek is keyframe-aligned, so
-            # it lands at some frame L <= target. Read the landing frame to
-            # learn L, then skip only the remaining frames before the target —
-            # skipping frame_idx frames from the landing position would overshoot
-            # the target (and the video end).
-            target_ts = self._frame_to_pts(frame_idx)
-            self._container.seek(target_ts, stream=self._stream)
-            self._decoder = self._container.decode(self._stream)
-            self._current_pos = 0
-            span = self._pts_per_frame()
-            try:
-                landing = next(self._decoder)
-            except StopIteration:
-                return
-            if landing.pts is not None and span:
-                # Round absorbs small PTS offsets from the nominal index*span.
-                land = int(round((landing.pts - self._first_pts) / span))
-            else:
-                land = 0
-            if land == frame_idx:
-                # Keyframe-aligned seek landed exactly on the target. The
-                # landing frame has already been consumed to learn its index,
-                # so chain it back in front; otherwise the caller's next()
-                # would yield frame_idx + 1 instead of frame_idx.
-                self._decoder = itertools.chain([landing], self._decoder)
-                self._current_pos = frame_idx
-            else:
-                self._current_pos = land + 1
-                while self._current_pos < frame_idx:
-                    try:
-                        next(self._decoder)
-                        self._current_pos += 1
-                    except StopIteration:
-                        break
+        # Read the landing frame to learn its index, then skip only the
+        # remaining frames before the target — skipping frame_idx frames from
+        # the landing position would overshoot the target (and the video end).
+        target_ts = self._frame_to_pts(frame_idx)
+        self._container.seek(target_ts, stream=self._stream)
+        self._decoder = self._container.decode(self._stream)
+        self._current_pos = 0
+        span = self._pts_per_frame()
+        try:
+            landing = next(self._decoder)
+        except StopIteration:
+            return
+        if landing.pts is not None and span:
+            # Round absorbs small PTS offsets from the nominal index*span.
+            land = int(round((landing.pts - self._first_pts) / span))
+        else:
+            land = 0
+        if land == frame_idx:
+            # Keyframe-aligned seek landed exactly on the target. The
+            # landing frame has already been consumed to learn its index,
+            # so chain it back in front; otherwise the caller's next()
+            # would yield frame_idx + 1 instead of frame_idx.
+            self._decoder = itertools.chain([landing], self._decoder)
+            self._current_pos = frame_idx
+        else:
+            self._current_pos = land + 1
+            while self._current_pos < frame_idx:
+                try:
+                    next(self._decoder)
+                    self._current_pos += 1
+                except StopIteration:
+                    break
 
     def get_frame(self, frame_idx: int, dims: tuple[int, ...]) -> NDArray:
         """Get a decoded frame as numpy HWC uint8.
@@ -167,8 +175,14 @@ class _VideoFrameCache:
 
         self._ensure_open()
 
-        # Decide whether to seek or continue sequential
-        if frame_idx < self._current_pos:
+        # Backward access, or a forward jump longer than the decode-forward
+        # window, takes the keyframe-aligned seek; only near-forward access
+        # decodes through (a seek re-decodes from the nearest keyframe, so
+        # decode-forward is cheaper only inside one keyframe interval).
+        if (
+            frame_idx < self._current_pos
+            or frame_idx > self._current_pos + _MAX_DECODE_FORWARD_GAP
+        ):
             self._seek_to(frame_idx)
         elif frame_idx > self._current_pos:
             # Decode forward to the target
@@ -230,15 +244,25 @@ class PyAVCodec:
     """Default video codec — uses PyAV to decode video frames to numpy.
 
     Maintains a per-video-file cache of ``_VideoFrameCache`` instances
-    so that the same video container can be reused across frames.
+    so that the same video container can be reused across frames. The
+    open set is bounded by a file-level LRU (``max_open_videos``):
+    every entry holds an fd plus an H.264 decoder context, so an
+    unbounded registry eventually exhausts fds.
 
     Disk cache: decoded frames are saved as ``.npy`` files under
     ``<video_path>.frame_cache/``.  On subsequent calls, frames are
     loaded directly from disk instead of re-decoding the video.
     """
 
-    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True) -> None:
-        self._caches: dict[Path, _VideoFrameCache] = {}
+    def __init__(
+        self,
+        max_cached_per_video: int = 32,
+        disk_cache: bool = True,
+        max_open_videos: int = 32,
+    ) -> None:
+        self._caches: OpenHandleLRU[Path, _VideoFrameCache] = OpenHandleLRU(
+            max_open_videos
+        )
         self._max_cached = max_cached_per_video
         self._disk_cache = disk_cache
 
@@ -253,11 +277,11 @@ class PyAVCodec:
         return cache_dir / f"{ref.frame_index:06d}.npy"
 
     def _get_cache(self, video_path: Path) -> _VideoFrameCache:
-        if video_path not in self._caches:
-            self._caches[video_path] = _VideoFrameCache(
-                video_path, max_cached=self._max_cached
-            )
-        return self._caches[video_path]
+        cache = self._caches.get(video_path)
+        if cache is None:
+            cache = _VideoFrameCache(video_path, max_cached=self._max_cached)
+            self._caches.put(video_path, cache)
+        return cache
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode a single frame -> numpy HWC uint8.

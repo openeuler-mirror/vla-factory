@@ -211,6 +211,8 @@ class LeRobotV3Reader:
         # Video file→global-range spans are dataset-level too; cache per
         # (dataset_path, cam_key) so per-episode reads don't re-open every mp4.
         self._video_spans_cache: dict[tuple[Path, str], list[_VideoFileSpan]] = {}
+        # meta/episodes rows (v3.0 spec) are dataset-level; cache per path.
+        self._episodes_meta_cache: dict[Path, dict[int, dict[str, Any]]] = {}
 
     def can_read(self, path: Path) -> bool:
         """Check for ``meta/info.json`` with ``codebase_version >= 3.0``."""
@@ -393,6 +395,31 @@ class LeRobotV3Reader:
             self._video_spans_cache[key] = spans
         return spans
 
+    def _episodes_meta(self, dataset_path: Path) -> dict[int, dict[str, Any]]:
+        """Load ``meta/episodes`` rows keyed by episode index (v3.0 spec).
+
+        The rows carry the authoritative per-episode video mapping —
+        ``videos/{cam}/file_index`` and ``videos/{cam}/from_timestamp`` —
+        which stays correct even when the video files hold more frames than
+        the parquet rows (trimmed conversions): count-derived spans drift in
+        that case, mis-mapping or spuriously rejecting later episodes.
+        Returns ``{}`` for datasets predating the episodes-metadata layout.
+        """
+        cached = self._episodes_meta_cache.get(dataset_path)
+        if cached is not None:
+            return cached
+        rows: dict[int, dict[str, Any]] = {}
+        meta_dir = dataset_path / "meta" / "episodes"
+        if meta_dir.exists():
+            for pq_file in sorted(meta_dir.rglob("*.parquet")):
+                df = pq.read_table(pq_file).to_pandas()
+                if "episode_index" not in df.columns:
+                    continue
+                for record in df.to_dict("records"):
+                    rows[int(record["episode_index"])] = record
+        self._episodes_meta_cache[dataset_path] = rows
+        return rows
+
     def _make_video_resolver(
         self,
         dataset_path: Path,
@@ -405,12 +432,13 @@ class LeRobotV3Reader:
 
         Returns ``None`` when the camera has no video files. Per-episode videos
         (``episode_{ep_idx:06d}.mp4``) map via ``frame_index``. Multi-episode
-        files (``file-*.mp4``) resolve to the file whose global range contains
-        the episode's first frame; every frame in the episode then maps via
-        ``index - file_global_start`` (codecs treat ``VideoRef.frame_index`` as a
-        0-based within-file ordinal). An episode must fit entirely inside one
-        multi-episode video file; if it crosses a file boundary we fail fast
-        rather than silently decoding black/wrong frames.
+        files (``file-*.mp4``) resolve via meta/episodes' per-episode
+        ``file_index`` + ``from_timestamp`` when the dataset ships them (the
+        v3.0 spec, robust to video/parquet frame-count drift), else via the
+        count-derived global spans (video frames == parquet rows assumed); an
+        episode crossing a file boundary then fails fast rather than silently
+        decoding black/wrong frames. Codecs treat ``VideoRef.frame_index`` as
+        a 0-based within-file ordinal.
         """
         videos_dir = dataset_path / "videos" / cam_key
         if not videos_dir.exists():
@@ -427,7 +455,40 @@ class LeRobotV3Reader:
 
             return _per_episode
 
-        # Patterns 2 & 3: multi-episode / flat files → cumulative global ranges.
+        # Patterns 2 & 3: multi-episode / flat files.
+        #
+        # Pattern 2 (v3.0 spec): meta/episodes carries the authoritative
+        # per-episode video mapping — file_index plus from_timestamp. It
+        # stays correct when video files hold more frames than parquet rows
+        # (trimmed conversions), where the count-derived spans below drift
+        # and both mis-map episodes and spuriously reject them.
+        meta = self._episodes_meta(dataset_path).get(ep_idx)
+        file_index_key = f"videos/{cam_key}/file_index"
+        from_ts_key = f"videos/{cam_key}/from_timestamp"
+        if meta is not None and file_index_key in meta and from_ts_key in meta:
+            fps = float(_load_json(dataset_path / "meta" / "info.json").get("fps") or 0)
+            file_index = int(meta[file_index_key])
+            from_ts = float(meta[from_ts_key])
+            video_path = next(
+                iter(sorted(videos_dir.rglob(f"file-{file_index:03d}.mp4"))), None
+            )
+            if video_path is not None and fps > 0:
+
+                def _meta_episode(row: Any) -> tuple[Path, int]:
+                    # Spec query: within-file seconds = from_timestamp plus
+                    # the row's seconds-since-episode-start; one frame per
+                    # 1/fps. Falls back to the per-episode frame ordinal when
+                    # the row carries no timestamp column.
+                    if "timestamp" in row:
+                        ts = float(row["timestamp"])
+                    else:
+                        ts = int(row["frame_index"]) / fps
+                    return video_path, int(round((from_ts + ts) * fps))
+
+                return _meta_episode
+
+        # Pattern 3: count-derived global ranges (datasets without
+        # meta/episodes metadata; assumes video frames == parquet rows).
         spans = self._video_spans(dataset_path, cam_key)
         if not spans:
             return None
