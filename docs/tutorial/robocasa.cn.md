@@ -62,8 +62,7 @@ robot:
   name: panda_omron
 ```
 
-完整 recipe 见 `examples/robocasa365_diffusion_policy.yaml` 和
-`examples/robocasa365_pi0_lora.yaml`。动作为 12-D EEF delta（OSC 末端执行器
+完整 recipe 见 `examples/robocasa365_diffusion_policy.yaml`。动作为 12-D EEF delta（OSC 末端执行器
 + 夹爪 + 底盘），因此 robot profile 声明 `native_action_type: eef_delta`，
 相机语义规则将 `robot0_eye_in_hand` → `wrist`、
 `robot0_agentview_left/right` → `third_person_front`。

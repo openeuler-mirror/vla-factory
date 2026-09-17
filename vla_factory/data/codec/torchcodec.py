@@ -76,8 +76,8 @@ class _TorchFrameCache:
         if self._decoder is not None:
             return
         VideoDecoder = _load_torchcodec()
-        # Keep decoder work on CPU: DataLoader workers must work on CPU-only
-        # hosts and CUDA decoder support depends on the torchcodec build.
+        # NHWC matches the codec contract (numpy HWC uint8). device="cpu": the
+        # pipeline never holds video frames on GPU (see module docstring).
         self._decoder = VideoDecoder(
             source=str(self.video_path),
             dimension_order="NHWC",
@@ -127,11 +127,9 @@ class TorchCodec:
     Native decoder resources are released when the cache is closed/dropped.
     """
 
-    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True,
-                 max_open_videos: int = 64) -> None:
-        self._caches: OrderedDict[Path, _TorchFrameCache] = OrderedDict()
+    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True) -> None:
+        self._caches: dict[Path, _TorchFrameCache] = {}
         self._max_cached = max_cached_per_video
-        self._max_open_videos = max_open_videos
         self._disk_cache = disk_cache
 
     @property
@@ -145,18 +143,11 @@ class TorchCodec:
         return cache_dir / f"{ref.frame_index:06d}.npy"
 
     def _get_cache(self, video_path: Path) -> _TorchFrameCache:
-        if video_path in self._caches:
-            self._caches.move_to_end(video_path)
-            return self._caches[video_path]
-        cache = _TorchFrameCache(video_path, max_cached=self._max_cached)
-        self._caches[video_path] = cache
-        # Evict the least-recently-used decoder, closing its handle. Mirrors
-        # PyAVCodec's file-level LRU: without it the dict grows unbounded (one
-        # open VideoDecoder per video file) and resources exhaust.
-        while len(self._caches) > self._max_open_videos:
-            _, evicted = self._caches.popitem(last=False)
-            evicted.close()
-        return cache
+        if video_path not in self._caches:
+            self._caches[video_path] = _TorchFrameCache(
+                video_path, max_cached=self._max_cached
+            )
+        return self._caches[video_path]
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode a single frame -> numpy HWC uint8.
@@ -165,12 +156,9 @@ class TorchCodec:
         saves the result to disk for future runs (same layout as PyAV).
         """
         if self._disk_cache:
-            try:
-                npy_path = self._disk_cache_path(ref)
-                if npy_path.exists():
-                    return np.load(npy_path)
-            except OSError:
-                self._disk_cache = False
+            npy_path = self._disk_cache_path(ref)
+            if npy_path.exists():
+                return np.load(npy_path)
 
         # Decode from video
         cache = self._get_cache(ref.video_path)
@@ -180,10 +168,7 @@ class TorchCodec:
 
         # Save to disk cache
         if self._disk_cache:
-            try:
-                np.save(self._disk_cache_path(ref), img)
-            except OSError:
-                self._disk_cache = False
+            np.save(self._disk_cache_path(ref), img)
 
         return img
 

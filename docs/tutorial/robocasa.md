@@ -71,8 +71,7 @@ robot:
   name: panda_omron
 ```
 
-See `examples/robocasa365_diffusion_policy.yaml` and
-`examples/robocasa365_pi0_lora.yaml` for full recipes. The action is a 12-D
+See `examples/robocasa365_diffusion_policy.yaml` for a full recipe. The action is a 12-D
 EEF delta (OSC end-effector + gripper + base), so the robot profile declares
 `native_action_type: eef_delta` and the camera semantic rules map
 `robot0_eye_in_hand` → `wrist` and `robot0_agentview_left/right` →
