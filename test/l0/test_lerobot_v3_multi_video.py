@@ -306,6 +306,33 @@ def test_per_episode_video_uses_frame_index(tmp_path):
                 assert ref.frame_index == t
 
 
+def test_chunk_directory_above_camera_folder(tmp_path):
+    """Camera folders nested under ``videos/chunk-XXX/`` resolve too.
+
+    The official lerobot layout (and RoboCasa365) nests the chunk directory
+    above the camera folder — ``videos/chunk-000/observation.images.<cam>/``
+    — while the fixtures above nest it below. Video lookup goes by camera
+    folder name, so both nestings resolve to the same episode files.
+    """
+    ds = _write_per_episode_dataset(tmp_path)
+    for cam in ("front", "wrist"):
+        old = ds / "videos" / f"observation.images.{cam}" / "chunk-000"
+        new = ds / "videos" / "chunk-000" / f"observation.images.{cam}"
+        new.mkdir(parents=True, exist_ok=True)
+        for mp4 in old.glob("*.mp4"):
+            mp4.rename(new / mp4.name)
+
+    reader = LeRobotV3Reader()
+    for ep in range(2):
+        frames = reader.read_episode(ds, ep, PyAVCodec()).load_frames()
+        assert len(frames) == 5
+        for t, frame in enumerate(frames):
+            assert len(frame.images) == 2
+            for ref in frame.images.values():
+                assert ref.video_path.name == f"episode_{ep:06d}.mp4"
+                assert ref.frame_index == t
+
+
 def test_uncovered_index_raises(tmp_path):
     """A global index beyond every video span fails fast instead of mis-decoding."""
     ds = _write_uncovered_dataset(tmp_path)

@@ -1,0 +1,56 @@
+# RoboCasa365 robot profile (Franka Panda arm + Omron mobile base body).
+#
+# RoboCasa365 runs on a Franka Panda arm (7-DoF) mounted on an Omron LD mobile
+# base, observed by three cameras (left/right agentview third-person + an
+# eye-in-hand wrist camera). The action is a 12-D end-effector delta: OSC
+# translation/rotation deltas + gripper command + base motion, so the profile
+# declares the EEF delta control mode (vla_factory.utils.vocabulary), not a
+# joint-space mode. The body's joint topology below is descriptive — the
+# resolver maps state/action vectors positionally (index-to-index), so joints
+# are not matched against the action the way joint-space bodies are.
+#
+# Camera semantics are inferred from the native names (data/semantics.py):
+#   robot0_eye_in_hand   -> wrist
+#   robot0_agentview_*   -> third_person_front
+# so a recipe need not override camera_mapping for the standard 3-camera set.
+
+name: panda_omron
+
+cameras: [robot0_agentview_left, robot0_agentview_right, robot0_eye_in_hand]
+
+# Body joint topology (descriptive; the action is EEF, not joint-space):
+# Panda arm (7 revolute) + gripper (1 prismatic) + Omron base (x, y, yaw).
+joints:
+  names: [panda_joint1, panda_joint2, panda_joint3, panda_joint4,
+          panda_joint5, panda_joint6, panda_joint7,
+          panda_gripper,
+          base_x, base_y, base_yaw]
+  units: radian
+  types: [revolute, revolute, revolute, revolute, revolute, revolute, revolute,
+          prismatic,
+          prismatic, prismatic, revolute]
+  limits_low: []
+  limits_high: []
+
+# Franka parallel-jaw gripper: 0 = closed, 255 (normalised 1.0) = open in the
+# native qpos; the action's gripper command is a binary/delta that the OSC
+# controller resolves. joint_index points at the gripper DoF in joints.names.
+gripper:
+  open_value: 1.0
+  close_value: 0.0
+  joint_index: 7
+
+# EEF delta control (OSC end-effector + base). eef_delta is the vocabulary
+# entry added for robosuite-lineage OSC datasets; the data side carries only
+# numeric modality segments, so the resolver's control-mode check (which
+# constrains declared data modes only) stays a no-op for RoboCasa365.
+control_modes: [eef_delta]
+native_action_type: eef_delta
+
+coordinate_frame: base_link
+urdf_ref: ""
+
+safety_bounds_low: []
+safety_bounds_high: []
+
+recommended_control_hz: 20

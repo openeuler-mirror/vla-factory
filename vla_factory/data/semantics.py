@@ -42,7 +42,9 @@ _CAMERA_SEMANTIC_RULES: tuple[_CameraSemanticRule, ...] = (
     # Directional wrist evidence is more specific than a generic wrist view.
     _CameraSemanticRule("wrist_left", priority=30, all_of=("wrist", "left")),
     _CameraSemanticRule("wrist_right", priority=30, all_of=("wrist", "right")),
-    _CameraSemanticRule("wrist", priority=20, all_of=("wrist",)),
+    # robosuite-lineage datasets (mimicgen, robocasa) name the wrist camera
+    # ``robot0_eye_in_hand`` — no "wrist" token anywhere.
+    _CameraSemanticRule("wrist", priority=20, any_of=("wrist", "eye_in_hand")),
     # Top and side are equally specific: a key carrying both remains ambiguous.
     _CameraSemanticRule(
         "third_person_top", priority=10,
@@ -50,8 +52,10 @@ _CAMERA_SEMANTIC_RULES: tuple[_CameraSemanticRule, ...] = (
     ),
     _CameraSemanticRule("third_person_side", priority=10, any_of=("side",)),
     # Explicit top/side wording outranks the weaker front/head convention.
+    # ``agentview`` is the robosuite-lineage name for the fixed front
+    # third-person view (``robot0_agentview``, ``robot0_agentview_left``).
     _CameraSemanticRule(
-        "third_person_front", priority=0, any_of=("front", "head"),
+        "third_person_front", priority=0, any_of=("front", "head", "agentview"),
     ),
 )
 

@@ -1,0 +1,66 @@
+# Diffusion Policy (CNN variant) trained from scratch on RoboCasa365.
+#
+# Replicates the RoboCasa365 paper's Diffusion Policy baseline. DP is a
+# from-scratch model (no pretrained weights), mode-agnostic, and dimension-
+# flexible, so it adapts to RoboCasa365's 12-D EEF-delta action (OSC
+# end-effector + gripper + base) and 3-camera Panda+Omron body without any
+# action-space surgery.
+#
+# Install the model deps: bash scripts/install.sh --model diffusion_policy
+# Download the data:     python -m robocasa.scripts.download_datasets \
+#                          --split target --tasks PickPlaceCounterToCabinet
+# (run download from an env that has robocasa installed).
+#
+# The dataset is LeRobot format (parquet + MP4 + v3-style meta/) labeled
+# codebase_version: v2.1; the lerobot-v3 reader detects it by structure.
+# Camera semantics are inferred: robot0_eye_in_hand -> wrist,
+# robot0_agentview_left/right -> third_person_front. DP declares no fixed
+# vision slots, so every dataset camera is consumed as-is (identity mapping).
+#
+# DP needs min/max norm stats (vector_normalization: min_max); RoboCasa365's
+# meta/stats.json ships them. history_frames=2 is DP's condition window (a
+# model fact, not tunable here).
+
+model:
+  name: diffusion_policy
+  path: null                         # from scratch, no pretrained weights
+  config:
+    action_horizon: 16               # chunk size (DP's own tunable)
+    num_inference_steps: 16          # DDIM-style inference stride
+    down_dims: [256, 512, 1024]      # ConditionalUnet1D feature pyramid
+    # input_image_size: null         # native 256x256 (robocasa cameras)
+
+data:
+  path: /home/nice/Software/robocasa/datasets/v1.0/target/atomic/PickPlaceCounterToCabinet/20250811/lerobot
+  format: lerobot-v3
+  video_codec: pyav
+
+# Bind the Panda+Omron body so the EEF-delta control mode is declared. The
+# resolver maps state/action positionally (index-to-index); joint-name
+# matching is not applied to EEF actions, so the body's joint topology is
+# descriptive only.
+robot:
+  name: panda_omron                  # vla_factory/robot/profiles/panda_omron.yaml
+
+finetuning:
+  strategy: full                     # DP trains from scratch
+
+training:
+  backend: pytorch
+  lr: 1.0e-4                         # DP paper default
+  batch_size: 32                     # fits 24GB at 256x256 (paper baseline)
+  total_steps: 60000                # paper-scale convergence
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: cosine
+  warmup_steps: 5000
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  num_workers: 8                     # video decode is the bottleneck
+
+output:
+  output_dir: outputs/robocasa365_diffusion_policy
+  report_to: tensorboard
+  logging_steps: 200
+  save_steps: 10000
+  save_total_limit: 4
+  overwrite_output_dir: true

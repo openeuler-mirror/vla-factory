@@ -110,6 +110,33 @@ def test_bad_control_mode_invalid():
         bad.validate()
 
 
+def test_eef_delta_control_mode_accepted():
+    # RoboCasa365's action is an OSC end-effector delta (plus base) on a
+    # Panda+Omron body — eef_delta is the vocabulary entry for it. A profile
+    # declaring it must validate, where a non-vocab EEF string must not.
+    from vla_factory.utils.vocabulary import CONTROL_MODES, is_control_mode
+
+    assert "eef_delta" in CONTROL_MODES
+    assert is_control_mode("eef_delta")
+
+    profile = RobotProfile(
+        name="eef_body",
+        joints=JointGroup(names=("eef_x", "eef_y", "eef_z", "gripper")),
+        native_action_type="eef_delta",
+        control_modes=("eef_delta",),
+    )
+    profile.validate()
+    assert profile.native_action_type == "eef_delta"
+
+    bad = RobotProfile(
+        name="x",
+        joints=JointGroup(names=("a",)),
+        native_action_type="eef_pos",  # not yet in the vocabulary
+    )
+    with pytest.raises(ValueError):
+        bad.validate()
+
+
 def test_from_dict_validates():
     raw = {
         "name": "tester",
