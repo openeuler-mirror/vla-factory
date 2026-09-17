@@ -146,6 +146,24 @@ def _video_frame_count(video_path: Path) -> int:
         container.close()
 
 
+def _camera_video_dirs(dataset_path: Path, cam_key: str) -> list[Path]:
+    """Video directories for one camera feature key, across known layouts.
+
+    The official lerobot layout nests camera folders inside chunk
+    directories (``videos/chunk-000/<cam_key>/episode_*.mp4``); flat ones
+    (``videos/<cam_key>/``) also occur. A short-name folder (last dot
+    segment) is tolerated for simplified fixtures — exact names win.
+    """
+    videos = dataset_path / "videos"
+    if not videos.is_dir():
+        return []
+    hits = {d for d in videos.rglob(cam_key) if d.is_dir()}
+    short = cam_key.split(".")[-1]
+    if short != cam_key:
+        hits.update(d for d in videos.rglob(short) if d.is_dir())
+    return sorted(hits)
+
+
 def _build_video_spans(dataset_path: Path, cam_key: str) -> list[_VideoFileSpan]:
     """Map each multi-episode video file to its dataset-global index range.
 
@@ -154,15 +172,14 @@ def _build_video_spans(dataset_path: Path, cam_key: str) -> list[_VideoFileSpan]
     files (``episode_*.mp4``) are excluded — they have no global-range meaning and
     are handled by the per-episode path.
     """
-    videos_dir = dataset_path / "videos" / cam_key
-    if not videos_dir.exists():
-        return []
-    mp4s = sorted(
-        p for p in videos_dir.rglob("*.mp4") if not p.stem.startswith("episode_")
-    )
+    mp4s: list[Path] = []
+    for videos_dir in _camera_video_dirs(dataset_path, cam_key):
+        mp4s.extend(
+            p for p in videos_dir.rglob("*.mp4") if not p.stem.startswith("episode_")
+        )
     spans: list[_VideoFileSpan] = []
     cursor = 0
-    for mp4 in mp4s:
+    for mp4 in sorted(mp4s):
         n = _video_frame_count(mp4)
         if n <= 0:
             raise ValueError(f"Video file has 0 decodable frames: {mp4}")
@@ -200,6 +217,40 @@ def _feature_names(names) -> list:
     return []
 
 
+def _modality_dim_names(path: Path, feature_key: str, dim: int) -> list[str]:
+    """Per-dimension canonical names from a GR00T-style ``meta/modality.json``.
+
+    The file segments each vector column into named slices (``start`` /
+    ``end``, end-exclusive) under its ``original_key``. Datasets that ship no
+    per-feature ``names`` (RoboCasa365) rely on it for dimension semantics.
+    Each dim becomes ``{segment}.{offset}`` (``base_position.0``); the numeric
+    suffix is not a known mode suffix, so action-mode inference stays
+    undeclared. Returns [] when the file is absent or does not cover every
+    dimension — a partial map must not silently mix named and unnamed dims.
+    """
+    mod_path = path / "meta" / "modality.json"
+    if not mod_path.exists():
+        return []
+    try:
+        with open(mod_path) as f:
+            modality = json.load(f)
+    except (json.JSONDecodeError, ValueError, IOError, OSError):
+        return []
+    names: list[str | None] = [None] * dim
+    for group in modality.values():
+        if not isinstance(group, dict):
+            continue
+        for seg_name, seg in group.items():
+            if not isinstance(seg, dict) or seg.get("original_key") != feature_key:
+                continue
+            start, end = seg.get("start"), seg.get("end")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            for i in range(start, min(end, dim)):
+                names[i] = f"{seg_name}.{i - start}"
+    return [] if any(n is None for n in names) else [str(n) for n in names]
+
+
 @ReaderRegistry.register("lerobot-v3", aliases=("lerobot_v3",))
 class LeRobotV3Reader:
     """Read LeRobot v3 datasets (parquet + MP4)."""
@@ -213,19 +264,27 @@ class LeRobotV3Reader:
         self._video_spans_cache: dict[tuple[Path, str], list[_VideoFileSpan]] = {}
 
     def can_read(self, path: Path) -> bool:
-        """Check for ``meta/info.json`` with ``codebase_version >= 3.0``."""
+        """Check for the lerobot layout this reader actually consumes.
+
+        Detection is structural, not version-driven: the reader reads whatever
+        files exist (per-episode ``episode_*.mp4`` and v2-style ``file-*.mp4``
+        concatenations alike), and the version label is unreliable —
+        RoboCasa365 ships this exact layout labeled ``codebase_version:
+        v2.1``. A directory qualifies when ``meta/info.json`` parses into a
+        features map and parquet shards exist under ``data/``.
+        """
         info_path = path / "meta" / "info.json"
         if not info_path.exists():
             return False
         try:
             with open(info_path) as f:
                 info = json.load(f)
-            version = info.get("codebase_version", "2.0")
-            # Accept both "v3.0" and "3.0" formats
-            v = version.lstrip("v")
-            return v >= "3.0"
         except (json.JSONDecodeError, ValueError, IOError, OSError):
             return False
+        if not isinstance(info.get("features"), dict):
+            return False
+        data_dir = path / "data"
+        return data_dir.is_dir() and any(data_dir.rglob("*.parquet"))
 
     # ── Schema & stats (from meta/ JSON files) ────────────────────
 
@@ -246,7 +305,10 @@ class LeRobotV3Reader:
 
             if key == "action":
                 dim = shape[0] if shape else 0
-                name_list = _feature_names(names)
+                name_list = (
+                    _feature_names(names)
+                    or _modality_dim_names(path, key, dim)
+                )
                 for i in range(dim):
                     nm = name_list[i] if i < len(name_list) else None
                     mode = infer_action_mode(nm) if nm else None
@@ -258,7 +320,10 @@ class LeRobotV3Reader:
                     ))
             elif "state" in key.lower() and dtype != "video":
                 dim = shape[0] if shape else 0
-                name_list = _feature_names(names)
+                name_list = (
+                    _feature_names(names)
+                    or _modality_dim_names(path, key, dim)
+                )
                 for i in range(dim):
                     nm = name_list[i] if i < len(name_list) else None
                     state_dims.append(StateDim(name=nm, source_field=key))
@@ -412,15 +477,18 @@ class LeRobotV3Reader:
         multi-episode video file; if it crosses a file boundary we fail fast
         rather than silently decoding black/wrong frames.
         """
-        videos_dir = dataset_path / "videos" / cam_key
-        if not videos_dir.exists():
+        videos_dirs = _camera_video_dirs(dataset_path, cam_key)
+        if not videos_dirs:
             return None
 
         # Pattern 1: per-episode video file → within-file index is frame_index.
         per_episode = None
-        for mp4 in sorted(videos_dir.rglob(f"episode_{ep_idx:06d}.mp4")):
-            per_episode = mp4
-            break
+        for videos_dir in videos_dirs:
+            for mp4 in sorted(videos_dir.rglob(f"episode_{ep_idx:06d}.mp4")):
+                per_episode = mp4
+                break
+            if per_episode is not None:
+                break
         if per_episode is not None:
             def _per_episode(row: Any) -> tuple[Path, int]:
                 return per_episode, int(row["frame_index"])

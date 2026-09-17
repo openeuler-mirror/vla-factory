@@ -237,9 +237,11 @@ class PyAVCodec:
     loaded directly from disk instead of re-decoding the video.
     """
 
-    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True) -> None:
-        self._caches: dict[Path, _VideoFrameCache] = {}
+    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True,
+                 max_open_videos: int = 64) -> None:
+        self._caches: OrderedDict[Path, _VideoFrameCache] = OrderedDict()
         self._max_cached = max_cached_per_video
+        self._max_open_videos = max_open_videos
         self._disk_cache = disk_cache
 
     @property
@@ -253,11 +255,19 @@ class PyAVCodec:
         return cache_dir / f"{ref.frame_index:06d}.npy"
 
     def _get_cache(self, video_path: Path) -> _VideoFrameCache:
-        if video_path not in self._caches:
-            self._caches[video_path] = _VideoFrameCache(
-                video_path, max_cached=self._max_cached
-            )
-        return self._caches[video_path]
+        if video_path in self._caches:
+            self._caches.move_to_end(video_path)
+            return self._caches[video_path]
+        cache = _VideoFrameCache(video_path, max_cached=self._max_cached)
+        self._caches[video_path] = cache
+        # Evict the least-recently-used video cache, closing its AV container
+        # (fd + H.264 codec context). Without this the dict grows unbounded —
+        # one open container per video file — and fd exhaustion (EAGAIN on
+        # avcodec_open2) crashes the worker after ~hundreds of files.
+        while len(self._caches) > self._max_open_videos:
+            _, evicted = self._caches.popitem(last=False)
+            evicted.close()
+        return cache
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode a single frame -> numpy HWC uint8.
@@ -266,9 +276,12 @@ class PyAVCodec:
         saves the result to disk for future runs.
         """
         if self._disk_cache:
-            npy_path = self._disk_cache_path(ref)
-            if npy_path.exists():
-                return np.load(npy_path)
+            try:
+                npy_path = self._disk_cache_path(ref)
+                if npy_path.exists():
+                    return np.load(npy_path)
+            except OSError:
+                self._disk_cache = False
 
         # Decode from video
         cache = self._get_cache(ref.video_path)
@@ -278,6 +291,9 @@ class PyAVCodec:
 
         # Save to disk cache
         if self._disk_cache:
-            np.save(self._disk_cache_path(ref), img)
+            try:
+                np.save(self._disk_cache_path(ref), img)
+            except OSError:
+                self._disk_cache = False
 
         return img

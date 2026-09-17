@@ -134,9 +134,11 @@ class GripperConvention:
 
 
 # Control-mode vocabulary is shared across data/model/robot dimensions and
-# defined once in ``vla_factory.utils.vocabulary`` (architecture §4.5). The
-# first version is joint-space only: joint_pos / joint_delta / joint_vel.
-# EEF modes (eef_pos / eef_delta / se3) enter together with EEF model support.
+# defined once in ``vla_factory.utils.vocabulary`` (architecture §4.5). It
+# covers joint-space action (joint_pos / joint_delta / joint_vel) and the
+# EEF delta mode (eef_delta) used by robosuite-lineage OSC end-effector
+# datasets such as RoboCasa365. Further EEF variants (eef_pos / se3) enter
+# together with full EEF model adaptation.
 
 
 @dataclass(frozen=True)

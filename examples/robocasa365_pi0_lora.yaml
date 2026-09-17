@@ -1,0 +1,76 @@
+# PI0 LoRA fine-tune on RoboCasa365 (paper post-training replication).
+#
+# Replicates the RoboCasa365 paper's pi0 fine-tune result at LoRA scale. pi0 is
+# finetune-only (loads openpi weights via lerobot/pi0_base); the action is
+# padded from RoboCasa365's 12-D EEF delta to pi0's 32-wide action expert
+# (dim_policy: padded_to_max). pi0 declares control_mode_pref: [joint_pos],
+# but RoboCasa365's modality.json segments carry only numeric dim suffixes, so
+# the data side reports mode=None and the resolver's control-mode check (which
+# constrains declared data modes only) stays a no-op.
+#
+# Install the model deps: bash scripts/install.sh --model pi0
+# Download the data:     python -m robocasa.scripts.download_datasets \
+#                          --split target --tasks PickPlaceCounterToCabinet
+#
+# Camera mapping: RoboCasa365 has two agentview third-person cameras + one
+# eye-in-hand wrist camera. pi0 expects 1 third-person + 2 wrist slots, so the
+# second wrist slot (right_wrist_0_rgb) is intentionally unmapped — it receives
+# a placeholder image + zero mask, exactly as examples/pi0_lora.yaml documents
+# for a 3-camera dataset with one wrist view.
+#
+# pi0 needs mean/std norm stats (vector_normalization: mean_std); RoboCasa365's
+# meta/stats.json ships them. LoRA targets the PaliGemma VLM subtree; the
+# action expert + projections stay fully trainable (openpi freeze semantics).
+
+model:
+  name: pi0
+  path: lerobot/pi0_base             # openpi weights, ported by lerobot
+  config:
+    num_inference_steps: 10
+    pytorch_compile_mode: null       # eager: avoids max-autotune VRAM spike
+
+overrides:
+  # Complete slot→camera declaration: the omitted right_wrist_0_rgb is a
+  # deliberate placeholder (no second wrist camera in RoboCasa365).
+  camera_mapping:
+    base_0_rgb: robot0_agentview_left
+    left_wrist_0_rgb: robot0_eye_in_hand
+  default_task: "pick and place object from counter to cabinet"
+
+data:
+  path: /path/to/robocasa/datasets/v1.0/target/atomic/PickPlaceCounterToCabinet/20250811/lerobot
+  format: lerobot-v3
+  video_codec: pyav
+
+robot:
+  name: panda_omron                  # vla_factory/robot/profiles/panda_omron.yaml
+
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    lora_dropout: 0.0
+    init_lora_weights: gaussian      # matches openpi's LoRA init
+    components: [llm]                # LoRA on PaliGemma VLM; action expert full-FT
+
+training:
+  backend: pytorch
+  lr: 2.5e-5                         # openpi LoRA lr
+  batch_size: 8                      # LoRA fits a single 24GB card
+  total_steps: 30000
+  gradient_accumulation_steps: 4     # effective batch 32
+  lr_scheduler_type: cosine
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  num_workers: 8
+
+output:
+  output_dir: outputs/robocasa365_pi0_lora
+  report_to: tensorboard
+  logging_steps: 50
+  save_steps: 5000
+  save_total_limit: 6
+  save_delta_only: true              # LoRA delta only; export needs model.path base
+  overwrite_output_dir: true

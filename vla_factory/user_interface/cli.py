@@ -239,10 +239,11 @@ def main():
     # desynchronise them from the camera mapping the model was trained with.
     deploy_parser.add_argument(
         "--platform", default="simulator",
-        choices=["simulator", "lerobot", "robotwin"],
+        choices=["simulator", "lerobot", "robotwin", "robocasa"],
         help="Target platform / wire format. 'simulator' uses observation.images.X / observation.state keys; "
              "'lerobot' uses the lerobot host format (per-motor state scalars + base64 JPEG cameras); "
-             "'robotwin' runs a RoboTwin-compatible TCP model server (the RoboTwin simulator connects as client).",
+             "'robotwin' runs a RoboTwin-compatible TCP model server (the RoboTwin simulator connects as client); "
+             "'robocasa' runs a TCP model server for the RoboCasa gymnasium benchmark (the env-side connector connects as client).",
     )
     deploy_parser.add_argument(
         "--host", default="0.0.0.0",

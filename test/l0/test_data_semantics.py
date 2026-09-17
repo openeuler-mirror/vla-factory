@@ -41,6 +41,17 @@ class TestInferCameraSemantic:
         assert infer_camera_semantic("head_top") == "third_person_top"
         assert infer_camera_semantic("front_side") == "third_person_side"
 
+    def test_robosuite_camera_names(self):
+        # robosuite-lineage datasets (mimicgen, robocasa): the wrist camera is
+        # ``robot0_eye_in_hand`` and the front third-person view is
+        # ``robot0_agentview`` (with _left/_right variants). The directional
+        # wrist rules still need a "wrist" token, so ``agentview_left`` is a
+        # front view, not a left wrist.
+        assert infer_camera_semantic("robot0_eye_in_hand") == "wrist"
+        assert infer_camera_semantic("robot0_agentview") == "third_person_front"
+        assert infer_camera_semantic("robot0_agentview_left") == "third_person_front"
+        assert infer_camera_semantic("robot0_agentview_right") == "third_person_front"
+
 
 class TestInferActionMode:
     def test_suffix_matches(self):

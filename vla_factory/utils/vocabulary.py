@@ -7,11 +7,18 @@ so a value cannot silently drift between a dataset's ``dims[].mode``, a model's
 (``data/``, ``model/``, ``robot/``) may import this module; nothing here
 depends on ``assembly/`` (architecture §2.2 dependency direction).
 
-The current control-mode vocabulary is joint-space only — ``joint_pos`` / ``joint_delta`` /
-``joint_vel``. EEF modes (``eef_pos`` / ``eef_delta`` / ``se3``) and rotation
-representations are deferred as a group, entering together with EEF model
-adaptation (data-module §8.3); the resolver reports an unknown control mode via
-a structured ``ResolutionError`` rather than accepting it silently.
+The control-mode vocabulary covers joint-space action (``joint_pos`` /
+``joint_delta`` / ``joint_vel``) and the EEF delta mode (``eef_delta``) used by
+robosuite-lineage datasets whose action is an OSC end-effector delta plus a
+mobile base (RoboCasa365: 12-D EEF + gripper + base on a Panda+Omron body).
+EEF delta is declared on the robot profile's ``native_action_type``; RoboCasa's
+``meta/modality.json`` segments carry only numeric dim suffixes, so the data
+side reports ``mode=None`` and the resolver's control-mode check (which only
+constrains declared data modes) stays a no-op for it. Further EEF variants
+(``eef_pos`` / ``se3``) and rotation representations remain deferred, entering
+together with full EEF model adaptation (data-module §8.3); the resolver
+reports an unknown control mode via a structured ``ResolutionError`` rather than
+accepting it silently.
 """
 
 from __future__ import annotations
@@ -39,11 +46,14 @@ CameraSemantic = Literal[
 
 
 # ── Control modes (data action.dims[].mode = model control_mode_pref =
-#    RobotProfile control_modes). Joint-space only in the first version.
-CONTROL_MODES: Final[tuple[str, ...]] = ("joint_pos", "joint_delta", "joint_vel")
+#    RobotProfile control_modes). Joint-space plus the EEF delta mode used by
+#    robosuite-lineage OSC end-effector datasets (RoboCasa365).
+CONTROL_MODES: Final[tuple[str, ...]] = (
+    "joint_pos", "joint_delta", "joint_vel", "eef_delta",
+)
 _CONTROL_MODE_SET: Final[frozenset[str]] = frozenset(CONTROL_MODES)
 
-ControlMode = Literal["joint_pos", "joint_delta", "joint_vel"]
+ControlMode = Literal["joint_pos", "joint_delta", "joint_vel", "eef_delta"]
 
 
 def is_control_mode(value: str) -> bool:

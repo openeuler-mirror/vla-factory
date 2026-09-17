@@ -1,0 +1,7 @@
+# Minimal bootstrap config for the RoboCasa365 benchmark connector.
+#
+# The task set, scene split, trials, seed, and report path are supplied by
+# CLI flags on `python -m vla_factory.inference.connectors.robocasa`. The
+# actual model and checkpoint live in the VLA Factory server process; this
+# module only selects the external connector that drives the gymnasium env.
+policy_name: vla_factory.inference.connectors.robocasa

@@ -1,0 +1,101 @@
+# PI05 LoRA fine-tune on RoboCasa365 PickPlaceCounterToCabinet.
+#
+# Replicates the RoboCasa365 paper's pi05 fine-tune at LoRA scale, on the single
+# target atomic task PickPlaceCounterToCabinet (502 episodes, 131,904 frames,
+# 105 task descriptions — a complete target split).
+#
+# pi05 is finetune-only (loads openpi weights via lerobot/pi05_base); the 12-D
+# EEF-delta action is padded to pi05's 32-wide action expert (dim_policy:
+# padded_to_max). pi05 uses quantile normalization (q01/q99 → [-1,1]) — the
+# dataset's meta/stats.json ships q01/q99. pi05 also digitizes the state into
+# the language prompt (prompt_includes_state: true) at its native 16-D width
+# before padding (task_tokenize before pad_dimensions).
+#
+# Install the model deps: bash scripts/install.sh --model pi05
+# Download the data:     python -m robocasa.scripts.download_datasets \
+#                          --split target --tasks PickPlaceCounterToCabinet
+#   (run download from an env that has robocasa installed)
+#
+# ── Camera mapping (matches the official openpi robocasa recipe) ──
+# RoboCasa365 has 3 cameras: two agentview third-person + one eye-in-hand
+# wrist. pi05 expects 3 cameras and uses all of them (unlike pi0 which masks
+# the right slot). The official recipe (openpi groot_openpi_dataset.py:114-123
+# + robocasa_policy.py:71-75) maps:
+#   base_0_rgb       <- robot0_agentview_left   (third-person front)
+#   left_wrist_0_rgb <- robot0_eye_in_hand      (wrist)
+#   right_wrist_0_rgb <- robot0_agentview_right (3rd camera, not a real wrist)
+# The right slot's semantic_accepts is ("wrist_right", "wrist"), but
+# agentview_right is a third_person_front view — so the mapping must be an
+# explicit override (inference would not auto-match it).
+#
+# ── Control mode ──
+# pi05 declares control_mode_pref: [joint_pos], but RoboCasa365's
+# modality.json segments carry only numeric dim suffixes (base_motion.0, ...),
+# so the data side reports mode=None for every dim and the resolver's
+# control-mode check (which constrains declared data modes only) stays a
+# no-op. The 12-D action is treated as opaque numbers to quantile-normalize,
+# matching the official recipe (no EEF↔joint conversion; action expert
+# fine-tunes end-to-end).
+#
+# ── LoRA scope ──
+# LoRA on the PaliGemma VLM (llm) subtree; the action_expert + projections
+# stay fully trainable (openpi freeze semantics — the action head must adapt
+# to the new 12-D EEF action space). freeze_components is empty so the
+# action_expert gets full-FT, not frozen.
+
+model:
+  name: pi05
+  path: lerobot/pi05_base              # openpi weights, ported by lerobot
+  config:
+    num_inference_steps: 10
+    pytorch_compile_mode: null         # eager: avoids max-autotune VRAM spike
+
+overrides:
+  # Complete slot→camera declaration. The right_wrist_0_rgb slot gets
+  # agentview_right — not a real wrist camera, but the official recipe fills
+  # all 3 pi05 slots this way (pi05 requires all 3, unlike pi0).
+  camera_mapping:
+    base_0_rgb: robot0_agentview_left
+    left_wrist_0_rgb: robot0_eye_in_hand
+    right_wrist_0_rgb: robot0_agentview_right
+  default_task: "pick and place object from counter to cabinet"
+
+data:
+  path: /path/to/robocasa/datasets/v1.0/target/atomic/PickPlaceCounterToCabinet/20250811/lerobot
+  format: lerobot-v3
+  video_codec: pyav
+
+robot:
+  name: panda_omron                    # vla_factory/robot/profiles/panda_omron.yaml
+
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    lora_dropout: 0.0
+    init_lora_weights: gaussian        # matches openpi's LoRA init
+    components: [llm]                   # LoRA on PaliGemma VLM only
+    # freeze_components: []             # default empty → action_expert full-FT
+    # target_modules: all-linear       # default: peft special string
+
+training:
+  backend: pytorch
+  lr: 2.5e-5                           # openpi LoRA lr
+  batch_size: 1                        # 12GB GPU: pi05 (3.6B) needs batch 1
+  total_steps: 30000                   # target fine-tune scale
+  gradient_accumulation_steps: 32     # effective batch 32
+  lr_scheduler_type: cosine
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  num_workers: 8
+
+output:
+  output_dir: outputs/robocasa365_pi05_lora
+  report_to: tensorboard
+  logging_steps: 50
+  save_steps: 5000
+  save_total_limit: 6
+  save_delta_only: true                # LoRA delta only; export needs model.path base
+  overwrite_output_dir: true
