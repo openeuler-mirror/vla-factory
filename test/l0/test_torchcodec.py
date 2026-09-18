@@ -38,7 +38,7 @@ def test_resolve_torchcodec_lazy():
 
     codec = resolve_codec("torchcodec")
     assert codec.name == "torchcodec"
-    assert codec._caches == {}  # no decoder opened yet
+    assert len(codec._caches) == 0  # no decoder opened yet
 
 
 def test_resolve_auto_format_aware(monkeypatch):
@@ -178,7 +178,7 @@ class TestTorchCodec(unittest.TestCase):
         fresh = TorchCodec(disk_cache=True)
         img = fresh.decode_frame(ref)  # served from disk, no decoder opened
         self.assertTrue(np.array_equal(img, expected))
-        self.assertEqual(fresh._caches, {}, "disk hit must not open a decoder")
+        self.assertEqual(len(fresh._caches), 0, "disk hit must not open a decoder")
 
     def test_pixel_parity_with_pyav(self):
         """torchcodec and pyav must decode the same pixels (codec parity)."""

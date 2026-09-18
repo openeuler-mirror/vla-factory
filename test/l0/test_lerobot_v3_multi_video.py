@@ -207,6 +207,63 @@ def _write_uncovered_dataset(root: Path) -> Path:
     return root
 
 
+def _write_drifted_dataset(root: Path) -> Path:
+    """Video files hold more frames than the parquet rows (trimmed conversion).
+
+    file-000.mp4 has 10 frames (values 0-9) but episode 0's parquet holds only
+    6 rows (globals 0-5); file-001.mp4 has 6 frames (values 10-15) and belongs
+    to episode 1 (globals 6-11). meta/episodes carries the authoritative
+    mapping (ep0 -> file 0 @ 0.0s, ep1 -> file 1 @ 0.0s, fps=1), so the
+    count-derived spans (file-000 = globals 0-9) are wrong for episode 1:
+    they mis-map it into file-000 and then reject it as crossing the boundary.
+    """
+    cam_dir = root / "videos" / "observation.images.front" / "chunk-000"
+    cam_dir.mkdir(parents=True, exist_ok=True)
+    _write_mp4(cam_dir / "file-000.mp4", list(range(10)))
+    _write_mp4(cam_dir / "file-001.mp4", list(range(10, 16)))
+
+    rows = []
+    for g in range(12):
+        rows.append(
+            {
+                "index": g,
+                "episode_index": 0 if g < 6 else 1,
+                "frame_index": g % 6,
+                "timestamp": float(g % 6),
+                "observation.state": _state(g),
+            }
+        )
+    _write_parquet(root, rows)
+    _write_meta(root, n_cams=1, total=12, n_episodes=2, per_episode=False)
+
+    episodes_dir = root / "meta" / "episodes" / "chunk-000"
+    episodes_dir.mkdir(parents=True, exist_ok=True)
+    episodes = pd.DataFrame(
+        [
+            {
+                "episode_index": 0,
+                "length": 6,
+                "dataset_from_index": 0,
+                "dataset_to_index": 5,
+                "videos/observation.images.front/file_index": 0,
+                "videos/observation.images.front/from_timestamp": 0.0,
+                "videos/observation.images.front/to_timestamp": 10.0,
+            },
+            {
+                "episode_index": 1,
+                "length": 6,
+                "dataset_from_index": 6,
+                "dataset_to_index": 11,
+                "videos/observation.images.front/file_index": 1,
+                "videos/observation.images.front/from_timestamp": 0.0,
+                "videos/observation.images.front/to_timestamp": 6.0,
+            },
+        ]
+    )
+    pq.write_table(pa.Table.from_pandas(episodes), episodes_dir / "file-000.parquet")
+    return root
+
+
 def _expected_mapping(n_files: int = N_FILES) -> dict[int, tuple[int, int]]:
     """global index -> (file_index, within_file_index)."""
     fpf = TOTAL // n_files
@@ -348,3 +405,40 @@ def test_episode_crossing_file_boundary_raises(tmp_path):
     reader = LeRobotV3Reader()
     with pytest.raises(ValueError, match="not covered"):
         reader.read_episode(ds, 1, PyAVCodec())
+
+
+def test_episode_meta_mapping_survives_video_parquet_drift(tmp_path):
+    """meta/episodes' file_index+from_timestamp must override count spans.
+
+    Regression for converted datasets whose video files hold more frames than
+    the parquet rows: the count-derived spans drift, so episode 1 (globals
+    6-11) resolved against file-000[0-9] and was spuriously rejected as
+    "not covered" (end 11 > 9) — the lekiwi-banana failure. With the
+    authoritative metadata, both episodes resolve to their declared file and
+    decode the frames the video actually contains.
+    """
+    ds = _write_drifted_dataset(tmp_path)
+    reader = LeRobotV3Reader()
+
+    frames0 = reader.read_episode(ds, 0, PyAVCodec()).load_frames()
+    frames1 = reader.read_episode(ds, 1, PyAVCodec()).load_frames()
+    assert len(frames0) == 6
+    assert len(frames1) == 6
+
+    for g in range(6):
+        ref = frames0[g].images["front"]
+        assert ref.video_path.name == "file-000.mp4"
+        assert ref.frame_index == g  # ep0 -> file-000 ordinals 0-5
+    for i in range(6):
+        ref = frames1[i].images["front"]
+        assert ref.video_path.name == "file-001.mp4"
+        assert ref.frame_index == i  # ep1 -> file-001 ordinals 0-5
+
+    # Content: the videos encode their within-file ordinal in the pixels.
+    pyav = PyAVCodec(disk_cache=False)
+    for frame in frames0:
+        img = pyav.decode_frame(frame.images["front"])
+        assert abs(int(img[0, 0, 0]) - frame.index) <= 8
+    for i, frame in enumerate(frames1):
+        img = pyav.decode_frame(frame.images["front"])
+        assert abs(int(img[0, 0, 0]) - (10 + i)) <= 8

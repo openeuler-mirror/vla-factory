@@ -30,6 +30,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..data_schema import VideoRef
+from .base import OpenHandleLRU
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -124,11 +125,21 @@ class TorchCodec:
     Caching mirrors :class:`PyAVCodec`: a per-video-file cache of decoder
     handles plus a decoded-frame LRU, and a shared ``.npy`` disk cache under
     ``<video>.frame_cache/`` (the same files ``preprocess_video`` fills).
-    Native decoder resources are released when the cache is closed/dropped.
+    The open set is bounded by a file-level LRU (``max_open_videos``):
+    every entry holds an fd plus a native decoder context, so an
+    unbounded registry eventually exhausts fds. Native decoder resources
+    are released when a cache is closed/dropped.
     """
 
-    def __init__(self, max_cached_per_video: int = 32, disk_cache: bool = True) -> None:
-        self._caches: dict[Path, _TorchFrameCache] = {}
+    def __init__(
+        self,
+        max_cached_per_video: int = 32,
+        disk_cache: bool = True,
+        max_open_videos: int = 32,
+    ) -> None:
+        self._caches: OpenHandleLRU[Path, _TorchFrameCache] = OpenHandleLRU(
+            max_open_videos
+        )
         self._max_cached = max_cached_per_video
         self._disk_cache = disk_cache
 
@@ -143,11 +154,11 @@ class TorchCodec:
         return cache_dir / f"{ref.frame_index:06d}.npy"
 
     def _get_cache(self, video_path: Path) -> _TorchFrameCache:
-        if video_path not in self._caches:
-            self._caches[video_path] = _TorchFrameCache(
-                video_path, max_cached=self._max_cached
-            )
-        return self._caches[video_path]
+        cache = self._caches.get(video_path)
+        if cache is None:
+            cache = _TorchFrameCache(video_path, max_cached=self._max_cached)
+            self._caches.put(video_path, cache)
+        return cache
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode a single frame -> numpy HWC uint8.
@@ -174,9 +185,7 @@ class TorchCodec:
 
     def close(self) -> None:
         """Close all decoder handles and clear the frame caches."""
-        for cache in self._caches.values():
-            cache.close()
-        self._caches.clear()
+        self._caches.close()
 
     def __del__(self) -> None:
         self.close()

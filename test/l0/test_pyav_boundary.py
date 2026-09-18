@@ -208,6 +208,55 @@ def test_backward_access_exact_frame_with_pts_offset():
         assert not np.array_equal(img, wrong)
 
 
+def test_far_forward_jump_seeks_instead_of_decoding_through(monkeypatch):
+    """A far-forward jump must re-seek, not decode every intervening frame.
+
+    Regression: get_frame only seeked on backward access, so a forward jump
+    of N frames decoded all N frames sequentially. Random sampling over long
+    videos made this ~1.4 s/frame on 640x480 H.264 (118x slower than
+    torchcodec); 20 accesses triggered 58k frame decodes.
+    """
+    import vla_factory.data.codec.pyav as pyav_mod
+
+    # Decouple the test from the production threshold.
+    monkeypatch.setattr(pyav_mod, "_MAX_DECODE_FORWARD_GAP", 2)
+
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "distinct.mp4"
+        # 12 frames: g = 20*(i+1) stays within uint8 (max 240 at i=11).
+        _write_distinct_mp4(path, n_frames=12)
+
+        codec = PyAVCodec(disk_cache=False, max_cached_per_video=2)
+        cache = codec._get_cache(path)
+
+        seeks: list[int] = []
+        original = type(cache)._seek_to
+
+        def spy_seek_to(self, idx):
+            seeks.append(idx)
+            return original(self, idx)
+
+        monkeypatch.setattr(type(cache), "_seek_to", spy_seek_to)
+
+        # g = 20*(i+1) per _write_distinct_mp4: frame i is a solid color.
+        # mpeg4 is lossy (observed off-by-one on solid colors), so compare
+        # with a small tolerance; adjacent frames differ by 20, so +-2 still
+        # identifies the frame index unambiguously.
+        def assert_frame(img, index):
+            assert np.all(np.abs(img.astype(int) - 20 * (index + 1)) <= 2)
+
+        assert_frame(codec.decode_frame(_ref(path, 0, height=32, width=32)), 0)
+        img10 = codec.decode_frame(_ref(path, 10, height=32, width=32))  # gap 9
+        img3 = codec.decode_frame(_ref(path, 3, height=32, width=32))  # backward
+        img11 = codec.decode_frame(_ref(path, 11, height=32, width=32))  # gap 7
+
+        assert_frame(img10, 10)
+        assert_frame(img3, 3)
+        assert_frame(img11, 11)
+        # Every out-of-window jump must have taken the seek path.
+        assert seeks == [10, 3, 11], seeks
+
+
 
 
 
