@@ -16,7 +16,6 @@ Run:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
@@ -31,18 +30,14 @@ from vla_factory.data.codec.pyav import PyAVCodec
 from vla_factory.data.reader import LeRobotV3Reader
 from vla_factory.data.data_schema import VideoRef
 
-# torchcodec parity is optional: the torch.py codec lives on a separate PR
-# (feat/torchcodec-codec). Only run cross-codec parity when both the
-# torchcodec package AND the project module are importable.
-TORCHCODEC_AVAILABLE = False
-if importlib.util.find_spec("torchcodec") and importlib.util.find_spec(
-    "vla_factory.data.codec.torch"
-):
-    try:
-        from vla_factory.data.codec.torch import TorchCodec  # noqa: F401
-        TORCHCODEC_AVAILABLE = True
-    except (ImportError, ModuleNotFoundError):
-        TORCHCODEC_AVAILABLE = False
+# torchcodec parity is optional: cross-codec parity runs only when the
+# torchcodec package is importable (ABI-safe); the project codec module
+# itself imports lazily and is always present.
+try:
+    from torchcodec.decoders import VideoDecoder  # noqa: F401 - importable check
+    TORCHCODEC_AVAILABLE = True
+except (ImportError, OSError, RuntimeError):
+    TORCHCODEC_AVAILABLE = False
 
 H, W = 16, 16
 N_EPISODES = 3
@@ -307,12 +302,12 @@ def test_decode_pixels_correct_both_codecs(dataset):
         for t in (0, EP_LEN // 2, EP_LEN - 1):
             refs[frames[t].index] = frames[t].images
 
-    pyav = PyAVCodec(disk_cache=False)
+    pyav = PyAVCodec()
     torch = None
     if TORCHCODEC_AVAILABLE:
-        from vla_factory.data.codec.torch import TorchCodec
+        from vla_factory.data.codec.torchcodec import TorchCodec
 
-        torch = TorchCodec(disk_cache=False)
+        torch = TorchCodec()
 
     for g, images in refs.items():
         file_idx, within = _expected_mapping()[g]
@@ -339,13 +334,13 @@ def test_old_mapping_would_fail(dataset):
     file0 = dataset / "videos" / "observation.images.front" / "chunk-000" / "file-000.mp4"
     # Global index 15 is inside file-001; asking file-000 for it is the old bug.
     ref = VideoRef(video_path=file0, frame_index=15, height=H, width=W, channels=3)
-    pyav = PyAVCodec(disk_cache=False)
+    pyav = PyAVCodec()
     img = pyav.decode_frame(ref)
     assert not np.all(img == 15)  # wrong/black frame, never the true frame 15
     if TORCHCODEC_AVAILABLE:
-        from vla_factory.data.codec.torch import TorchCodec
+        from vla_factory.data.codec.torchcodec import TorchCodec
 
-        torch = TorchCodec(disk_cache=False)
+        torch = TorchCodec()
         with pytest.raises(IndexError):
             torch.decode_frame(ref)
 
@@ -435,7 +430,7 @@ def test_episode_meta_mapping_survives_video_parquet_drift(tmp_path):
         assert ref.frame_index == i  # ep1 -> file-001 ordinals 0-5
 
     # Content: the videos encode their within-file ordinal in the pixels.
-    pyav = PyAVCodec(disk_cache=False)
+    pyav = PyAVCodec()
     for frame in frames0:
         img = pyav.decode_frame(frame.images["front"])
         assert abs(int(img[0, 0, 0]) - frame.index) <= 8

@@ -1,6 +1,6 @@
 """File-level open-video LRU contract shared by all per-file codecs.
 
-Every entry in a codec's ``_caches`` registry holds an open handle — an fd
+Every entry in a codec's ``_open_handles`` registry holds an open handle — an fd
 plus a decoder/h5py context. The registry used to be an unbounded ``dict``,
 so datasets with more distinct video files than the fd limit exhausted fds
 partway through training (the DataLoader workers crashed after ~100+ steps
@@ -44,39 +44,39 @@ class OpenVideoLRUContract:
         codec = self.make_codec(max_open_videos=2)
         paths = [Path(f"/nonexistent/video_{i}.mp4") for i in range(3)]
         for p in paths:
-            codec._get_cache(p)
-        self.assertEqual(len(codec._caches), 2)
-        self.assertNotIn(paths[0], codec._caches, "oldest entry must be evicted")
-        self.assertIn(paths[1], codec._caches)
-        self.assertIn(paths[2], codec._caches)
+            codec._session_for(p)
+        self.assertEqual(len(codec._open_handles), 2)
+        self.assertNotIn(paths[0], codec._open_handles, "oldest entry must be evicted")
+        self.assertIn(paths[1], codec._open_handles)
+        self.assertIn(paths[2], codec._open_handles)
 
     def test_recent_touch_is_not_evicted(self):
         codec = self.make_codec(max_open_videos=2)
         a, b, c = (Path(f"/nonexistent/touch_{i}.mp4") for i in range(3))
-        codec._get_cache(a)
-        codec._get_cache(b)
-        codec._get_cache(a)  # re-touch: a becomes most-recent again
-        codec._get_cache(c)  # must evict b, not a
-        self.assertIn(a, codec._caches)
-        self.assertNotIn(b, codec._caches)
-        self.assertIn(c, codec._caches)
+        codec._session_for(a)
+        codec._session_for(b)
+        codec._session_for(a)  # re-touch: a becomes most-recent again
+        codec._session_for(c)  # must evict b, not a
+        self.assertIn(a, codec._open_handles)
+        self.assertNotIn(b, codec._open_handles)
+        self.assertIn(c, codec._open_handles)
 
 
 class TestPyAVOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
     def make_codec(self, **kwargs):
         from vla_factory.data.codec.pyav import PyAVCodec
 
-        return PyAVCodec(disk_cache=False, **kwargs)
+        return PyAVCodec(**kwargs)
 
     def test_eviction_closes_open_container(self):
         """Evicting an entry must close its real av container (release the fd)."""
         if not VIDEO_PATH.exists():
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
-        cache = codec._get_cache(VIDEO_PATH)
+        cache = codec._session_for(VIDEO_PATH)
         cache._ensure_open()
         self.assertIsNotNone(cache._container)
-        codec._get_cache(VIDEO_PATH.with_name("other.mp4"))
+        codec._session_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
             cache._container, "evicted cache must be closed (fd released)"
         )
@@ -86,7 +86,7 @@ class TestTorchCodecOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
     def make_codec(self, **kwargs):
         from vla_factory.data.codec.torchcodec import TorchCodec
 
-        return TorchCodec(disk_cache=False, **kwargs)
+        return TorchCodec(**kwargs)
 
     def test_eviction_closes_open_decoder(self):
         """Evicting an entry must drop the real torchcodec decoder handle."""
@@ -97,10 +97,10 @@ class TestTorchCodecOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
         if not VIDEO_PATH.exists():
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
-        cache = codec._get_cache(VIDEO_PATH)
+        cache = codec._session_for(VIDEO_PATH)
         cache._ensure_open()
         self.assertIsNotNone(cache._decoder)
-        codec._get_cache(VIDEO_PATH.with_name("other.mp4"))
+        codec._session_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
             cache._decoder, "evicted cache must be closed (fd released)"
         )

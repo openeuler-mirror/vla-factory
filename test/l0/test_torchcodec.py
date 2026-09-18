@@ -38,7 +38,7 @@ def test_resolve_torchcodec_lazy():
 
     codec = resolve_codec("torchcodec")
     assert codec.name == "torchcodec"
-    assert len(codec._caches) == 0  # no decoder opened yet
+    assert len(codec._open_handles) == 0  # no decoder opened yet
 
 
 def test_resolve_auto_format_aware(monkeypatch):
@@ -125,7 +125,7 @@ class TestTorchCodec(unittest.TestCase):
         from vla_factory.data.codec.torchcodec import TorchCodec
         from vla_factory.data.data_schema import VideoRef
 
-        codec = TorchCodec(disk_cache=False)
+        codec = TorchCodec()
         ref = VideoRef(
             video_path=self.video_path,
             frame_index=50,
@@ -142,8 +142,8 @@ class TestTorchCodec(unittest.TestCase):
         from vla_factory.data.codec.torchcodec import TorchCodec
         from vla_factory.data.data_schema import VideoRef
 
-        codec = TorchCodec(max_cached_per_video=3, disk_cache=False)
-        cache = codec._get_cache(self.video_path)
+        codec = TorchCodec(max_cached_per_video=3)
+        cache = codec._session_for(self.video_path)
         for idx in range(4):
             codec.decode_frame(
                 VideoRef(
@@ -160,34 +160,14 @@ class TestTorchCodec(unittest.TestCase):
         self.assertIn(1, cache._cache)
         self.assertIn(3, cache._cache)
 
-    def test_disk_cache_serves_frame_without_decoder(self):
-        """A decoded frame must be served from the shared .npy disk cache."""
-        from vla_factory.data.codec.torchcodec import TorchCodec
-        from vla_factory.data.data_schema import VideoRef
-
-        ref = VideoRef(
-            video_path=self.video_path,
-            frame_index=77,
-            height=IMAGE_H,
-            width=IMAGE_W,
-            channels=3,
-        )
-        codec = TorchCodec(disk_cache=True)
-        expected = codec.decode_frame(ref)  # decodes + writes <video>.frame_cache/000077.npy
-
-        fresh = TorchCodec(disk_cache=True)
-        img = fresh.decode_frame(ref)  # served from disk, no decoder opened
-        self.assertTrue(np.array_equal(img, expected))
-        self.assertEqual(len(fresh._caches), 0, "disk hit must not open a decoder")
-
     def test_pixel_parity_with_pyav(self):
         """torchcodec and pyav must decode the same pixels (codec parity)."""
         from vla_factory.data.codec.pyav import PyAVCodec
         from vla_factory.data.codec.torchcodec import TorchCodec
         from vla_factory.data.data_schema import VideoRef
 
-        tc = TorchCodec(disk_cache=False)
-        pv = PyAVCodec(disk_cache=False)
+        tc = TorchCodec()
+        pv = PyAVCodec()
         for idx in [0, 1, 50, 100, 200, 300, 413]:
             ref = VideoRef(
                 video_path=self.video_path,
