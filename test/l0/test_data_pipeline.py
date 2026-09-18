@@ -231,15 +231,15 @@ class TestPyAVCodec(unittest.TestCase):
         from vla_factory.data.codec.pyav import PyAVCodec
 
         codec = PyAVCodec()
-        cache = codec._session_for(self.video_path)
-        cache._ensure_open()
+        decoder = codec._decoder_for(self.video_path)
+        codec._ensure_open(decoder)
 
         target = 1100
-        pts = cache._frame_to_pts(target)
-        cache._container.seek(pts, stream=cache._stream)
-        first = next(cache._container.decode(cache._stream))
-        span = cache._stream.time_base.denominator / float(
-            cache._stream.average_rate
+        pts = codec._frame_to_pts(decoder, target)
+        decoder["container"].seek(pts, stream=decoder["stream"])
+        first = next(decoder["container"].decode(decoder["stream"]))
+        span = decoder["stream"].time_base.denominator / float(
+            decoder["stream"].average_rate
         )
         landed = int(round(first.pts / span))
 

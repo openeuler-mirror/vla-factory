@@ -1,6 +1,6 @@
 """File-level open-video LRU contract shared by all per-file codecs.
 
-Every entry in a codec's ``_open_handles`` registry holds an open handle — an fd
+Every entry in a codec's ``_decoders`` registry holds an open handle — an fd
 plus a decoder/h5py context. The registry used to be an unbounded ``dict``,
 so datasets with more distinct video files than the fd limit exhausted fds
 partway through training (the DataLoader workers crashed after ~100+ steps
@@ -24,6 +24,8 @@ _project_root = Path(__file__).resolve().parents[2]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+from vla_factory.data.data_schema import VideoRef
+
 DATASET_PATH = Path(_project_root) / "test/data" / "lerobot_train_data_3_episodes"
 VIDEO_PATH = (
     DATASET_PATH
@@ -34,7 +36,7 @@ VIDEO_PATH = (
 )
 
 
-class OpenVideoLRUContract:
+class VideoDecoderCacheContract:
     """Codec-agnostic bookkeeping tests; subclasses provide ``make_codec``."""
 
     def make_codec(self, **kwargs):
@@ -44,25 +46,25 @@ class OpenVideoLRUContract:
         codec = self.make_codec(max_open_videos=2)
         paths = [Path(f"/nonexistent/video_{i}.mp4") for i in range(3)]
         for p in paths:
-            codec._session_for(p)
-        self.assertEqual(len(codec._open_handles), 2)
-        self.assertNotIn(paths[0], codec._open_handles, "oldest entry must be evicted")
-        self.assertIn(paths[1], codec._open_handles)
-        self.assertIn(paths[2], codec._open_handles)
+            codec._decoder_for(p)
+        self.assertEqual(len(codec._decoders), 2)
+        self.assertNotIn(paths[0], codec._decoders, "oldest entry must be evicted")
+        self.assertIn(paths[1], codec._decoders)
+        self.assertIn(paths[2], codec._decoders)
 
     def test_recent_touch_is_not_evicted(self):
         codec = self.make_codec(max_open_videos=2)
         a, b, c = (Path(f"/nonexistent/touch_{i}.mp4") for i in range(3))
-        codec._session_for(a)
-        codec._session_for(b)
-        codec._session_for(a)  # re-touch: a becomes most-recent again
-        codec._session_for(c)  # must evict b, not a
-        self.assertIn(a, codec._open_handles)
-        self.assertNotIn(b, codec._open_handles)
-        self.assertIn(c, codec._open_handles)
+        codec._decoder_for(a)
+        codec._decoder_for(b)
+        codec._decoder_for(a)  # re-touch: a becomes most-recent again
+        codec._decoder_for(c)  # must evict b, not a
+        self.assertIn(a, codec._decoders)
+        self.assertNotIn(b, codec._decoders)
+        self.assertIn(c, codec._decoders)
 
 
-class TestPyAVOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
+class TestPyAVDecoderCache(VideoDecoderCacheContract, unittest.TestCase):
     def make_codec(self, **kwargs):
         from vla_factory.data.codec.pyav import PyAVCodec
 
@@ -73,16 +75,16 @@ class TestPyAVOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
         if not VIDEO_PATH.exists():
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
-        cache = codec._session_for(VIDEO_PATH)
-        cache._ensure_open()
-        self.assertIsNotNone(cache._container)
-        codec._session_for(VIDEO_PATH.with_name("other.mp4"))
+        cache = codec._decoder_for(VIDEO_PATH)
+        codec.decode_frame(VideoRef(VIDEO_PATH, 0, 480, 640, 3))
+        self.assertIsNotNone(cache["container"])
+        codec._decoder_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
-            cache._container, "evicted cache must be closed (fd released)"
+            cache["container"], "evicted cache must be closed (fd released)"
         )
 
 
-class TestTorchCodecOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
+class TestTorchCodecDecoderCache(VideoDecoderCacheContract, unittest.TestCase):
     def make_codec(self, **kwargs):
         from vla_factory.data.codec.torchcodec import TorchCodec
 
@@ -97,27 +99,27 @@ class TestTorchCodecOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
         if not VIDEO_PATH.exists():
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
-        cache = codec._session_for(VIDEO_PATH)
-        cache._ensure_open()
-        self.assertIsNotNone(cache._decoder)
-        codec._session_for(VIDEO_PATH.with_name("other.mp4"))
+        cache = codec._decoder_for(VIDEO_PATH)
+        codec.decode_frame(VideoRef(VIDEO_PATH, 0, 480, 640, 3))
+        self.assertIsNotNone(cache["decoder"])
+        codec._decoder_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
-            cache._decoder, "evicted cache must be closed (fd released)"
+            cache["decoder"], "evicted cache must be closed (fd released)"
         )
 
 
-class TestHdf5JpegOpenVideoLRU(OpenVideoLRUContract, unittest.TestCase):
+class TestHdf5JpegDecoderCache(VideoDecoderCacheContract, unittest.TestCase):
     def make_codec(self, **kwargs):
         from vla_factory.data.codec.hdf5_jpeg import Hdf5JpegCodec
 
         return Hdf5JpegCodec(**kwargs)
 
 
-class TestOpenHandleLRU(unittest.TestCase):
+class TestVideoDecoderCache(unittest.TestCase):
     """Direct tests for the shared registry (complement the codec contracts)."""
 
-    def make_lru(self, max_open=2):
-        from vla_factory.data.codec.base import OpenHandleLRU
+    def make_cache(self, max_size=2):
+        from vla_factory.data.codec.base import VideoDecoderCache
 
         class Handle:
             def __init__(self, name):
@@ -127,10 +129,10 @@ class TestOpenHandleLRU(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        return OpenHandleLRU(max_open), Handle
+        return VideoDecoderCache(max_size), Handle
 
     def test_put_past_capacity_evicts_and_closes_lru(self):
-        lru, Handle = self.make_lru(max_open=2)
+        lru, Handle = self.make_cache(max_size=2)
         h0, h1, h2 = Handle("a"), Handle("b"), Handle("c")
         lru.put("v0", h0)
         lru.put("v1", h1)
@@ -141,7 +143,7 @@ class TestOpenHandleLRU(unittest.TestCase):
         self.assertFalse(h1.closed or h2.closed)
 
     def test_get_touches_recency_peek_does_not(self):
-        lru, Handle = self.make_lru(max_open=2)
+        lru, Handle = self.make_cache(max_size=2)
         h0, h1, h2 = Handle("a"), Handle("b"), Handle("c")
         lru.put("v0", h0)
         lru.put("v1", h1)
@@ -153,7 +155,7 @@ class TestOpenHandleLRU(unittest.TestCase):
             lru["missing"]
 
     def test_close_all_closes_and_empties(self):
-        lru, Handle = self.make_lru(max_open=4)
+        lru, Handle = self.make_cache(max_size=4)
         handles = [Handle(f"h{i}") for i in range(3)]
         for i, h in enumerate(handles):
             lru.put(f"v{i}", h)
@@ -163,7 +165,7 @@ class TestOpenHandleLRU(unittest.TestCase):
         self.assertEqual(lru.values(), [])
 
     def test_values_snapshot_inspection(self):
-        lru, Handle = self.make_lru(max_open=4)
+        lru, Handle = self.make_cache(max_size=4)
         lru.put("v0", Handle("a"))
         lru.put("v1", Handle("b"))
         self.assertEqual([h.name for h in lru.values()], ["a", "b"])

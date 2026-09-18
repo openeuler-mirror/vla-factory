@@ -21,7 +21,6 @@ without it (rationale: framework-wide "optional deps defer to call time").
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +29,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..data_schema import VideoRef
-from .base import OpenHandleLRU
+from .base import CachedVideoCodec
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,86 +47,8 @@ def _load_h5py() -> Any:
     return h5py
 
 
-class _Hdf5Session:
-    """Per-hdf5-file decoding session: one open handle plus an LRU of decoded frames.
-
-    Mirrors PyAV's ``_VideoSession`` and torchcodec's ``_TorchSession``:
-    keeps a single ``h5py.File`` handle open (files are read many times — once
-    per frame per camera — so re-opening each call would be wasteful) and an
-    ``OrderedDict`` LRU of decoded frames. The LRU key is ``(stream,
-    frame_index)``: the same index in different cameras of one hdf5 file
-    decodes to different pixels, so the camera must be part of the key.
-    """
-
-    def __init__(self, path: Path, rgb_key_template: str, max_cached: int = 32) -> None:
-        self.path = path
-        self._rgb_key_template = rgb_key_template
-        self.max_cached = max_cached
-        self._handle: Any = None
-        self._cache: OrderedDict[tuple[str, int], NDArray] = OrderedDict()
-
-    def _ensure_open(self) -> Any:
-        """Open the h5py handle lazily on first access."""
-        if self._handle is None:
-            h5py = _load_h5py()
-            self._handle = h5py.File(str(self.path), "r")
-        return self._handle
-
-    def get_frame(self, ref: VideoRef) -> NDArray:
-        """Decode one frame -> numpy HWC uint8 RGB, LRU-cached."""
-        key = (ref.stream, ref.frame_index)
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            # Hand out a copy: the cached array is shared across all future
-            # reads, so callers must never be able to mutate it in place.
-            return self._cache[key].copy()
-
-        f = self._ensure_open()
-        ds_key = self._rgb_key_template.format(stream=ref.stream)
-        try:
-            raw = f[ds_key][ref.frame_index]
-        except KeyError as exc:
-            raise KeyError(
-                f"Camera stream '{ds_key}' not found in {ref.video_path}. "
-                f"Available: {list(f.get('observation', {}).keys())}"
-            ) from exc
-
-        buf = np.frombuffer(bytes(raw), dtype=np.uint8)
-        bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if bgr is None:
-            raise RuntimeError(
-                f"Failed to JPEG-decode frame {ref.frame_index} of "
-                f"'{ref.stream}' in {ref.video_path}."
-            )
-        img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-        if img.shape[0] != ref.height or img.shape[1] != ref.width:
-            img = cv2.resize(img, (ref.width, ref.height))
-
-        # Cache (FIFO eviction on overflow, mirroring PyAV's in-memory LRU).
-        # Store a private copy and return the freshly decoded array: callers
-        # own their result and cannot corrupt the LRU by mutating it.
-        self._cache[key] = img.copy()
-        if len(self._cache) > self.max_cached:
-            self._cache.popitem(last=False)
-        return img
-
-    def close(self) -> None:
-        """Close the h5py handle and clear the frame LRU."""
-        if self._handle is not None:
-            try:
-                self._handle.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                pass
-            self._handle = None
-        self._cache.clear()
-
-    def __del__(self) -> None:
-        self.close()
-
-
 @CodecRegistry.register("hdf5_jpeg")
-class Hdf5JpegCodec:
+class Hdf5JpegCodec(CachedVideoCodec):
     """Decode JPEG frames stored inside RoboTwin episode hdf5 files.
 
     Caching mirrors :class:`PyAVCodec`: a per-hdf5-file cache of open handles
@@ -143,26 +64,20 @@ class Hdf5JpegCodec:
         max_cached_per_video: int = 32,
         max_open_videos: int = 32,
     ) -> None:
+        super().__init__(max_cached_per_video, max_open_videos)
         self._rgb_key_template = rgb_key_template
-        self._max_cached = max_cached_per_video
-        self._open_handles: OpenHandleLRU[Path, _Hdf5Session] = OpenHandleLRU(
-            max_open_videos
-        )
 
     @property
     def name(self) -> str:
         return "hdf5_jpeg"
 
-    def _session_for(self, path: Path) -> _Hdf5Session:
-        session = self._open_handles.get(path)
-        if session is None:
-            session = _Hdf5Session(
-                path, self._rgb_key_template, max_cached=self._max_cached
-            )
-            self._open_handles.put(path, session)
-        return session
+    def _open_decoder(self, video_path: Path) -> dict[str, Any]:
+        return {"handle": None}
 
-    def decode_frame(self, ref: VideoRef) -> NDArray:
+    def _cache_key(self, ref: VideoRef) -> tuple[str | None, int]:
+        return ref.stream, ref.frame_index
+
+    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
         """Decode one frame -> numpy HWC uint8 RGB.
 
         Reads the JPEG byte stream at ``/observation/{ref.stream}/rgb`` for
@@ -175,11 +90,34 @@ class Hdf5JpegCodec:
                 "Hdf5JpegCodec requires VideoRef.stream (the camera name); got "
                 f"None for {ref.video_path}. The RoboTwin reader must set it."
             )
-        return self._session_for(ref.video_path).get_frame(ref)
+        if decoder["handle"] is None:
+            decoder["handle"] = _load_h5py().File(str(ref.video_path), "r")
+        f = decoder["handle"]
+        ds_key = self._rgb_key_template.format(stream=ref.stream)
+        try:
+            raw = f[ds_key][ref.frame_index]
+        except KeyError as exc:
+            raise KeyError(
+                f"Camera stream '{ds_key}' not found in {ref.video_path}. "
+                f"Available: {list(f.get('observation', {}).keys())}"
+            ) from exc
 
-    def close(self) -> None:
-        """Close all open hdf5 handles and clear the frame LRUs."""
-        self._open_handles.close()
+        bgr = cv2.imdecode(np.frombuffer(bytes(raw), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise RuntimeError(
+                f"Failed to JPEG-decode frame {ref.frame_index} of "
+                f"'{ref.stream}' in {ref.video_path}."
+            )
+        image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        if image.shape[:2] != (ref.height, ref.width):
+            image = cv2.resize(image, (ref.width, ref.height))
+        return image
 
-    def __del__(self) -> None:
-        self.close()
+    def _close_decoder(self, decoder: dict[str, Any]) -> None:
+        if decoder["handle"] is not None:
+            try:
+                decoder["handle"].close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            decoder["handle"] = None
+        super()._close_decoder(decoder)

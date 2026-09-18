@@ -20,7 +20,6 @@ is no point holding frames on a CUDA device.
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +28,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..data_schema import VideoRef
-from .base import OpenHandleLRU
+from .base import CachedVideoCodec
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -56,69 +55,8 @@ def _load_torchcodec() -> Any:
     return VideoDecoder
 
 
-class _TorchSession:
-    """Per-video-file decoding session keeping a torchcodec ``VideoDecoder`` open.
-
-    Mirrors ``_VideoSession`` (PyAV): one decoder handle per video file plus
-    an LRU of recently decoded frames. torchcodec decodes by frame index
-    directly (``get_frame_at``), so unlike PyAV there is no seek/position
-    tracking to get wrong on out-of-order access.
-    """
-
-    def __init__(self, video_path: Path, max_cached: int = 32) -> None:
-        self.video_path = video_path
-        self.max_cached = max_cached
-        self._decoder = None
-        self._cache: OrderedDict[int, NDArray] = OrderedDict()
-
-    def _ensure_open(self) -> None:
-        """Open the torchcodec decoder lazily on first access."""
-        if self._decoder is not None:
-            return
-        VideoDecoder = _load_torchcodec()
-        # NHWC matches the codec contract (numpy HWC uint8). device="cpu": the
-        # pipeline never holds video frames on GPU (see module docstring).
-        self._decoder = VideoDecoder(
-            source=str(self.video_path),
-            dimension_order="NHWC",
-            device="cpu",
-        )
-
-    def get_frame(self, frame_idx: int, dims: tuple[int, ...]) -> NDArray:
-        """Get a decoded frame as numpy HWC uint8, LRU-cached."""
-        # Check cache first
-        if frame_idx in self._cache:
-            self._cache.move_to_end(frame_idx)
-            # Hand out a copy: the cached array is shared across all future
-            # reads, so callers must never be able to mutate it in place.
-            return self._cache[frame_idx].copy()
-
-        self._ensure_open()
-        frame = self._decoder.get_frame_at(index=frame_idx).data
-        img = frame.cpu().numpy()
-        h, w, c = dims
-        if img.shape[0] != h or img.shape[1] != w:
-            img = cv2.resize(img, (w, h))
-
-        # Cache (FIFO eviction on overflow, mirroring PyAV's in-memory LRU).
-        # Store a private copy and return the freshly decoded array: callers
-        # own their result and cannot corrupt the LRU by mutating it.
-        self._cache[frame_idx] = img.copy()
-        if len(self._cache) > self.max_cached:
-            self._cache.popitem(last=False)
-        return img
-
-    def close(self) -> None:
-        """Drop the decoder handle and clear the frame cache."""
-        self._decoder = None
-        self._cache.clear()
-
-    def __del__(self) -> None:
-        self.close()
-
-
 @CodecRegistry.register("torchcodec")
-class TorchCodec:
+class TorchCodec(CachedVideoCodec):
     """Optional video codec — uses torchcodec to decode frames to numpy.
 
     Caching mirrors :class:`PyAVCodec`: a per-video-file cache of decoder
@@ -134,32 +72,25 @@ class TorchCodec:
         max_cached_per_video: int = 32,
         max_open_videos: int = 32,
     ) -> None:
-        self._open_handles: OpenHandleLRU[Path, _TorchSession] = OpenHandleLRU(
-            max_open_videos
-        )
-        self._max_cached = max_cached_per_video
+        super().__init__(max_cached_per_video, max_open_videos)
 
     @property
     def name(self) -> str:
         return "torchcodec"
 
-    def _session_for(self, video_path: Path) -> _TorchSession:
-        session = self._open_handles.get(video_path)
-        if session is None:
-            session = _TorchSession(video_path, max_cached=self._max_cached)
-            self._open_handles.put(video_path, session)
-        return session
+    def _open_decoder(self, video_path: Path) -> dict[str, Any]:
+        return {"decoder": None}
 
-    def decode_frame(self, ref: VideoRef) -> NDArray:
-        """Decode a single frame -> numpy HWC uint8."""
-        session = self._session_for(ref.video_path)
-        return session.get_frame(
-            ref.frame_index, (ref.height, ref.width, ref.channels)
-        )
+    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
+        if decoder["decoder"] is None:
+            decoder["decoder"] = _load_torchcodec()(
+                source=str(ref.video_path), dimension_order="NHWC", device="cpu"
+            )
+        image = decoder["decoder"].get_frame_at(index=ref.frame_index).data.cpu().numpy()
+        if image.shape[:2] != (ref.height, ref.width):
+            image = cv2.resize(image, (ref.width, ref.height))
+        return image
 
-    def close(self) -> None:
-        """Close all decoder handles and clear the frame caches."""
-        self._open_handles.close()
-
-    def __del__(self) -> None:
-        self.close()
+    def _close_decoder(self, decoder: dict[str, Any]) -> None:
+        decoder["decoder"] = None
+        super()._close_decoder(decoder)
