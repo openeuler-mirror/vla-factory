@@ -38,7 +38,7 @@ def test_resolve_torchcodec_lazy():
 
     codec = resolve_codec("torchcodec")
     assert codec.name == "torchcodec"
-    assert len(codec._open_handles) == 0  # no decoder opened yet
+    assert len(codec._decoders) == 0  # no decoder opened yet
 
 
 def test_resolve_auto_format_aware(monkeypatch):
@@ -143,7 +143,7 @@ class TestTorchCodec(unittest.TestCase):
         from vla_factory.data.data_schema import VideoRef
 
         codec = TorchCodec(max_cached_per_video=3)
-        cache = codec._session_for(self.video_path)
+        cache = codec._decoder_for(self.video_path)
         for idx in range(4):
             codec.decode_frame(
                 VideoRef(
@@ -155,10 +155,10 @@ class TestTorchCodec(unittest.TestCase):
                 )
             )
         # Only the last 3 distinct frames remain; frame 0 was evicted first.
-        self.assertEqual(len(cache._cache), 3)
-        self.assertNotIn(0, cache._cache)
-        self.assertIn(1, cache._cache)
-        self.assertIn(3, cache._cache)
+        self.assertEqual(len(cache["_cache"]), 3)
+        self.assertNotIn(0, cache["_cache"])
+        self.assertIn(1, cache["_cache"])
+        self.assertIn(3, cache["_cache"])
 
     def test_pixel_parity_with_pyav(self):
         """torchcodec and pyav must decode the same pixels (codec parity)."""

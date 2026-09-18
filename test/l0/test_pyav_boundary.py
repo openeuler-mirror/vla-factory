@@ -22,7 +22,7 @@ import av
 import numpy as np
 import pytest
 
-from vla_factory.data.codec.pyav import PyAVCodec, _VideoSession
+from vla_factory.data.codec.pyav import PyAVCodec
 from vla_factory.data.data_schema import VideoRef
 
 DATASET_PATH = (
@@ -110,34 +110,36 @@ class _DummyStream:
 
 def test_frame_to_pts_uses_stream_timebase():
     codec = PyAVCodec()
-    cache = codec._session_for(VIDEO_PATH)
+    decoder = codec._decoder_for(VIDEO_PATH)
     try:
-        cache._ensure_open()
+        codec._ensure_open(decoder)
         # Real LeRobot test video: 1/15360 time_base at 30 fps => 512 units/frame.
-        assert cache._stream.time_base.denominator == 15360
-        assert float(cache._stream.average_rate) == 30.0
-        assert cache._frame_to_pts(1100) == 1100 * 512
-        assert cache._pts_per_frame() == 512.0
+        assert decoder["stream"].time_base.denominator == 15360
+        assert float(decoder["stream"].average_rate) == 30.0
+        assert codec._frame_to_pts(decoder, 1100) == 1100 * 512
+        assert codec._pts_per_frame(decoder) == 512.0
     finally:
-        cache.close()
+        codec.close()
 
 
 def test_frame_to_pts_fallback_duration_and_frames():
-    cache = _VideoSession(Path("dummy.mp4"))
-    cache._stream = _DummyStream(
+    codec = PyAVCodec()
+    decoder = codec._decoder_for(Path("dummy.mp4"))
+    decoder["stream"] = _DummyStream(
         average_rate=None, denominator=1000, duration=1000, frames=100
     )
-    assert cache._frame_to_pts(50) == 500
-    assert cache._pts_per_frame() == 10.0
+    assert codec._frame_to_pts(decoder, 50) == 500
+    assert codec._pts_per_frame(decoder) == 10.0
 
 
 def test_frame_to_pts_last_resort_frame_ordinal():
-    cache = _VideoSession(Path("dummy.mp4"))
-    cache._stream = _DummyStream(
+    codec = PyAVCodec()
+    decoder = codec._decoder_for(Path("dummy.mp4"))
+    decoder["stream"] = _DummyStream(
         average_rate=None, denominator=1000, duration=0, frames=0
     )
-    assert cache._frame_to_pts(50) == 50
-    assert cache._pts_per_frame() == 1.0
+    assert codec._frame_to_pts(decoder, 50) == 50
+    assert codec._pts_per_frame(decoder) == 1.0
 
 
 # ── _seek_to exact positioning ───────────────────────────────────────
@@ -155,15 +157,15 @@ def test_seek_to_positions_decoder_at_exact_target():
         _write_distinct_mp4(path)
 
         codec = PyAVCodec()
-        cache = codec._session_for(path)
+        decoder = codec._decoder_for(path)
         try:
-            cache._ensure_open()
-            cache._seek_to(2)
-            frame = next(cache._decoder)
-            assert _landing_index(cache._stream, frame) == 2
-            assert cache._current_pos == 2  # _seek_to left the next frame at target
+            codec._ensure_open(decoder)
+            codec._seek_to(decoder, 2)
+            frame = next(decoder["decoder"])
+            assert _landing_index(decoder["stream"], frame) == 2
+            assert decoder["position"] == 2  # _seek_to left the next frame at target
         finally:
-            cache.close()
+            codec.close()
 
 
 def test_backward_access_exact_frame_with_distinct_frames():
@@ -226,16 +228,14 @@ def test_far_forward_jump_seeks_instead_of_decoding_through(monkeypatch):
         _write_distinct_mp4(path, n_frames=12)
 
         codec = PyAVCodec(max_cached_per_video=2)
-        cache = codec._session_for(path)
-
         seeks: list[int] = []
-        original = type(cache)._seek_to
+        original = codec._seek_to
 
-        def spy_seek_to(self, idx):
+        def spy_seek_to(decoder, idx):
             seeks.append(idx)
-            return original(self, idx)
+            return original(decoder, idx)
 
-        monkeypatch.setattr(type(cache), "_seek_to", spy_seek_to)
+        monkeypatch.setattr(codec, "_seek_to", spy_seek_to)
 
         # g = 20*(i+1) per _write_distinct_mp4: frame i is a solid color.
         # mpeg4 is lossy (observed off-by-one on solid colors), so compare
