@@ -48,10 +48,10 @@ def _load_h5py() -> Any:
     return h5py
 
 
-class _Hdf5FrameCache:
-    """Per-hdf5-file cache: one open handle plus an LRU of decoded frames.
+class _Hdf5Session:
+    """Per-hdf5-file decoding session: one open handle plus an LRU of decoded frames.
 
-    Mirrors PyAV's ``_VideoFrameCache`` and torchcodec's ``_TorchFrameCache``:
+    Mirrors PyAV's ``_VideoSession`` and torchcodec's ``_TorchSession``:
     keeps a single ``h5py.File`` handle open (files are read many times — once
     per frame per camera — so re-opening each call would be wasteful) and an
     ``OrderedDict`` LRU of decoded frames. The LRU key is ``(stream,
@@ -145,7 +145,7 @@ class Hdf5JpegCodec:
     ) -> None:
         self._rgb_key_template = rgb_key_template
         self._max_cached = max_cached_per_video
-        self._caches: OpenHandleLRU[Path, _Hdf5FrameCache] = OpenHandleLRU(
+        self._open_handles: OpenHandleLRU[Path, _Hdf5Session] = OpenHandleLRU(
             max_open_videos
         )
 
@@ -153,14 +153,14 @@ class Hdf5JpegCodec:
     def name(self) -> str:
         return "hdf5_jpeg"
 
-    def _get_cache(self, path: Path) -> _Hdf5FrameCache:
-        cache = self._caches.get(path)
-        if cache is None:
-            cache = _Hdf5FrameCache(
+    def _session_for(self, path: Path) -> _Hdf5Session:
+        session = self._open_handles.get(path)
+        if session is None:
+            session = _Hdf5Session(
                 path, self._rgb_key_template, max_cached=self._max_cached
             )
-            self._caches.put(path, cache)
-        return cache
+            self._open_handles.put(path, session)
+        return session
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
         """Decode one frame -> numpy HWC uint8 RGB.
@@ -175,11 +175,11 @@ class Hdf5JpegCodec:
                 "Hdf5JpegCodec requires VideoRef.stream (the camera name); got "
                 f"None for {ref.video_path}. The RoboTwin reader must set it."
             )
-        return self._get_cache(ref.video_path).get_frame(ref)
+        return self._session_for(ref.video_path).get_frame(ref)
 
     def close(self) -> None:
         """Close all open hdf5 handles and clear the frame LRUs."""
-        self._caches.close()
+        self._open_handles.close()
 
     def __del__(self) -> None:
         self.close()

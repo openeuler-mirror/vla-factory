@@ -6,9 +6,8 @@ imported lazily on first decode so the codec registry stays importable without
 it (rationale: framework-wide "optional deps defer to call time").
 
 Caching mirrors :class:`PyAVCodec` so both codecs behave identically on the
-pipeline: one open decoder handle per video file, an in-memory LRU of recently
-decoded frames (``max_cached_per_video``), and an optional ``.npy`` disk cache
-under ``<video>.frame_cache/`` shared with PyAV. torchcodec's
+pipeline: one open decoder handle per video file and an in-memory LRU of
+recently decoded frames (``max_cached_per_video``). torchcodec's
 ``get_frame_at(index=...)`` is frame-accurate random access, so no manual seek
 bookkeeping is needed (unlike PyAV's ``_seek_to``).
 
@@ -57,10 +56,10 @@ def _load_torchcodec() -> Any:
     return VideoDecoder
 
 
-class _TorchFrameCache:
-    """Per-video-file cache that keeps a torchcodec ``VideoDecoder`` open.
+class _TorchSession:
+    """Per-video-file decoding session keeping a torchcodec ``VideoDecoder`` open.
 
-    Mirrors ``_VideoFrameCache`` (PyAV): one decoder handle per video file plus
+    Mirrors ``_VideoSession`` (PyAV): one decoder handle per video file plus
     an LRU of recently decoded frames. torchcodec decodes by frame index
     directly (``get_frame_at``), so unlike PyAV there is no seek/position
     tracking to get wrong on out-of-order access.
@@ -123,8 +122,7 @@ class TorchCodec:
     """Optional video codec — uses torchcodec to decode frames to numpy.
 
     Caching mirrors :class:`PyAVCodec`: a per-video-file cache of decoder
-    handles plus a decoded-frame LRU, and a shared ``.npy`` disk cache under
-    ``<video>.frame_cache/`` (the same files ``preprocess_video`` fills).
+    handles plus a decoded-frame LRU.
     The open set is bounded by a file-level LRU (``max_open_videos``):
     every entry holds an fd plus a native decoder context, so an
     unbounded registry eventually exhausts fds. Native decoder resources
@@ -134,58 +132,34 @@ class TorchCodec:
     def __init__(
         self,
         max_cached_per_video: int = 32,
-        disk_cache: bool = True,
         max_open_videos: int = 32,
     ) -> None:
-        self._caches: OpenHandleLRU[Path, _TorchFrameCache] = OpenHandleLRU(
+        self._open_handles: OpenHandleLRU[Path, _TorchSession] = OpenHandleLRU(
             max_open_videos
         )
         self._max_cached = max_cached_per_video
-        self._disk_cache = disk_cache
 
     @property
     def name(self) -> str:
         return "torchcodec"
 
-    def _disk_cache_path(self, ref: VideoRef) -> Path:
-        """Return the ``.npy`` path for a given frame reference (shared with PyAV)."""
-        cache_dir = ref.video_path.parent / (ref.video_path.name + ".frame_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / f"{ref.frame_index:06d}.npy"
-
-    def _get_cache(self, video_path: Path) -> _TorchFrameCache:
-        cache = self._caches.get(video_path)
-        if cache is None:
-            cache = _TorchFrameCache(video_path, max_cached=self._max_cached)
-            self._caches.put(video_path, cache)
-        return cache
+    def _session_for(self, video_path: Path) -> _TorchSession:
+        session = self._open_handles.get(video_path)
+        if session is None:
+            session = _TorchSession(video_path, max_cached=self._max_cached)
+            self._open_handles.put(video_path, session)
+        return session
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
-        """Decode a single frame -> numpy HWC uint8.
-
-        Checks the disk cache first; falls back to torchcodec decoding and
-        saves the result to disk for future runs (same layout as PyAV).
-        """
-        if self._disk_cache:
-            npy_path = self._disk_cache_path(ref)
-            if npy_path.exists():
-                return np.load(npy_path)
-
-        # Decode from video
-        cache = self._get_cache(ref.video_path)
-        img = cache.get_frame(
+        """Decode a single frame -> numpy HWC uint8."""
+        session = self._session_for(ref.video_path)
+        return session.get_frame(
             ref.frame_index, (ref.height, ref.width, ref.channels)
         )
 
-        # Save to disk cache
-        if self._disk_cache:
-            np.save(self._disk_cache_path(ref), img)
-
-        return img
-
     def close(self) -> None:
         """Close all decoder handles and clear the frame caches."""
-        self._caches.close()
+        self._open_handles.close()
 
     def __del__(self) -> None:
         self.close()

@@ -187,8 +187,8 @@ class TestPyAVCodec(unittest.TestCase):
         from vla_factory.data.codec.pyav import PyAVCodec
         from vla_factory.data.data_schema import VideoRef
 
-        # disk_cache=False isolates the decoder seek from .npy disk I/O.
-        codec = PyAVCodec(disk_cache=False)
+        # isolates the decoder seek from .npy disk I/O.
+        codec = PyAVCodec()
 
         def ref(i: int) -> VideoRef:
             return VideoRef(
@@ -230,8 +230,8 @@ class TestPyAVCodec(unittest.TestCase):
         """
         from vla_factory.data.codec.pyav import PyAVCodec
 
-        codec = PyAVCodec(disk_cache=False)
-        cache = codec._get_cache(self.video_path)
+        codec = PyAVCodec()
+        cache = codec._session_for(self.video_path)
         cache._ensure_open()
 
         target = 1100

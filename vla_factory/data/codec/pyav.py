@@ -1,11 +1,8 @@
 """PyAV-based video decoder — default VideoCodec implementation.
 
-Uses PyAV for sequential decoding with an LRU-style frame cache.
-Each video file gets its own ``_VideoFrameCache`` instance that keeps
-the ``av.container.InputContainer`` open for fast sequential reads.
-
-Disk cache: decoded frames are saved as ``.npy`` files next to the video.
-On subsequent runs, frames are loaded from disk instead of re-decoding.
+Uses PyAV for random-access decoding with an LRU-style frame cache.
+Each video file gets its own ``_VideoSession`` instance that keeps
+the ``av.container.InputContainer`` open for fast random access.
 """
 
 from __future__ import annotations
@@ -35,12 +32,13 @@ logger = logging.getLogger(__name__)
 _MAX_DECODE_FORWARD_GAP = 12
 
 
-class _VideoFrameCache:
-    """Per-video-file cache that keeps an ``av`` container open.
+class _VideoSession:
+    """Per-video-file decoding session holding an ``av`` container open.
 
-    Decodes frames sequentially from the video and caches recently
-    decoded frames for fast re-reads.  Seek operations are minimised
-    by tracking the current decode position.
+    Serves exact frames by frame ordinal: keyframe-aligned seeks plus the
+    minimum forward decode, with recently decoded frames cached for fast
+    re-reads. Seek operations are minimised by tracking the current
+    decode position.
     """
 
     def __init__(self, video_path: Path, max_cached: int = 32) -> None:
@@ -243,65 +241,37 @@ class _VideoFrameCache:
 class PyAVCodec:
     """Default video codec — uses PyAV to decode video frames to numpy.
 
-    Maintains a per-video-file cache of ``_VideoFrameCache`` instances
+    Maintains a per-video-file cache of ``_VideoSession`` instances
     so that the same video container can be reused across frames. The
     open set is bounded by a file-level LRU (``max_open_videos``):
     every entry holds an fd plus an H.264 decoder context, so an
     unbounded registry eventually exhausts fds.
-
-    Disk cache: decoded frames are saved as ``.npy`` files under
-    ``<video_path>.frame_cache/``.  On subsequent calls, frames are
-    loaded directly from disk instead of re-decoding the video.
     """
 
     def __init__(
         self,
         max_cached_per_video: int = 32,
-        disk_cache: bool = True,
         max_open_videos: int = 32,
     ) -> None:
-        self._caches: OpenHandleLRU[Path, _VideoFrameCache] = OpenHandleLRU(
+        self._open_handles: OpenHandleLRU[Path, _VideoSession] = OpenHandleLRU(
             max_open_videos
         )
         self._max_cached = max_cached_per_video
-        self._disk_cache = disk_cache
 
     @property
     def name(self) -> str:
         return "pyav"
 
-    def _disk_cache_path(self, ref: VideoRef) -> Path:
-        """Return the ``.npy`` path for a given frame reference."""
-        cache_dir = ref.video_path.parent / (ref.video_path.name + ".frame_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / f"{ref.frame_index:06d}.npy"
-
-    def _get_cache(self, video_path: Path) -> _VideoFrameCache:
-        cache = self._caches.get(video_path)
-        if cache is None:
-            cache = _VideoFrameCache(video_path, max_cached=self._max_cached)
-            self._caches.put(video_path, cache)
-        return cache
+    def _session_for(self, video_path: Path) -> _VideoSession:
+        session = self._open_handles.get(video_path)
+        if session is None:
+            session = _VideoSession(video_path, max_cached=self._max_cached)
+            self._open_handles.put(video_path, session)
+        return session
 
     def decode_frame(self, ref: VideoRef) -> NDArray:
-        """Decode a single frame -> numpy HWC uint8.
-
-        Checks disk cache first; falls back to video decoding and
-        saves the result to disk for future runs.
-        """
-        if self._disk_cache:
-            npy_path = self._disk_cache_path(ref)
-            if npy_path.exists():
-                return np.load(npy_path)
-
-        # Decode from video
-        cache = self._get_cache(ref.video_path)
-        img = cache.get_frame(
+        """Decode a single frame -> numpy HWC uint8."""
+        session = self._session_for(ref.video_path)
+        return session.get_frame(
             ref.frame_index, (ref.height, ref.width, ref.channels)
         )
-
-        # Save to disk cache
-        if self._disk_cache:
-            np.save(self._disk_cache_path(ref), img)
-
-        return img

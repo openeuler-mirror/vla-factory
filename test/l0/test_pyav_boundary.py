@@ -10,7 +10,6 @@ reach:
   LeRobot test video can mask because adjacent frames are duplicated)
 * out-of-range frame indices return a black frame instead of raising
 * resizing on decode when the caller requests different dimensions
-* disk-cache round-trip
 * opening a missing video raises RuntimeError
 """
 
@@ -23,7 +22,7 @@ import av
 import numpy as np
 import pytest
 
-from vla_factory.data.codec.pyav import PyAVCodec, _VideoFrameCache
+from vla_factory.data.codec.pyav import PyAVCodec, _VideoSession
 from vla_factory.data.data_schema import VideoRef
 
 DATASET_PATH = (
@@ -110,8 +109,8 @@ class _DummyStream:
 
 
 def test_frame_to_pts_uses_stream_timebase():
-    codec = PyAVCodec(disk_cache=False)
-    cache = codec._get_cache(VIDEO_PATH)
+    codec = PyAVCodec()
+    cache = codec._session_for(VIDEO_PATH)
     try:
         cache._ensure_open()
         # Real LeRobot test video: 1/15360 time_base at 30 fps => 512 units/frame.
@@ -124,7 +123,7 @@ def test_frame_to_pts_uses_stream_timebase():
 
 
 def test_frame_to_pts_fallback_duration_and_frames():
-    cache = _VideoFrameCache(Path("dummy.mp4"))
+    cache = _VideoSession(Path("dummy.mp4"))
     cache._stream = _DummyStream(
         average_rate=None, denominator=1000, duration=1000, frames=100
     )
@@ -133,7 +132,7 @@ def test_frame_to_pts_fallback_duration_and_frames():
 
 
 def test_frame_to_pts_last_resort_frame_ordinal():
-    cache = _VideoFrameCache(Path("dummy.mp4"))
+    cache = _VideoSession(Path("dummy.mp4"))
     cache._stream = _DummyStream(
         average_rate=None, denominator=1000, duration=0, frames=0
     )
@@ -155,8 +154,8 @@ def test_seek_to_positions_decoder_at_exact_target():
         path = Path(td) / "distinct.mp4"
         _write_distinct_mp4(path)
 
-        codec = PyAVCodec(disk_cache=False)
-        cache = codec._get_cache(path)
+        codec = PyAVCodec()
+        cache = codec._session_for(path)
         try:
             cache._ensure_open()
             cache._seek_to(2)
@@ -173,7 +172,7 @@ def test_backward_access_exact_frame_with_distinct_frames():
         path = Path(td) / "distinct.mp4"
         _write_distinct_mp4(path)
 
-        codec = PyAVCodec(disk_cache=False, max_cached_per_video=2)
+        codec = PyAVCodec(max_cached_per_video=2)
         target = 2
         expected = codec.decode_frame(_ref(path, target))
         codec.decode_frame(_ref(path, 3))  # evicts target from the 2-entry LRU
@@ -196,7 +195,7 @@ def test_backward_access_exact_frame_with_pts_offset():
         path = Path(td) / "offset.mp4"
         _write_distinct_mp4(path, pts_offset=1)
 
-        codec = PyAVCodec(disk_cache=False, max_cached_per_video=2)
+        codec = PyAVCodec(max_cached_per_video=2)
         target = 2
         expected = codec.decode_frame(_ref(path, target))
         codec.decode_frame(_ref(path, 3))  # evicts target from the 2-entry LRU
@@ -226,8 +225,8 @@ def test_far_forward_jump_seeks_instead_of_decoding_through(monkeypatch):
         # 12 frames: g = 20*(i+1) stays within uint8 (max 240 at i=11).
         _write_distinct_mp4(path, n_frames=12)
 
-        codec = PyAVCodec(disk_cache=False, max_cached_per_video=2)
-        cache = codec._get_cache(path)
+        codec = PyAVCodec(max_cached_per_video=2)
+        cache = codec._session_for(path)
 
         seeks: list[int] = []
         original = type(cache)._seek_to
@@ -261,7 +260,7 @@ def test_far_forward_jump_seeks_instead_of_decoding_through(monkeypatch):
 
 
 def test_decode_beyond_end_returns_black_frame():
-    codec = PyAVCodec(disk_cache=False)
+    codec = PyAVCodec()
     container = av.open(str(VIDEO_PATH))
     total = container.streams.video[0].frames
     container.close()
@@ -273,32 +272,16 @@ def test_decode_beyond_end_returns_black_frame():
 
 
 def test_decode_resizes_when_dims_differ():
-    codec = PyAVCodec(disk_cache=False)
+    codec = PyAVCodec()
     img = codec.decode_frame(_ref(VIDEO_PATH, 0, height=24, width=32))
     assert img.shape == (24, 32, 3)
 
 
 def test_decode_missing_video_raises_runtime_error():
-    codec = PyAVCodec(disk_cache=False)
+    codec = PyAVCodec()
     with pytest.raises(RuntimeError, match="Failed to open video"):
         codec.decode_frame(_ref(Path("/nonexistent/video.mp4"), 0))
 
-
-def test_disk_cache_roundtrip():
-    with tempfile.TemporaryDirectory() as td:
-        path = Path(td) / "distinct.mp4"
-        _write_distinct_mp4(path)
-
-        ref = _ref(path, 1, height=32, width=32)
-        codec = PyAVCodec(disk_cache=True)
-        first = codec.decode_frame(ref)
-        npy = path.parent / (path.name + ".frame_cache") / "000001.npy"
-        assert npy.exists()
-
-        # A fresh codec must serve the frame from the .npy disk cache.
-        codec2 = PyAVCodec(disk_cache=True)
-        second = codec2.decode_frame(ref)
-        assert np.array_equal(first, second)
 
 
 def test_lru_hit_returns_owned_copy():
@@ -313,7 +296,7 @@ def test_lru_hit_returns_owned_copy():
         _write_distinct_mp4(path)
 
         ref = _ref(path, 1, height=32, width=32)
-        codec = PyAVCodec(disk_cache=False)
+        codec = PyAVCodec()
         miss = codec.decode_frame(ref)
         hit1 = codec.decode_frame(ref)  # LRU hit
         hit2 = codec.decode_frame(ref)  # LRU hit

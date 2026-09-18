@@ -190,7 +190,7 @@ def test_lru_reuses_decoded_frame(dataset):
 
     first = codec.decode_frame(ref)
     # Served from the LRU, not a fresh JPEG decode
-    cache = codec._caches[ref.video_path]._cache
+    cache = codec._open_handles[ref.video_path]._cache
     assert (ref.stream, ref.frame_index) in cache
 
     second = codec.decode_frame(ref)
@@ -211,7 +211,7 @@ def test_lru_eviction(dataset):
     for ref in refs:
         codec.decode_frame(ref)
 
-    cache = codec._caches[refs[0].video_path]._cache
+    cache = codec._open_handles[refs[0].video_path]._cache
     assert len(cache) == 3
     # Oldest frame (index 0) was evicted; the newest three remain
     assert ("head_camera", 0) not in cache
@@ -229,7 +229,7 @@ def test_lru_key_includes_stream(dataset):
     for ref in refs.values():
         codec.decode_frame(ref)
 
-    cache = codec._caches[next(iter(refs.values())).video_path]._cache
+    cache = codec._open_handles[next(iter(refs.values())).video_path]._cache
     # Three distinct (stream, 0) keys coexist — same index, different cameras
     assert len(cache) == len(CAMERAS)
     for cam in CAMERAS:
@@ -261,7 +261,7 @@ def test_codec_default_max_cached(dataset, tmp_path):
         for ref in frame.images.values():
             assert codec.decode_frame(ref).shape == (H, W, 3)
     # 36 inserts into one file-level cache -> evicted down to exactly 32.
-    caches = [c for c in codec._caches.values() if c.path.name == "episode0.hdf5"]
+    caches = [c for c in codec._open_handles.values() if c.path.name == "episode0.hdf5"]
     assert len(caches) == 1
     assert len(caches[0]._cache) == 32
 
@@ -272,4 +272,4 @@ def test_codec_default_max_cached(dataset, tmp_path):
         for frame in ep_frames:
             for ref in frame.images.values():
                 codec.decode_frame(ref)
-    assert all(len(c._cache) <= c.max_cached for c in codec._caches.values())
+    assert all(len(c._cache) <= c.max_cached for c in codec._open_handles.values())
