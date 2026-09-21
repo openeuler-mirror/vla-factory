@@ -114,10 +114,12 @@ execute. Do not infer robot camera/joint bindings from names.
   `SampleWindow`, full-dataset window construction, `VLADataset`, and
   `collate_fn`; `dataloader.py` executes a resolved assembly as one training
   loader; `trainer.py` owns `VLATrainer` and HuggingFace argument mapping;
-  `checkpoint.py` owns contract/final-weight persistence. `strategies/` is a
+  `checkpoint.py` owns inference-contract persistence (`inference_metadata/`);
+  final weights are the HF Trainer's last `checkpoint-{step}/` dir.
+  `strategies/` is a
   registered extension point: each `FinetuningStrategy` strictly parses its
   own `finetuning.config`, prepares the model, and finalizes its inference state
-  (`full` / `freeze` / `selective` / `lora`). Strategies select/wrap parameters;
+  (`full` / `selective` / `lora`). Strategies select/wrap parameters;
   methods that change loss, sampling, or the loop are a different future layer.
 - **`vla_factory/inference/`** — split into a transport-agnostic inference core
   and pluggable sub-layers (see `docs/modules/deploy-module.md`):
@@ -138,8 +140,12 @@ execute. Do not infer robot camera/joint bindings from names.
     (RoboTwin-compatible TCP RPC).
   - `connectors/` — dependency-free callbacks imported by the robot env
     (`robotwin.py` + bootstrap `robotwin.yml`), runnable without the model deps.
-- **`vla_factory/utils/constants.py`** — on-disk artifact layout:
-  `inference_metadata/{assembly.json,recipe.yaml}`, `final/model.pt`.
+- **`vla_factory/utils/constants.py`** — on-disk artifact layout: a training
+  output holds `inference_metadata/{assembly.json,recipe.yaml}` plus HF Trainer
+  `checkpoint-{step}/` dirs (weight file + `weights.json` format marker); the
+  final weights are the last `checkpoint-{final_step}/`. `vlafactory-cli
+  export` merges one checkpoint into a portable dir (`model.pt` +
+  `weights.json` + the copied `inference_metadata/`).
   `assembly.json` is the single source for schema, normalization statistics,
   mappings, ModelIOSpec, and pipeline plans.
 - **`vla_factory/utils/vocabulary.py`** — the single source for the three
@@ -166,8 +172,9 @@ no output dir is created or wiped until it succeeds)** → `get_entry(model_name
 (pretrained) or from-scratch → the registered `FinetuningStrategy` strictly
 parses `finetuning.config` and prepares the model →
 `create_dataloader(recipe, assembly)` (reader + codec + the `data_to_model`
-plan instantiated + sampler) → `VLATrainer` runs HF `Trainer` → saves
-`final/model.pt` + `inference_metadata/{assembly.json,recipe.yaml}`.
+plan instantiated + sampler) → `VLATrainer` runs HF `Trainer` → writes
+`inference_metadata/` up front and the final `checkpoint-{final_step}/`
+(weight file + `weights.json`) at the end.
 
 `deploy --platform {simulator,lerobot,robotwin}` loads a checkpoint's
 `inference_metadata/{assembly.json,recipe.yaml}` and **executes** the saved

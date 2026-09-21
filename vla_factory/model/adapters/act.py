@@ -128,11 +128,13 @@ def _try_import_lerobot():
 
 
 def _load_state_dict_file(path: str | Path) -> dict:
-    """Load a state dict from a ``.pt`` or ``.safetensors`` checkpoint.
+    """Load a state dict from a ``.pt`` / ``.safetensors`` / ``.bin`` file.
 
-    ``model.pt`` (written by ``vlafactory-cli export``) and
-    ``checkpoint-*/model.safetensors`` (written by the HF Trainer every
-    ``save_steps``) are both supported as ``model.path`` sources.
+    ``model.pt`` (written by ``vlafactory-cli export``) and the weight file
+    inside the HF Trainer's ``checkpoint-*/`` dirs (``pytorch_model.bin``
+    here — ``save_safetensors`` is disabled in ``trainer.py``) are both
+    supported as ``model.path`` sources. The path must be the file itself,
+    not the directory.
     """
     p = Path(path)
     if p.suffix == ".safetensors":
@@ -167,10 +169,11 @@ def _adapt_state_dict(state_dict: dict, target: nn.Module) -> dict:
 def _load_pretrained_weights(target: nn.Module, path: str | Path) -> None:
     """Load checkpoint *path* into *target* (an ``ACTModelWrapper``).
 
-    Loading into the wrapper — not the inner policy — means a checkpoint saved
-    by ``train.py``'s ``torch.save(model.state_dict(), ...)`` round-trips
-    exactly, so a model trained on dataset A can be used as the starting point
-    for dataset B simply by setting ``model.path`` in the recipe.
+    Loading into the wrapper — not the inner policy — means a full checkpoint
+    saved from a wrapper's ``state_dict()`` (a trainer ``checkpoint-*/`` weight
+    file, or ``vlafactory-cli export``'s ``model.pt``) round-trips exactly, so
+    a model trained on dataset A can be used as the starting point for dataset
+    B simply by setting ``model.path`` in the recipe.
     """
     state_dict = _load_state_dict_file(path)
     state_dict = _adapt_state_dict(state_dict, target)

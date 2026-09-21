@@ -30,17 +30,29 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 model:
   name: act                    # [必填] 注册表中的模型名
-                               #   可选值: act | pi0 | pi05 | openvla-7b | gr00t | octo | smolvla
+                               #   可选值以 `vlafactory-cli list` 为准，当前内置:
+                               #   act | diffusion_policy | pi0 | pi05 |
+                               #   openvla-7b | openvla-7b-oft
                                #
                                # 简写：`model: act`；若字符串含 `/`，完整字符串
                                # 同时作为 checkpoint path，最后一段作为 name，
                                # 例如 `model: lerobot/pi0`。
 
-  path: null                   # [可选] 预训练权重路径
-                               #   - 指向目录或文件，由模型的 factory 解读
-                               #   - null = 从零训练 (适用于 ACT 等小模型)
-                               #   - pi0/pi05 仅支持微调，训练时必填 (如 "lerobot/pi0_base")
-                               #   - 示例: "outputs/openpi/pi0.5", "openvla/openvla-7b"
+  path: null                   # [可选] 预训练权重来源，由各模型的 adapter 自行解读
+                               #   - null = 从零训练 (from_scratch 系: act / diffusion_policy)
+                               #   - act / diffusion_policy: 单个权重文件 (.pt / .safetensors /
+                               #     pytorch_model.bin)，即本框架自己的完整权重
+                               #     (上一次训练 checkpoint-*/ 内的权重文件、
+                               #     vlafactory-cli export 导出目录的 model.pt)；
+                               #     不支持目录与 HF repo id
+                               #   - pi0 / pi05 [必填]: .safetensors 文件、含 *.safetensors
+                               #     的本地目录、或 HF repo id (如 "lerobot/pi0_base"，
+                               #     分片仓库自动按 index.json 拉取)；不支持 openpi 的
+                               #     JAX 权重与本框架的 model.pt (torch 格式)
+                               #   - openvla-7b / openvla-7b-oft [必填]: 完整 HF checkpoint
+                               #     (本地目录或 repo id，如 "openvla/openvla-7b")，
+                               #     processor 与 tokenizer 也从该路径读取；
+                               #     不支持裸权重文件
 
   # config:                    # [可选] 逐 run 的模型超参覆盖，深度合并到模型声明的
   #                            #   ModelMetadata.params 之上 (recipe 优先)。
