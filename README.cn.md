@@ -28,6 +28,7 @@ VLA Factory 是一个 **recipe 驱动** 的机器人视觉-语言-动作（VLA�
 # 在仓库根目录
 bash scripts/install.sh --model act               # ACT（lerobot + CPU torch）
 bash scripts/install.sh --model pi0               # PI0 / PI0.5（openpi + CUDA torch）
+bash scripts/install.sh --model pi0fast           # PI0-FAST（lerobot 0.5 pi0_fast + transformers 5.3）
 bash scripts/install.sh --model diffusion_policy  # Diffusion Policy（real-stanford 源码 + CUDA torch）
 
 # 仅框架开发——不需要任何模型生态
@@ -115,6 +116,7 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
 |------|------|
 | `examples/act_lekiwi.yaml` | lekiwi 从零训练 |
 | `examples/pi0_lora.yaml` | openpi pi0 系列 smoke —— 默认 pi0 LoRA;注释里给出切 pi05 与全量微调的开关 |
+| `examples/pi0fast_lora.yaml` | π0-FAST smoke（lerobot 0.5 `pi0_fast`）—— FAST tokenizer 自回归动作头,默认 LoRA;起点用 `lerobot/pi0fast-libero`（唯一 FAST 训练过的 PyTorch checkpoint） |
 | `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA 参考训练协议 |
 | `examples/reference.yaml` | 全字段注释模板 |
 
@@ -131,7 +133,7 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ⬜ **π-FAST** | | |
+| ⬜ **HDF5** | ✅ **π-FAST** | | |
 | | ⬜ **GR00T / OpenVLA** | | |
 
 ---

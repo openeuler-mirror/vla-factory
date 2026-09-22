@@ -315,7 +315,7 @@ class TestGoldenRealData:
         normalize = dict(_calls(a.data_to_model))["normalize_vector"]
         assert normalize["method"] == "quantile"
         assert dict(_calls(a.data_to_model))["task_tokenize"] == {
-            "max_length": 200, "discrete_state": True,
+            "max_length": 200, "discrete_state": True, "action_marker": True,
             "tokenizer_repo": "google/paligemma-3b-pt-224",
         }
         assert _calls(a.model_to_robot) == [
