@@ -75,9 +75,10 @@ execute. Do not infer robot camera/joint bindings from names.
   - `registry.py` — `ModelRegistry`, `@register_vla(metadata)`, `get_entry()`
     and `list_entries()`. Built-ins are discovered under `adapters/`; external
     packages use the `vla_factory.models` entry-point group.
-  - `adapters/` — upstream model bindings. `act.py`, `pi0.py`, and `pi05.py`
-    own each family declaration/factory; `openpi.py` holds code deliberately
-    shared by PI0 and PI0.5. These are the worked extension examples.
+  - `adapters/` — upstream model bindings. `act.py`, `pi0.py`, `pi05.py`, and
+    `pi0fast.py` own each family declaration/factory; `openpi.py` holds code
+    deliberately shared by PI0 and PI0.5. These are the worked extension
+    examples.
 - **`vla_factory/data/`** — read-only Canonical IR only (no sample building):
   start at `data_schema.py` (`describe_dataset()` plus `DataSchema` /
   `NormStats` / `Episode` / `Frame` / `VideoRef`). Here, data schema means the
@@ -215,6 +216,15 @@ Two install paths, by ecosystem friction:
   routes torch/torchvision through the matching PyTorch CUDA wheel index
   (cu126 / cu128); it pins openpi to a known-good git commit for
   reproducibility (no release tags upstream).
+- **pi0fast** (lerobot 0.5's `pi0_fast`, the openpi-style PyTorch port of
+  π0-FAST): `bash scripts/install.sh --model pi0fast`. The upstream line
+  hard-requires **transformers 5.x** (PiGemma classes), which conflicts with
+  the core `transformers<5` bound, so it lives in its own venv with
+  vla-factory installed `--no-deps` plus the core deps re-added by hand
+  (openvla pattern). Pretrained start: `lerobot/pi0fast-libero` is the only
+  FAST-trained PyTorch checkpoint (openpi ships π0-FAST JAX-only;
+  `lerobot/pi0fast-base` measured structure-only — a PaliGemma init in the
+  pi0_fast layout).
 
 Dev deps: `pip install -e ".[dev]"` (pytest, pytest-cov, tensorboard).
 

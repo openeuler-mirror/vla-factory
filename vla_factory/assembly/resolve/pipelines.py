@@ -92,6 +92,10 @@ def _tokenizer_config(ctx: PlanContext) -> dict | None:
         "max_length": int(max_length),
         "discrete_state": bool(metadata.prompt_includes_state),
     }
+    if metadata.prompt_includes_state:
+        # FAST models end the discrete-state prefix at ";\n"; flow models
+        # (pi05) append the "Action: " answer marker to the prompt itself.
+        cfg["action_marker"] = bool(metadata.prompt_action_marker)
     if metadata.tokenizer_repo is not None:
         cfg["tokenizer_repo"] = metadata.tokenizer_repo
     if metadata.tokenizer_repo is None and ctx.tokenizer_repo is None:

@@ -2,16 +2,16 @@
 # install.sh — set up vla-factory model environment(s) with uv.
 #
 # Usage:
-#   bash scripts/install.sh [--model {act|pi0|pi05|openvla|diffusion_policy}] [--venv <dir>] [-y|--yes]
+#   bash scripts/install.sh [--model {act|pi0|pi05|openvla|pi0fast|diffusion_policy}] [--venv <dir>] [-y|--yes]
 #
-#   --model   act | pi0 | pi05 | openvla | diffusion_policy
+#   --model   act | pi0 | pi05 | openvla | pi0fast | diffusion_policy
 #             Omit it to install ALL model environments (act, pi0, pi05,
 #             diffusion_policy) — the script prints what will be installed
 #             and asks for confirmation (yes/y) before proceeding.
 #             Use -y/--yes to skip the prompt in non-interactive contexts.
-#             (openvla is excluded from the all-models batch: it pins its
-#             own transformers/peft, so it must be installed explicitly
-#             --model openvla.)
+#             (openvla and pi0fast are excluded from the all-models batch:
+#             they pin transformers versions that conflict with the core
+#             bound, so each must be installed explicitly --model <name>.)
 #   --venv    venv directory    (default: ./.{model}, e.g. ./.act;
 #                                only valid together with --model)
 #   -y|--yes  assume yes at the all-models confirmation prompt
@@ -24,6 +24,12 @@
 #   openvla prismatic (pinned git source) + CUDA torch + transformers==4.40.1 /
 #           peft==0.11.1 (upstream OpenVLA pins these; its own venv keeps them
 #           from clashing with the framework's newer transformers).
+#   pi0fast lerobot==0.5.1 (upstream pi0_fast, the openpi-style PyTorch port of
+#           π0-FAST) + CUDA torch + transformers==5.3.0 + scipy. lerobot's
+#           pi0_fast line hard-requires transformers 5.x (PiGemma classes),
+#           which conflicts with the core `transformers<5` bound — hence its
+#           own venv, with vla-factory installed --no-deps plus the core deps
+#           re-added by hand (mirrors the openvla pattern).
 #   diffusion_policy  real-stanford source (pinned commit, namespace-package
 #                     patch) + robomimic/diffusers + CUDA torch.
 #
@@ -57,8 +63,8 @@ if [[ -n "$VENV_DIR" && -z "$MODEL" ]]; then
 fi
 
 case "$MODEL" in
-  act|pi0|pi05|openvla|diffusion_policy|"") ;;
-  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|openvla|diffusion_policy)"; exit 1 ;;
+  act|pi0|pi05|openvla|pi0fast|diffusion_policy|"") ;;
+  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|openvla|pi0fast|diffusion_policy)"; exit 1 ;;
 esac
 
 # ── All-models mode: notice + confirmation ───────────────────────────
@@ -315,6 +321,57 @@ install_one_model() {
     echo "Activate and run:"
     echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
     echo "  vlafactory-cli train --config examples/openvla.yaml"
+    return 0
+  fi
+  # ═══════════════════════════════════════════════════════════════════
+  #  PI0FAST — lerobot 0.5.1 pi0_fast + transformers 5.3 + CUDA torch
+  # ═══════════════════════════════════════════════════════════════════
+
+  if [[ "$model" == "pi0fast" ]]; then
+    echo ""
+    echo "== installing pi0fast (lerobot 0.5.1 + transformers 5.3 + ${VLA_TORCH_BACKEND:-$(detect_cuda_index)} torch) =="
+
+    local pf_cuda_index="${VLA_TORCH_BACKEND:-$(detect_cuda_index)}"
+    case "$pf_cuda_index" in
+      cu126|cu128) ;;
+      *) echo "install.sh: unsupported VLA_TORCH_BACKEND '$pf_cuda_index' (expected cu126|cu128)"; return 1 ;;
+    esac
+    local pf_uv_flags=(
+      --default-index "$UV_DEFAULT_INDEX"
+      --torch-backend "$pf_cuda_index"
+      --index-strategy first-index
+      --no-sources-package torch
+      --no-sources-package torchvision
+    )
+
+    # Torch first (explicit CUDA index), then the pi0_fast ecosystem: lerobot
+    # 0.5.1 ships the openpi-style PyTorch port; transformers 5.3.0 is its
+    # pinned line (PiGemma backbone); scipy backs the FAST tokenizer's DCT.
+    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
+      "torch>=2.7,<2.11" torchvision
+    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
+      "lerobot==0.5.1" "transformers==5.3.0" "scipy>=1.10"
+
+    # vla-factory itself: --no-deps because the core `transformers<5` bound
+    # (see pyproject.toml) conflicts with this venv's transformers 5.x, then
+    # every core dep is re-added by hand so the framework still runs whole.
+    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} --no-deps -e .
+    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
+      "peft>=0.11" "omegaconf>=2.3" "pyyaml>=6.0" "av>=12.0" "pyzmq>=25.0" \
+      "safetensors>=0.4" "opencv-python-headless>=4.5" "pandas>=2.0" \
+      "pyarrow>=14.0" "tqdm>=4.60" "pytest>=7" pytest-cov "tensorboard>=2.14" \
+      "requests>=2.28"
+
+    install_torchcodec
+
+    echo ""
+    echo "Done."
+    echo "  venv:   $(cd "$venv_dir" && pwd)"
+    echo "  python: $(cd "$venv_dir" && pwd)/bin/python"
+    echo ""
+    echo "Activate and run:"
+    echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
+    echo "  vlafactory-cli train --config examples/pi0fast_lora.yaml"
     return 0
   fi
   # ═══════════════════════════════════════════════════════════════════

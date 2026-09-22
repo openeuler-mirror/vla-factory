@@ -1,0 +1,90 @@
+# π0-FAST end-to-end smoke (lerobot 0.5 PI0FastPolicy — FAST-tokenizer
+# autoregressive action head, no flow-matching expert).
+#
+# Run in the vendored pi0fast env (transformers 5.x conflict — see
+# scripts/install.sh --model pi0fast):
+#   source .pi0fast/bin/activate
+#   vlafactory-cli train --config examples/pi0fast_lora.yaml
+#
+# ── Variant A: full finetune instead of LoRA ─────────────────────────────
+#   Set finetuning.strategy: full and drop finetuning.config; lower
+#   training.lr to ~2.5e-5. Full FT needs more VRAM than LoRA on the 3B
+#   backbone; on a 12 GB card keep the LoRA config below.
+#
+# ── Variant B: selective (freeze the vision tower) ───────────────────────
+#   finetuning.strategy: selective
+#   finetuning.config: {components: ["language_model"]}
+#   — trains the language model subtree only, freezing vision + projector.
+#   Full-parameter (strategy: full) needs a ≥24 GB card for the 3.45B
+#   backbone (weights + grads + AdamW states); keep LoRA below that.
+#
+# pi0fast shares pi05's quantile normalization and discrete-state prompt
+# (state digitized into the language tokens), so the dataset's meta/stats.json
+# must carry q01/q99 (lerobot v3 ships them). The FAST tokenizer lives
+# model-side; the recipe carries no tokenization knobs.
+#
+# The dataset carries per-frame task text; default_task is only the fallback
+# for frames without one. right_wrist_0_rgb is intentionally unmapped — the
+# policy fills unmapped slots with masked placeholder images.
+model:
+  name: pi0fast
+  # Pretrained-start options (verified 2026-09, measured not assumed):
+  #   1. lerobot/pi0fast-libero — the only FAST-trained PyTorch checkpoint on
+  #      the Hub (openpi ships π0-FAST JAX-only). Finetuned on LIBERO with
+  #      lerobot 0.5's exact token convention; verified here end-to-end
+  #      (train + infer detokenize). Download it first, then point path at
+  #      the local dir:
+  #        hf download lerobot/pi0fast-libero model.safetensors --local-dir outputs/pi0fast_libero
+  #   2. Structure-only start (random-ish FAST head): lerobot/pi0fast-base
+  #      (ungated) — measured: it does NOT know the FAST Task/State/Action
+  #      format (CE(Action)≈98); it is a PaliGemma initialization in the
+  #      pi0_fast key layout. Download it first, then point path at the
+  #      local dir:
+  #        hf download lerobot/pi0fast-base --local-dir outputs/pi0fast_base
+  # path: null is rejected (finetune-only).
+  path: null
+
+# 三者之间的关系归组合调整区（架构 §3.1），不是模型超参。
+overrides:
+  camera_mapping:
+    base_0_rgb: front
+    left_wrist_0_rgb: wrist
+  default_task: "pick up the rectangle"
+
+# 动作维度与 chunk 长度不在 recipe 里：前者是数据集事实（inspect data 可看），
+# 后者是 pi0 家族的固定 chunk（预训练事实，改不了）。
+
+data:
+  path: data/banana
+  format: lerobot-v3
+
+finetuning:
+  strategy: lora
+  config:
+    r: 16
+    lora_alpha: 16
+    lora_dropout: 0.0
+    init_lora_weights: gaussian
+    # LoRA semantics here: parameters OUTSIDE the wrapped components keep
+    # full-parameter training. Wrapping only "language_model" would leave the
+    # vision tower (0.4B, float32) fully trainable — too much for a 12 GB
+    # card. "llm" covers the whole PaliGemma backbone, so nothing trains
+    # outside the adapters.
+    components: ["llm"]
+    # target_modules: all-linear     # default: peft special string.
+
+training:
+  backend: pytorch
+  lr: 5.0e-5                      # LoRA typically uses a higher lr than full FT
+  batch_size: 1
+  total_steps: 3                  # smoke: 3 optimizer steps
+  gradient_checkpointing: true
+  num_workers: 0
+
+output:
+  output_dir: outputs/pi0fast_smoke
+  report_to: none
+  logging_steps: 1
+  save_steps: 1000
+  save_total_limit: 1
+  overwrite_output_dir: true

@@ -57,6 +57,9 @@ _PI05_METADATA = ModelMetadata(
     tokenizer_repo="google/paligemma-3b-pt-224",
     tokenizer_max_length=200,
     prompt_includes_state=True,
+    # openpi PaligemmaTokenizer: the discrete-state prompt carries the
+    # "Action: " answer marker itself (the default; FAST models differ).
+    prompt_action_marker=True,
     control_mode_pref=("joint_pos",),
     expected_hz=50,
     vision_slots=(

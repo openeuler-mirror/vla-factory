@@ -29,6 +29,7 @@ transformers patch and the diffusion_policy source patch):
 # From the repository root
 bash scripts/install.sh --model act               # ACT (lerobot + CPU torch)
 bash scripts/install.sh --model pi0               # PI0 / PI0.5 (openpi + CUDA torch)
+bash scripts/install.sh --model pi0fast           # PI0-FAST (lerobot 0.5 pi0_fast + transformers 5.3)
 bash scripts/install.sh --model diffusion_policy  # Diffusion Policy (real-stanford source + CUDA torch)
 
 # framework development only — no model ecosystem needed
@@ -118,6 +119,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 |---------|-------------|
 | `examples/act_lekiwi.yaml` | Train lekiwi from scratch |
 | `examples/pi0_lora.yaml` | openpi pi0 family smoke — pi0 LoRA by default; commented switches for pi05 and full finetune |
+| `examples/pi0fast_lora.yaml` | π0-FAST smoke (lerobot 0.5 `pi0_fast`) — FAST-tokenizer autoregressive head, LoRA by default; start from `lerobot/pi0fast-libero` (the only FAST-trained PyTorch checkpoint) |
 | `examples/pi0_robotwin_dump_bin_bigbin_lora.yaml` | RoboTwin PI0 LoRA reference protocol |
 | `examples/openvla.yaml` | OpenVLA / OFT smoke — LoRA by default; normalization, sequence assembly and the checkpoint image processor run plan-side |
 | `examples/reference.yaml` | Fully annotated template |
@@ -135,6 +137,6 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 | ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** · ⬜ **π-FAST** | ✅ **LoRA SFT** | |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** · ✅ **π-FAST** | ✅ **LoRA SFT** | |
 
 ---

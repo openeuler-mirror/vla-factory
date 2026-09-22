@@ -82,6 +82,15 @@ pi05 = [
     "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
     "pytest>=7",
 ]
+# pi0fast wraps lerobot 0.5's pi0_fast (openpi-style PyTorch port of π0-FAST:
+# FAST-tokenizer autoregressive actions; openpi itself ships π0-FAST as
+# JAX-only). lerobot's pi0_fast line (0.5.1 … 0.6.x) hard-requires
+# transformers 5.x (PiGemma classes), which conflicts with this package's
+# `transformers<5` core bound — so, like openvla, pi0fast is vendored into its
+# own venv (see scripts/install.sh --model pi0fast) and this extra is metadata
+# only. Environment contents: vla-factory (--no-deps) + lerobot 0.5.1 +
+# transformers==5.3.0 + CUDA torch + scipy (FAST DCT).
+pi0fast = []
 # diffusion_policy wraps real-stanford's DiffusionUnetHybridImagePolicy. The
 # upstream repo ships no __init__.py anywhere (PEP 420 namespace layout), so
 # `pip install git+...` produces an empty wheel — the package itself is only

@@ -112,6 +112,12 @@ class ModelMetadata:
     tokenizer_repo: str | None = None
     tokenizer_max_length: int | None = None
     prompt_includes_state: bool = False
+    # Discrete-state prompts only: does the prompt itself carry the "Action: "
+    # answer marker? openpi's PaligemmaTokenizer (pi05 flow models) appends it
+    # to the prompt; its FASTTokenizer (pi0fast) ends the prefix at ";\n" and
+    # the action segment supplies "Action: " itself. Ignored when
+    # prompt_includes_state is False.
+    prompt_action_marker: bool = True
     # Proprio / action dimension + normalization contract.
     dim_policy: str = "flexible"            # fixed | padded_to_max | flexible
     dim_policy_max: int | None = None       # N for fixed / padded_to_max
@@ -146,7 +152,8 @@ class ModelMetadata:
         "image_normalize_mode", "image_layout", "image_resize_mode",
         "vector_normalization", "vector_normalization_eps", "requires_prompt",
         "language_template", "tokenizer_repo", "tokenizer_max_length",
-        "prompt_includes_state", "control_mode_pref", "expected_hz", "history_frames",
+        "prompt_includes_state", "prompt_action_marker",
+        "control_mode_pref", "expected_hz", "history_frames",
         # Checkpoint contract: what inference must be able to read back.
         "inference_needs_base_checkpoint",
     )

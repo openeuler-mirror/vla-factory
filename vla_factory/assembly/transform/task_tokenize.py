@@ -33,6 +33,12 @@ the prompt as ``Task: <task>, State: <bins>;\\nAction: `` (openpi
 be normalized (quantile → roughly [-1, 1]) and NOT yet padded, so this step
 runs after ``normalize_vector`` and before ``pad_dimensions`` in the pi05
 profile.
+
+pi0fast keeps the same discrete-state prefix but ends it at ``;\\n`` — no
+``Action: `` marker (openpi ``FASTTokenizer`` convention; lerobot's action
+tokenizer prepends ``<bos>Action: `` to the action segment itself, so a marker
+in the prompt would duplicate it out of distribution). The resolver selects
+this via ``ModelMetadata.prompt_action_marker``.
 """
 
 from __future__ import annotations
@@ -50,12 +56,18 @@ logger = logging.getLogger(__name__)
 _STATE_BINS = np.linspace(-1, 1, 256 + 1)[:-1]
 
 
-def build_prompt(task: str, state: np.ndarray | None = None) -> str:
+def build_prompt(
+    task: str, state: np.ndarray | None = None, action_marker: bool = True
+) -> str:
     """Build the model prompt string, mirroring openpi's PaligemmaTokenizer.
 
     With ``state`` (pi05 discrete-state format)::
 
         Task: <cleaned task>, State: <256-bin digitized state>;\\nAction:{space}
+
+    With ``state`` and ``action_marker=False`` (pi0fast / openpi
+    ``FASTTokenizer``), the prefix ends at ``;\\n`` — the ``Action: `` marker
+    belongs to the action segment there, not the prompt.
 
     Without ``state`` (pi0), the cleaned task text plus a trailing newline.
     openpi appends that newline as a separate token and calls it the "start of
@@ -75,7 +87,8 @@ def build_prompt(task: str, state: np.ndarray | None = None) -> str:
         return cleaned + "\n"
     discretized = np.digitize(state, bins=_STATE_BINS) - 1
     state_str = " ".join(map(str, discretized))
-    return f"Task: {cleaned}, State: {state_str};\nAction: "
+    suffix = "Action: " if action_marker else ""
+    return f"Task: {cleaned}, State: {state_str};\n{suffix}"
 
 
 @TransformRegistry.register("task_tokenize")
@@ -95,11 +108,13 @@ class TaskTokenize(TransformStep):
         max_length: int = 48,
         default_task: str | None = None,
         discrete_state: bool = False,
+        action_marker: bool = True,
     ) -> None:
         self.tokenizer_repo = tokenizer_repo
         self.max_length = int(max_length)
         self.default_task = default_task
         self.discrete_state = bool(discrete_state)
+        self.action_marker = bool(action_marker)
         self._tokenizer = None
         self._warned_empty_task = False
 
@@ -146,7 +161,7 @@ class TaskTokenize(TransformStep):
 
         tok = self._ensure_tokenizer()
         enc = tok(
-            build_prompt(task, state),
+            build_prompt(task, state, action_marker=self.action_marker),
             max_length=self.max_length,
             padding="max_length",
             truncation=True,
@@ -168,6 +183,10 @@ class TaskTokenize(TransformStep):
             "max_length": int(cfg.get("max_length", 48)),
             "discrete_state": bool(cfg.get("discrete_state", False)),
         }
+        if args["discrete_state"]:
+            # Only the discrete-state format branches on the marker; pi0's
+            # plain-task prompt is the same either way.
+            args["action_marker"] = bool(cfg.get("action_marker", True))
         repo = cfg.get("tokenizer_repo") or ctx.tokenizer_repo
         if repo is not None:
             args["tokenizer_repo"] = repo
