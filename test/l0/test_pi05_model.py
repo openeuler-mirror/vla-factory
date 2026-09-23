@@ -1,21 +1,24 @@
 """Tests for the pi05 adapter and its data-side differences from pi0.
 
-Patches the shared OpenPI handle (adapters/openpi.try_import_openpi) so tests run
-without openpi/jax installed. Runnable both via pytest and directly:
-`python test/test_pi05_model.py`.
+The model-side half patches the shared lerobot handle
+(adapters/lerobot_pi._try_import_lerobot_pi05) so tests run without lerobot
+installed. The data-side half (discrete-state prompt, quantile
+normalization) runs everywhere — those transforms are framework code.
+Runnable both via pytest and directly: `python test/l0/test_pi05_model.py`.
 """
 from __future__ import annotations
 
+import sys
 import types
-
 
 import numpy as np
 import pytest
+import torch
 import torch.nn as nn
 
 from helpers import make_assembly, make_schema
 
-import vla_factory.model.adapters.openpi as pi0_mod
+import vla_factory.model.adapters.lerobot_pi as lerobot_pi_mod
 from vla_factory.user_interface import merge_model_config, parse_recipe_from_string
 from vla_factory.data.data_schema import FeatureStats, NormStats
 from vla_factory.assembly.transform.normalize import (
@@ -23,50 +26,75 @@ from vla_factory.assembly.transform.normalize import (
     UnnormalizeActionQuantileStep,
 )
 from vla_factory.assembly.transform.task_tokenize import TaskTokenize, build_prompt
+from vla_factory.model.model_interface import Observation
 from vla_factory.model.registry import get_entry
 
 
 def _assembly_for(recipe, model_name: str):
-    """Resolve the composition these factory tests build their model from."""
+    """Resolve the composition these factory tests build their model from.
+
+    ``make_assembly`` takes overrides as its own parameter (it does not read
+    them off the recipe), so pass the recipe's overrides through — the
+    factory rejects a camera mapping with no data source, and without this
+    the override never reaches the resolver.
+    """
     schema = make_schema(
         state_dim=9, action_dim=9, cameras=("front",),
         image_sizes={"front": (224, 224)}, has_language=True,
     )
-    return make_assembly(schema, model_name, recipe=merge_model_config(recipe))
+    return make_assembly(
+        schema, model_name, recipe=merge_model_config(recipe),
+        overrides=recipe.overrides,
+    )
 
 
-# ── Fakes: record the Pi0Config kwargs the factory passes upstream ──
+# ── Fakes: record the config kwargs the factory passes upstream ──
 
 
-class _FakePi0Config:
-    def __init__(self, **kw):
-        self.kw = kw
-        self.pi05 = kw.get("pi05", False)
+class _FakeCheckpointable(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Linear(1, 1)
+        self.checkpointing_enabled = False
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        self.checkpointing_enabled = True
 
 
-class _FakePaligemmaWithExpert(nn.Module):
-    def to_bfloat16_for_selected_params(self, dtype):
-        pass
+class _FakePI05Policy(nn.Module):
+    """Minimal PI05Policy stand-in (same block layout as PI0Policy)."""
 
-
-class _FakePI0Pytorch(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config=None):
         super().__init__()
         self.config = config
-        self.paligemma_with_expert = _FakePaligemmaWithExpert()
-        self.dummy = nn.Linear(1, 1)
+        self.model = types.SimpleNamespace(paligemma_with_expert=None)
+        self.seen_batches: list[dict] = []
+
+    def forward(self, batch):
+        self.seen_batches.append(batch)
+        return torch.zeros((), requires_grad=True), {"loss": 0.0}
+
+    def predict_action_chunk(self, batch, **kwargs):
+        self.seen_batches.append(batch)
+        return torch.zeros(batch["observation.language.tokens"].shape[0], 50, 32)
 
 
-@pytest.fixture(autouse=True)
-def _fake_openpi():
-    original = getattr(pi0_mod.try_import_openpi, "_cached", None)
-    pi0_mod.try_import_openpi._cached = (
-        _FakePI0Pytorch,
-        _FakePi0Config,
-        types.SimpleNamespace,
+class _FakePI05Config:
+    def __init__(self, **kw):
+        self.kw = kw
+
+
+@pytest.fixture()
+def _fake_lerobot_pi05():
+    original = getattr(lerobot_pi_mod._try_import_lerobot_pi05, "_cached", None)
+    lerobot_pi_mod._try_import_lerobot_pi05._cached = (
+        _FakePI05Policy, _FakePI05Config,
     )
     yield
-    pi0_mod.try_import_openpi._cached = original
+    lerobot_pi_mod._try_import_lerobot_pi05._cached = original
+
+
+# ── Metadata (lerobot-era interface facts) ──
 
 
 def test_metadata():
@@ -78,9 +106,71 @@ def test_metadata():
     assert meta.action_dim == 32
     assert meta.support_lora is True
     assert "llm" in meta.components and "action_expert" in meta.components
+    # lerobot _preprocess_images takes [0,1] and maps to [-1,1] internally
+    assert meta.image_input_range == (0.0, 1.0)
+    # lerobot nesting, same block layout as pi0 (two classes, one structure)
+    assert meta.components["llm"] == ["model.model.paligemma_with_expert.paligemma."]
+    assert meta.components["action_expert"] == [
+        "model.model.paligemma_with_expert.gemma_expert."
+    ]
+    # pi05 data-side differences: quantile + discrete-state prompt with the
+    # "Action: " answer marker (openpi PaligemmaTokenizer lineage)
+    assert meta.vector_normalization == "quantile"
+    assert meta.prompt_includes_state is True
+    assert meta.prompt_action_marker is True
+    assert meta.tokenizer_max_length == 200
 
 
-def test_factory_builds_pi05_variant():
+# ── Wrapper state-split (pi05 never receives observation.state) ──
+
+
+def _make_obs(B=2):
+    return Observation(
+        images={"front": torch.rand(B, 3, 224, 224)},
+        image_masks={"front": torch.ones(B, dtype=torch.bool)},
+        state=torch.zeros(B, 9),  # present, but pi05 must not forward it
+        task=["pick the banana"] * B,
+        tokenized_prompt=torch.zeros(B, 200, dtype=torch.long),
+        tokenized_prompt_mask=torch.ones(B, 200, dtype=torch.long),
+    )
+
+
+def test_pi05_batch_omits_state():
+    wrapper = lerobot_pi_mod.PILerobotModelWrapper(
+        _FakePI05Policy(),
+        camera_mapping={"base_0_rgb": "front"},
+        include_state=False,
+    )
+    batch = wrapper._to_lerobot_batch(_make_obs())
+    # PI05Policy never reads observation.state — the state rides inside the
+    # discrete prompt the framework's task_tokenize already built.
+    assert "observation.state" not in batch
+    assert "observation.images.base_0_rgb" in batch
+    assert batch["observation.language.attention_mask"].dtype is torch.bool
+
+
+def test_pi0_batch_includes_state():
+    wrapper = lerobot_pi_mod.PILerobotModelWrapper(
+        _FakePI05Policy(),  # layout irrelevant here; only the flag matters
+        camera_mapping={"base_0_rgb": "front"},
+        include_state=True,
+    )
+    assert "observation.state" in wrapper._to_lerobot_batch(_make_obs())
+
+
+# ── Factory path (needs lerobot for FeatureType/PolicyFeature) ───────
+
+
+def _lerobot_available():
+    try:
+        from lerobot.configs.types import FeatureType, PolicyFeature  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _lerobot_available(), reason="lerobot not installed")
+def test_factory_builds_pi05_without_state(_fake_lerobot_pi05):
     recipe = parse_recipe_from_string(
         """
 model:
@@ -93,13 +183,53 @@ overrides:
     wrapper = get_entry("pi05").factory(
         recipe=recipe, assembly=_assembly_for(recipe, "pi05"),
     )
+    assert isinstance(wrapper, lerobot_pi_mod.PILerobotModelWrapper)
+    assert wrapper._include_state is False, "pi05 state lives in the prompt"
     config = wrapper.model.config
-    assert config.kw["pi05"] is True, "factory must select the pi05 variant"
-    assert config.kw["action_dim"] == 32
-    assert config.kw["action_horizon"] == 50
+    assert config.kw["chunk_size"] == config.kw["n_action_steps"] == 50
+    assert config.kw["dtype"] == "bfloat16"
+    assert config.kw["num_inference_steps"] == 10
+    # ALL declared slots enter input_features — mapped or not — so the policy's
+    # _preprocess_images generates the -1 image + zero mask placeholder for the
+    # two unmapped trailing slots (base_0_rgb is the only mapped one here).
+    assert set(config.kw["input_features"]) == {
+        "observation.images.base_0_rgb",
+        "observation.images.left_wrist_0_rgb",
+        "observation.images.right_wrist_0_rgb",
+    }
 
 
-def test_pi0_factory_stays_on_pi0_variant():
+@pytest.mark.skipif(not _lerobot_available(), reason="lerobot not installed")
+def test_pi05_factory_routes_pretrained_through_strict_loader(
+    _fake_lerobot_pi05, monkeypatch,
+):
+    # Same contract as pi0: model.path loads through load_pretrained_strict —
+    # lerobot's from_pretrained overrides print-and-continue on failure.
+    recipe = parse_recipe_from_string(
+        """
+model:
+  name: pi05
+  path: /tmp/fake-ckpt
+overrides:
+  camera_mapping:
+    base_0_rgb: front
+"""
+    )
+    strict_calls: list[tuple] = []
+    monkeypatch.setattr(
+        lerobot_pi_mod, "load_pretrained_strict",
+        lambda policy, path, name: strict_calls.append((path, name)),
+    )
+    get_entry("pi05").factory(
+        recipe=recipe, assembly=_assembly_for(recipe, "pi05"),
+    )
+    assert strict_calls == [("/tmp/fake-ckpt", "pi05")]
+
+
+@pytest.mark.skipif(not _lerobot_available(), reason="lerobot not installed")
+def test_pi0_factory_keeps_state_input(_fake_lerobot_pi05):
+    # The pi0 factory routes through the same loader with model_name="pi0"
+    # — the include_state split must track the model, not the loader.
     recipe = parse_recipe_from_string(
         """
 model:
@@ -109,10 +239,17 @@ overrides:
     base_0_rgb: front
 """
     )
-    wrapper = get_entry("pi0").factory(
-        recipe=recipe, assembly=_assembly_for(recipe, "pi0"),
+    original = getattr(lerobot_pi_mod._try_import_lerobot_pi0, "_cached", None)
+    lerobot_pi_mod._try_import_lerobot_pi0._cached = (
+        _FakePI05Policy, _FakePI05Config,
     )
-    assert wrapper.model.config.kw.get("pi05", False) is False
+    try:
+        wrapper = get_entry("pi0").factory(
+            recipe=recipe, assembly=_assembly_for(recipe, "pi0"),
+        )
+    finally:
+        lerobot_pi_mod._try_import_lerobot_pi0._cached = original
+    assert wrapper._include_state is True
 
 
 # ── pi05 discrete-state prompt (openpi PaligemmaTokenizer format) ──
@@ -131,10 +268,10 @@ def test_build_prompt_discrete_state():
 def test_build_prompt_without_state_is_cleaned_task_plus_newline():
     """pi0: cleaned text + the trailing "start of answer" newline.
 
-    The newline mirrors openpi ``models/tokenizer.py:33``, which appends it as a
-    separate token. Dropping it leaves the prefix one token short of what the
+    The newline mirrors openpi ``models/tokenizer.py:33``, which appends it as
+    a separate token. Dropping it leaves the prefix one token short of what the
     base checkpoint was trained with — see
-    ``test/l1/test_openpi_pipeline_parity.py::test_prompt_tokens_are_identical``.
+    ``test/l1/test_lerobot_pipeline_parity.py``.
     """
     assert build_prompt(" say_hello ") == "say hello\n"
 
@@ -246,3 +383,7 @@ def test_zscore_default_unchanged():
     step = NormalizeVector(stats, fields=("state",), method="zscore")
     out = step({"state": np.array([3.0], dtype=np.float32)})
     np.testing.assert_allclose(out["state"], [1.0], atol=1e-5)
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

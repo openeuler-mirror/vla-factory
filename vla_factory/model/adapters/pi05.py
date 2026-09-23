@@ -1,23 +1,25 @@
-"""PI05 adapter — the pi05 variant of openpi's ``PI0Pytorch``.
+"""PI05 model declaration and factory (lerobot 0.5 ``PI05Policy``).
 
-pi05 is NOT a separate upstream class: openpi's ``Pi0Config(pi05=True)``
-switches the same ``PI0Pytorch`` into the pi05 mode, with two model-side
-differences (openpi pi0_config.py):
+pi05 is an **independent** lerobot class (unlike the openpi era, where a
+``pi05=True`` flag switched the same ``PI0Pytorch``): same
+``paligemma_with_expert`` block layout, with two model-side differences —
 
   * the state input is part of the discrete language tokens (digitized into
-    the prompt) rather than a continuous input in the action-expert suffix;
+    the prompt) rather than a continuous ``observation.state`` tensor —
+    ``PI05Policy`` never reads that key, so the wrapper omits it
+    (``include_state=False``);
   * the action expert uses adaRMSNorm to inject the flow-matching timestep,
-    and ``max_token_len`` defaults to 200 (vs 48 for pi0).
+    and ``tokenizer_max_length`` defaults to 200 (vs 48 for pi0).
 
-Data-side differences live in this module's interface facts: quantile
-normalisation for state/actions (openpi ``use_quantile_norm``), a 200-token
-prompt, and state digitization before vector padding.
+Data-side differences live in this declaration's interface facts: quantile
+normalization for state/actions, a 200-token prompt, and state digitization
+before vector padding. The shared wrapper/loader lives in
+:mod:`vla_factory.model.adapters.lerobot_pi`. Pretrained start:
+``lerobot/pi05_base``. Checkpoints trained through the former openpi route
+are not loadable here (see lerobot_pi).
 
-Everything else (thin composition wrapper, camera_mapping translation, weight
-loading from a pytorch safetensors port such as ``lerobot/pi05_base``) is
-shared by :mod:`vla_factory.model.adapters.openpi`.
-
-Requires openpi (uv install):: bash scripts/install.sh --model pi05
+Requires the shared pi-family environment (lerobot 0.5 + transformers 5.3)::
+bash scripts/install.sh --model pi05
 """
 
 from __future__ import annotations
@@ -25,11 +27,13 @@ from __future__ import annotations
 from vla_factory.model.model_interface import ModelMetadata, VisionSlot
 from vla_factory.model.registry import register_vla
 
-from .openpi import OPENPI_PARAMS, PI0ModelWrapper, load_openpi, try_import_openpi
+from .lerobot_pi import (
+    LEROBOT_PI_PARAMS,
+    PILerobotModelWrapper,
+    _try_import_lerobot_pi05,
+    load_lerobot_pi,
+)
 
-# pi05 shares PI0's upstream tunables. Its preprocessing differences are named
-# interface facts below, not recipe-overridable config.
-_PI05_PARAMS: dict = dict(OPENPI_PARAMS)
 
 _PI05_METADATA = ModelMetadata(
     name="pi05",
@@ -48,7 +52,7 @@ _PI05_METADATA = ModelMetadata(
     # uses quantile (q01/q99 → [-1,1]) normalization (openpi use_quantile_norm).
     dim_policy="padded_to_max",
     dim_policy_max=32,
-    image_input_range=(-1.0, 1.0),
+    image_input_range=(0.0, 1.0),
     image_layout="CHW",
     image_resize_mode="pad",
     vector_normalization="quantile",
@@ -57,7 +61,7 @@ _PI05_METADATA = ModelMetadata(
     tokenizer_repo="google/paligemma-3b-pt-224",
     tokenizer_max_length=200,
     prompt_includes_state=True,
-    # openpi PaligemmaTokenizer: the discrete-state prompt carries the
+    # openpi PaligemmaTokenizer lineage: the discrete-state prompt carries the
     # "Action: " answer marker itself (the default; FAST models differ).
     prompt_action_marker=True,
     control_mode_pref=("joint_pos",),
@@ -72,27 +76,31 @@ _PI05_METADATA = ModelMetadata(
                    semantic_accepts=("wrist_right", "wrist"), resolution=(224, 224)),
     ),
     components={
-        # Same PI0Pytorch top-level blocks as pi0 (one class, pi05 flag).
-        "llm": ["paligemma_with_expert.paligemma."],
-        "action_expert": ["paligemma_with_expert.gemma_expert."],
+        # Same PI0Pytorch block layout as pi0 (two classes, one structure).
+        "llm": ["model.model.paligemma_with_expert.paligemma."],
+        "action_expert": ["model.model.paligemma_with_expert.gemma_expert."],
+        "vision_encoder": [
+            "model.model.paligemma_with_expert.paligemma.model.vision_tower.",
+        ],
+        "language_model": [
+            "model.model.paligemma_with_expert.paligemma.model.language_model.",
+        ],
     },
-    params=_PI05_PARAMS,
+    params=LEROBOT_PI_PARAMS,
 )
 
 
 @register_vla(_PI05_METADATA)
-def load_pi05(recipe, assembly) -> PI0ModelWrapper:
-    """Factory: construct openpi ``PI0Pytorch`` in pi05 mode and wrap it.
+def load_pi05(recipe, assembly) -> PILerobotModelWrapper:
+    """Factory: construct lerobot's ``PI05Policy`` and wrap it.
 
-    Raises ImportError if openpi is not installed.
+    Raises ImportError if lerobot (>=0.5, the ``pi05`` policy) is absent.
     """
-    openpi = try_import_openpi()
-    if openpi is None:
+    lerobot_pi05 = _try_import_lerobot_pi05()
+    if lerobot_pi05 is None:
         raise ImportError(
-            "pi05 requires openpi (upstream PI0Pytorch). "
+            "pi05 requires lerobot>=0.5 (upstream PI05Policy). "
             f"Install: {_PI05_METADATA.install_hint}"
         )
-    PI0Pytorch, Pi0Config, _OpenpiObservation = openpi  # noqa: F841
-    return load_openpi(
-        recipe, assembly, PI0Pytorch, Pi0Config, model_name="pi05", pi05=True,
-    )
+    PI05Policy, PI05Config = lerobot_pi05
+    return load_lerobot_pi(recipe, assembly, PI05Policy, PI05Config, "pi05")

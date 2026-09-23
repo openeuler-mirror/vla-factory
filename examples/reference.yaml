@@ -31,7 +31,7 @@
 model:
   name: act                    # [必填] 注册表中的模型名
                                #   可选值以 `vlafactory-cli list` 为准，当前内置:
-                               #   act | diffusion_policy | pi0 | pi05 |
+                               #   act | diffusion_policy | pi0 | pi05 | pi0fast |
                                #   openvla-7b | openvla-7b-oft
                                #
                                # 简写：`model: act`；若字符串含 `/`，完整字符串
@@ -48,7 +48,9 @@ model:
                                #   - pi0 / pi05 [必填]: .safetensors 文件、含 *.safetensors
                                #     的本地目录、或 HF repo id (如 "lerobot/pi0_base"，
                                #     分片仓库自动按 index.json 拉取)；不支持 openpi 的
-                               #     JAX 权重与本框架的 model.pt (torch 格式)
+                               #     JAX 权重与本框架的 model.pt (torch 格式)；旧 openpi
+                               #     路线训练的 checkpoint 亦不兼容（state_dict 层级与
+                               #     保存的图像值域不同，加载时大声失败）
                                #   - openvla-7b / openvla-7b-oft [必填]: 完整 HF checkpoint
                                #     (本地目录或 repo id，如 "openvla/openvla-7b")，
                                #     processor 与 tokenizer 也从该路径读取；
@@ -62,7 +64,8 @@ model:
   #                            #   组合解析消费的事实 (图像值域、归一化方法、维度策略…)
   #                            #   属于模型声明的具名字段，不可在此覆盖。
   #   num_inference_steps: 10  # [可选] 去噪/flow-matching 步数 (pi0 默认 10, ACT 为 1)
-  #   pytorch_compile_mode: null  # [可选] pi0/pi05: 小显存或冒烟测试时设 null 走 eager
+  #   compile_model: false     # [可选] pi 家族 (pi0/pi05/pi0fast): torch.compile；
+                               #   小显存或冒烟测试保持 false 走 eager
   #   action_horizon: 100      # [仅 from_scratch 模型, 如 ACT] chunk 长度由用户选。
                                #   pi0/pi05 是预训练固定长度 (家族事实)，不接受此键。
   #   input_image_size: [224, 224]  # [仅 from_scratch 模型] 模型输入图像尺寸；

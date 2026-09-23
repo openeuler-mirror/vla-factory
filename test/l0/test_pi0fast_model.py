@@ -291,6 +291,84 @@ def test_factory_builds_wrapper_from_assembly():
     assert isinstance(wrapper, pi0fast_mod.PI0FASTModelWrapper)
     assert wrapper._camera_mapping.get("base_0_rgb") == "front"
     assert wrapper._action_step is not None
+    # ALL declared slots enter input_features (mapped or not) so the policy
+    # pads the unmapped trailing slot with its -1 image + zero mask. (This
+    # fake config spreads kwargs into __dict__ rather than keeping a .kw.)
+    assert set(vars(wrapper.model.config)["input_features"]) == {
+        "observation.images.base_0_rgb",
+        "observation.images.left_wrist_0_rgb",
+        "observation.images.right_wrist_0_rgb",
+    }
+
+
+@pytest.mark.skipif(not _lerobot_available(), reason="lerobot not installed")
+def test_factory_routes_pretrained_through_strict_loader(monkeypatch):
+    """model.path must load through the shared strict loader, never the
+    family's from_pretrained — whose overrides print-and-continue on every
+    load failure and would silently train random weights."""
+    from helpers import make_assembly, make_schema
+    from vla_factory.user_interface import (
+        AssemblyOverrides,
+        ModelConfig,
+        TrainRecipe,
+        merge_model_config,
+    )
+
+    recipe = merge_model_config(TrainRecipe(
+        model=ModelConfig(name="pi0fast", path="/tmp/fake-ckpt"),
+    ))
+    schema = make_schema(
+        state_dim=9,
+        action_dim=14,
+        cameras=("front", "wrist"),
+        image_sizes={"front": (224, 224), "wrist": (224, 224)},
+        has_language=True,
+    )
+    assembly = make_assembly(
+        schema, "pi0fast", recipe=recipe,
+        overrides=AssemblyOverrides(
+            camera_mapping={"base_0_rgb": "front", "left_wrist_0_rgb": "wrist"},
+        ),
+    )
+    strict_calls: list[tuple] = []
+    monkeypatch.setattr(
+        pi0fast_mod, "load_pretrained_strict",
+        lambda policy, path, name: strict_calls.append((path, name)),
+    )
+    pi0fast_mod.load_pi0fast(recipe, assembly)
+    assert strict_calls == [("/tmp/fake-ckpt", "pi0fast")]
+
+
+@pytest.mark.skipif(not _lerobot_available(), reason="lerobot not installed")
+def test_factory_rejects_non_trailing_unmapped_slot():
+    # Same rule as the pi0/pi05 loader (pi0fast carries its own copy): an
+    # unmapped middle slot would shift later real cameras into the wrong
+    # pretrained position, since placeholders are appended at the tail.
+    from helpers import make_assembly, make_schema
+    from vla_factory.user_interface import (
+        AssemblyOverrides,
+        ModelConfig,
+        TrainRecipe,
+        merge_model_config,
+    )
+
+    recipe = merge_model_config(TrainRecipe(model=ModelConfig(name="pi0fast")))
+    schema = make_schema(
+        state_dim=9,
+        action_dim=14,
+        cameras=("front", "wrist"),
+        image_sizes={"front": (224, 224), "wrist": (224, 224)},
+        has_language=True,
+    )
+    # left_wrist_0_rgb (declaration slot 2 of 3) deliberately unmapped.
+    assembly = make_assembly(
+        schema, "pi0fast", recipe=recipe,
+        overrides=AssemblyOverrides(
+            camera_mapping={"base_0_rgb": "front", "right_wrist_0_rgb": "wrist"},
+        ),
+    )
+    with pytest.raises(ValueError, match="trail"):
+        pi0fast_mod.load_pi0fast(recipe, assembly)
 
 
 if __name__ == "__main__":

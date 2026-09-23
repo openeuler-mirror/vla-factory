@@ -23,8 +23,7 @@ Config (environment variables)::
     VLAF_UPSTREAM         default openeuler/vla-factory
     VLAF_BASE_DIR         parent dir for the CI checkouts (auto-cloned if missing)
     VLAF_ENV_BASE         /home/you/envs/base/bin/python  (required; L0)
-    VLAF_ENV_ACT          /home/you/envs/act/bin/python   (required; L1/L2)
-    VLAF_ENV_PI           /home/you/envs/pi/bin/python    (required; L1)
+    VLAF_ENV_PI           /home/you/envs/pi/bin/python    (required; L1/L2)
     HF_TOKEN              Hugging Face token authorized for PaliGemma (required; PI L1)
     VLAF_POLL_INTERVAL    seconds between polls (default 30)
     VLAF_DB_PATH          seen-SHA tracking DB (default ~/.vlaf_ci.db)
@@ -49,7 +48,6 @@ Run::
     VLAF_GITCODE_TOKEN=... \
     VLAF_BASE_DIR=$HOME/vla-factory-ci \
     VLAF_ENV_BASE=$HOME/envs/base/bin/python \
-    VLAF_ENV_ACT=$HOME/envs/act/bin/python \
     VLAF_ENV_PI=$HOME/envs/pi/bin/python \
     HF_TOKEN=hf_... \
     python3 ci/runner/daemon.py
@@ -84,7 +82,7 @@ CI_WORKERS = int(os.environ.get("VLAF_CI_WORKERS", "5"))
 CMD_WORKERS = int(os.environ.get("VLAF_CMD_WORKERS", "5"))
 
 ENVS: list[tuple[str, str]] = []
-for label in ("base", "act", "pi"):
+for label in ("base", "pi"):
     py = os.environ.get(f"VLAF_ENV_{label.upper()}")
     if py:
         ENVS.append((label, py))
@@ -553,12 +551,12 @@ ALL_TIERS = [
 
 # Fixed tier assignment per required environment. Every PR update must execute
 # L0, L1, and L2; changing it per machine would silently reduce CI coverage.
-# L1 self-skips the cases whose upstream is absent, so act and pi safely cover
-# their respective Lerobot and OpenPI contracts.
+# pi runs the whole lerobot stack (ACT + the pi family unified on lerobot
+# 0.5), so its L1 collection covers every parity file — act, pi, normalize,
+# peft — in one environment.
 DEFAULT_ENV_TIERS: dict[str, list[str]] = {
     "base": ["l0"],
-    "act": ["l1", "l2"],
-    "pi": ["l1"],
+    "pi": ["l1", "l2"],
 }
 
 TIER_TEST_PATHS = {
@@ -785,11 +783,11 @@ def main():
             "google/paligemma-3b-pt-224, then configure it with bash scripts/run_ci.sh."
         )
     missing_envs = [
-        label for label in ("base", "act", "pi")
+        label for label in ("base", "pi")
         if not os.environ.get(f"VLAF_ENV_{label.upper()}")
     ]
     invalid_envs = [
-        label for label in ("base", "act", "pi")
+        label for label in ("base", "pi")
         if os.environ.get(f"VLAF_ENV_{label.upper()}")
         and not Path(os.environ[f"VLAF_ENV_{label.upper()}"]).exists()
     ]
@@ -802,7 +800,7 @@ def main():
         sys.exit(
             "Configured interpreters are required for full CI coverage: "
             f"{'; '.join(detail)}. "
-            "Run bash scripts/ci/build_ci_envs.sh base act pi, then "
+            "Run bash scripts/ci/build_ci_envs.sh base pi, then "
             "configure them with bash scripts/run_ci.sh."
         )
 

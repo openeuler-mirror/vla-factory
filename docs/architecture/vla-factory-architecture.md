@@ -785,17 +785,18 @@ Dependency management follows the "lightweight core, on-demand ecosystem" princi
 
 Core dependencies cover only configuration parsing, the data pipeline, PyTorch training basics, the CLI, and general deployment capability (see `dependencies` in `pyproject.toml`); model-ecosystem dependencies are introduced on demand. The framework uses [uv](https://github.com/astral-sh/uv) to manage versions, virtual environments, and package installation, rather than system Python or conda:
 
-- uv's PubGrub resolver can resolve the strict `==` version pins of upstream ecosystems (especially openpi); these pins, combined with openpi's in-place transformers patch, make a plain `pip install -e ".[pi0]"` fail outright.
+- uv's PubGrub resolver can resolve the strict `==` version pins of upstream ecosystems — the openpi reference environment (reserved for a future JAX engine route) still needs it, including its in-place transformers patch.
 - uv natively supports routing torch/torchvision through the PyTorch CUDA wheel index (`--torch-backend`), with no need for hand-written `--find-links` or `PIP_EXTRA_INDEX_URL`.
-- uv creates and manages venvs extremely fast; each model environment is isolated, preventing lerobot/openpi dependency conflicts from polluting the global environment.
+- uv creates and manages venvs extremely fast; each model environment is isolated. This is not just hygiene: ecosystems that genuinely conflict (openpi's in-place transformers patch vs the lerobot stack; diffusion_policy's robomimic pinning) only coexist through separate venvs — while the lerobot-riding models (ACT + the pi family, all on lerobot 0.5 + transformers 5.3 since the unification) deliberately share one `.pi` venv instead.
 
 ### 5.2 Environment Setup
 
 Model environments are wrapped by `scripts/install.sh`, the recommended entry point:
 
 ```bash
-bash scripts/install.sh [--model {act|pi0|pi05}] [--venv <dir>] [-y|--yes]
-# venv defaults to ./.{model} (e.g. ./.act); omit --model to install all (asks first)
+bash scripts/install.sh [--model {act|pi0|pi05|pi0fast|openpi|openvla|diffusion_policy}] [--venv <dir>] [-y|--yes]
+# venv defaults to ./.{model}; omit --model to install
+# the all-models batch (asks first)
 ```
 
 The script performs, in order:
@@ -803,14 +804,13 @@ The script performs, in order:
 - Creates a virtual environment with `uv venv --python 3.12` (default `./.{model}`) and activates it.
 - Auto-selects the torch CUDA wheel backend by the GPU's **compute capability** (not the driver CUDA version): Blackwell (sm_100 and above, e.g. RTX 5090 sm_120) → `cu128`; others (Hopper sm_90 and earlier) → `cu126`. Override with `VLA_TORCH_BACKEND=cu126|cu128`. The reason for checking compute capability rather than driver version is that a Blackwell card reports driver CUDA 12.4 but needs cu128's torch 2.8+ to get sm_100/sm_120 kernels.
 - Auto-detects a PyPI mirror (Tsinghua for CN networks, otherwise PyPI); override with `VLA_PYPI_INDEX`.
-- Downloads openpi (and lerobot when `VLA_LOCAL_LEROBOT=1`) as a tarball into `.local-deps/` and installs from a local path, avoiding GitHub git-transport instability on weak networks; openpi is pinned to a known-good commit.
-- After installing openpi, overlays its `transformers_replace` patch onto site-packages (dtype fixes for SigLIP/PaliGemma/Gemma required by PI0Pytorch).
+- Per model: the lerobot family (`act` / `pi0` / `pi05` / `pi0fast`) installs `lerobot[pi]==0.5.1` (transformers 5.3 + scipy ride through lerobot's own extra) + CUDA torch into its own `./.{model}` venv — one plain resolved install, the core transformers bound being `<6`; `openpi` installs the openpi source (pinned git commit) plus its `transformers_replace` patch into `./.openpi`, reserved for a future JAX engine route — the pi0/pi05 PyTorch path no longer uses it.
 - Installs vla-factory itself in editable mode (`uv pip install -e .`).
 
 Once done:
 
 ```bash
-source .venv/bin/activate
+source .pi0/bin/activate
 vlafactory-cli list
 vlafactory-cli train --config examples/pi0_lora.yaml
 ```
@@ -821,13 +821,12 @@ Model-ecosystem dependencies are declared in `[project.optional-dependencies]` o
 
 | extra | contents | install |
 |---|---|---|
-| `act` | lerobot (ACT policy) | `uv pip install -e ".[act]"` directly |
-| `pi0` / `pi05` | openpi (pinned commit) | **must go through `scripts/install.sh`** |
+| `act` / `pi0` / `pi05` / `pi0fast` | `lerobot[pi]==0.5.1` (the whole lerobot-riding stack: transformers 5.3 + scipy owned by lerobot's extra) | `uv pip install -e ".[act]"` directly; `scripts/install.sh` additionally routes torch through the CUDA wheel index and pins the ABI-matched torchcodec |
 | `robotwin` | h5py (RoboTwin native hdf5 data) | `uv pip install -e ".[robotwin]"` directly |
-| `all` | all of the above | the pi0/pi05 part still needs install.sh |
+| `all` | all of the above (no openpi pin) | `uv pip install -e ".[all]"` directly |
 | `dev` | pytest, pytest-cov, tensorboard | `uv pip install -e ".[dev]"` |
 
-To emphasize: **pi0 / pi05 cannot be installed with plain pip** — openpi's strict pins and transformers patch must be handled by `install.sh` together with uv.
+The openpi environment (`--model openpi`, venv `./.openpi`) is script-only and reserved for a future JAX engine route; no registered adapter depends on it today.
 
 `ModelMetadata.install_hint` gives a clear message when a dependency is missing, and the CLI `list` command shows registered models and their install hints.
 

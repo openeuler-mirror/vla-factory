@@ -286,7 +286,7 @@ class TestGoldenRealData:
         assert _calls(a.data_to_model) == [
             ("resize_images", {"height": 224, "width": 224,
                                "mode": "pad", "interpolation": "bilinear"}),
-            ("image_to_float", {"range": [-1.0, 1.0]}),
+            ("image_to_float", {"range": [0.0, 1.0]}),
             ("image_layout", {"to": "CHW"}),
             ("normalize_vector", {"fields": ["state", "actions"],
                                   "method": "zscore", "eps": 1e-6,

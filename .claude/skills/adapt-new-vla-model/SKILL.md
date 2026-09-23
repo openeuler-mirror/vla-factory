@@ -10,18 +10,12 @@ owns no architecture: you write a thin adapter (`vla_factory/model/adapters/<nam
 that wraps the upstream model by composition, declare its interface as
 `ModelMetadata` facts, and let the composition resolver derive the pipelines.
 Worked examples to mirror: `adapters/act.py` (lerobot `ACTPolicy`, pip-friendly
-route), `adapters/pi0.py` + `adapters/openpi.py` (openpi `PI0Pytorch`,
-uv-required route), and `adapters/diffusion_policy.py` (real-stanford
-`DiffusionUnetHybridImagePolicy`: from-scratch, no prompt, multi-frame
-history — the third interface shape).
-
-`diffusion_policy` (PR #27) and the OpenVLA adapter referenced below
-(PR #23) are **open PRs, not on master**. Wherever this skill describes
-their mechanisms (`checkpoint_image_transform`,
-`assemble_token_action_sequence`, identity stats, the `diffusion_policy`
-install branch), treat it as proposed design and read the code from the PR
-branch — re-check that the PR has landed before relying on those
-interfaces.
+route), `adapters/pi0.py` + `adapters/pi05.py` + `adapters/lerobot_pi.py`
+(lerobot 0.5 `PI0Policy` / `PI05Policy`: thin declarations over one shared
+wrapper), `adapters/openvla.py` + `adapters/openvla_oft.py` (an HF processor
+owns the whole preprocessing chain), and `adapters/diffusion_policy.py`
+(real-stanford `DiffusionUnetHybridImagePolicy`: from-scratch, no prompt,
+multi-frame history).
 
 Stable rules live in `.claude/CLAUDE.md` ("Extending VLA Factory" +
 "Conventions"); this skill is the step order and the per-step checks.
@@ -150,9 +144,8 @@ A third shape (OpenVLA/Prismatic): the upstream ships an HF
 **processor that owns the whole preprocessing chain** — image geometry +
 per-tower normalization (OpenVLA's fused DINOv2+SigLIP channel stack),
 prompt template, action discretization. The framework delegation mode for
-this is **proposed in PR #23, not yet on master** — the bullets below
-describe that proposal, not current capability; either way, do not
-improvise the chain inside the adapter:
+this is `checkpoint_image_transform` (worked example: `adapters/openvla.py`);
+do not improvise the chain inside the adapter:
 
 - declare `image_normalize_mode="checkpoint_processor"` → the resolver
   plans one `checkpoint_image_transform` step applying the base
@@ -254,9 +247,8 @@ what to check here:
   (q01=-1 / q99=+1) under a synthetic key in the checkpoint's norm_stats
   so the decode returns actions in NORMALIZED space and the planned
   `unnormalize_action` inverse finishes the round trip — the same
-  model-emits-normalized division of labor as pi0 (worked example, PR #23
-  not yet on master: `_inject_identity_action_stats`,
-  `adapters/openvla.py`).
+  model-emits-normalized division of labor as pi0 (worked example:
+  `_inject_identity_action_stats`, `adapters/openvla.py`).
 
 Check: same `vlafactory-cli resolve` output — read both plans, confirm every
 forward step that has an inverse is paired, and that the inverse ends at the
@@ -268,10 +260,14 @@ forward step that has an inverse is paired, and that the inverse ends at the
 
 Write `test/l1/test_<name>_pipeline_parity.py` (`pytest.mark.l1`; the tier is
 selected by directory: `pytest test/l1`). Mirror
-`test/l1/test_act_pipeline_parity.py` (lerobot-shaped chain: preprocessing
-lives in the dataset loader, policy side is normalization only) or
-`test/l1/test_openpi_pipeline_parity.py` (openpi-shaped chain: resize /
-to-float / tokenize all in the transform chain), or
+`test/l1/test_act_pipeline_parity.py` (dataset-loader-shaped chain:
+preprocessing lives in the dataset loader, policy side is normalization
+only) or
+`test/l1/test_lerobot_pipeline_parity.py` (processor-chain-shaped: compare at
+the upstream `make_*_pre_post_processors` output; note its fixture traps —
+every normalized key must be declared in the config's features, `task` comes
+back as a per-row list — and its documented divergences: eps 1e-6 vs 1e-8,
+zero-variance dims masked out), or
 `test/l1/test_diffusion_policy_parity.py` (no runnable official chain to
 build — pin the transcribed constants instead: upstream commit + file:line
 header, plus a pin guard test asserting `install.sh`'s `<NAME>_REF` still
@@ -288,8 +284,9 @@ Structure — three module-scoped fixtures:
 - `ours` — `resolve_assembly(recipe)` → `build_pipeline(assembly.data_to_model)`
   → apply steps → `collate_fn` → adapter's Observation translation.
 
-Compare **at the upstream model's real input boundary** (openpi
-`Observation.from_dict`; lerobot `make_act_pre_post_processors` output). One
+Compare **at the upstream model's real input boundary** (the adapter's batch
+translation, e.g. `PILerobotModelWrapper._to_lerobot_batch`; lerobot
+`make_act_pre_post_processors` output). One
 comparison there covers every constant at once — eps, value range, resolution,
 pad width, step order — without asserting them one by one.
 
@@ -305,8 +302,8 @@ Assertion rules:
 - if the model postprocesses, cover the `model_to_robot` inverse the same way
   (see `test/l1/test_normalize_parity.py`);
 - when upstream preprocessing is *transcribed* — whether into the wrapper
-  or into a framework step (OpenVLA's `assemble_token_action_sequence`,
-  PR #23 not yet on master, mirrors upstream's `RLDSBatchTransform`) —
+  or into a framework step (OpenVLA's `assemble_token_action_sequence`
+  mirrors upstream's `RLDSBatchTransform`) —
   build the reference from the upstream classes themselves; they are
   importable. Comparing a transcription with itself proves nothing.
 

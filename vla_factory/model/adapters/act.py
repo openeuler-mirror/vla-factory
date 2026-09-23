@@ -26,6 +26,10 @@ from omegaconf import OmegaConf
 import torch
 import torch.nn as nn
 
+from vla_factory.model.adapters.lerobot_version import (
+    LEROBOT_MIN,
+    lerobot_version_supported,
+)
 from vla_factory.model.model_interface import ModelMetadata, Observation
 from vla_factory.model.registry import register_vla
 from vla_factory.user_interface import TrainRecipe
@@ -95,6 +99,14 @@ def _try_import_lerobot():
     """
     if getattr(_try_import_lerobot, "_cached", None) is not None:
         return _try_import_lerobot._cached  # type: ignore[attr-defined]
+    if not lerobot_version_supported():
+        logger.info(
+            "lerobot missing or older than %s — reinstall with "
+            '`pip install -e ".[act]"` or `bash scripts/install.sh --model act`',
+            LEROBOT_MIN,
+        )
+        _try_import_lerobot._cached = None  # type: ignore[attr-defined]
+        return None
     try:
         from lerobot.policies.act.modeling_act import ACTPolicy
         from lerobot.policies.act.configuration_act import ACTConfig

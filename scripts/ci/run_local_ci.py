@@ -19,7 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONF_FILE = Path.home() / ".vlaf_ci.conf"
-PYTHON_ENV_KEYS = ("VLAF_ENV_BASE", "VLAF_ENV_ACT", "VLAF_ENV_PI")
+PYTHON_ENV_KEYS = ("VLAF_ENV_BASE", "VLAF_ENV_PI")
 ENV_KEYS = (*PYTHON_ENV_KEYS, "HF_TOKEN")
 
 

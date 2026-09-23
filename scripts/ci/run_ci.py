@@ -122,7 +122,6 @@ def save_conf(conf: dict[str, str]) -> None:
         "# Must have accepted access for google/paligemma-3b-pt-224 on Hugging Face.",
         f"HF_TOKEN={val('HF_TOKEN')}",
         f"VLAF_ENV_BASE={val('VLAF_ENV_BASE')}",
-        f"VLAF_ENV_ACT={val('VLAF_ENV_ACT')}",
         f"VLAF_ENV_PI={val('VLAF_ENV_PI')}",
         "",
         "# ── CI 行为（默认值如下，按需修改）──",
@@ -190,13 +189,13 @@ def validate_ci_environments(conf: dict[str, str]) -> str | None:
     if not conf.get("HF_TOKEN"):
         return "缺少 HF_TOKEN（PI L1 需要已获 PaliGemma 访问权限的 Hugging Face token）"
     missing = [
-        label for label in ("base", "act", "pi")
+        label for label in ("base", "pi")
         if not conf.get(f"VLAF_ENV_{label.upper()}")
     ]
     if missing:
         return "缺少测试环境: " + ", ".join(missing)
     invalid = [
-        label for label in ("base", "act", "pi")
+        label for label in ("base", "pi")
         if not Path(conf[f"VLAF_ENV_{label.upper()}"]).exists()
     ]
     if invalid:
@@ -228,7 +227,6 @@ def interactive_setup() -> dict[str, str]:
         "VLAF_BASE_DIR": old.get("VLAF_BASE_DIR") or str(Path.home() / "vla-factory-ci"),
         "VLAF_POLL_INTERVAL": old.get("VLAF_POLL_INTERVAL", "30"),
         "VLAF_ENV_BASE": old.get("VLAF_ENV_BASE") or detect_env_default("base") or sys.executable,
-        "VLAF_ENV_ACT": old.get("VLAF_ENV_ACT") or detect_env_default("act"),
         "VLAF_ENV_PI": old.get("VLAF_ENV_PI") or detect_env_default("pi"),
         "VLAF_AGENT_CMD": old.get("VLAF_AGENT_CMD", ""),
     }
@@ -251,18 +249,14 @@ def interactive_setup() -> dict[str, str]:
         "轮询间隔 (秒)", d["VLAF_POLL_INTERVAL"])
 
     print("\n  测试环境（每个 PR 都必须覆盖 L0、L1、L2）:")
-    print("  请先运行: bash scripts/ci/build_ci_envs.sh base act pi\n")
+    print("  请先运行: bash scripts/ci/build_ci_envs.sh base pi\n")
 
     conf["VLAF_ENV_BASE"] = ask(
         "base python (L0)", d["VLAF_ENV_BASE"],
         required=True, validate=validate_python)
 
-    conf["VLAF_ENV_ACT"] = ask(
-        "act python (L1+L2)", d["VLAF_ENV_ACT"],
-        required=True, validate=validate_python)
-
     conf["VLAF_ENV_PI"] = ask(
-        "pi python (L1)", d["VLAF_ENV_PI"],
+        "pi python (L1+L2)", d["VLAF_ENV_PI"],
         required=True, validate=validate_python)
 
     print()
@@ -275,12 +269,12 @@ def interactive_setup() -> dict[str, str]:
 
 def print_summary(conf: dict[str, str]) -> None:
     envs = []
-    for label in ("base", "act", "pi"):
+    for label in ("base", "pi"):
         py = conf.get(f"VLAF_ENV_{label.upper()}")
         if py:
             envs.append(label)
 
-    tier_map = {"base": "L0", "act": "L1+L2", "pi": "L1"}
+    tier_map = {"base": "L0", "pi": "L1+L2"}
     print("=" * 60)
     print("  配置摘要")
     print("=" * 60)

@@ -53,25 +53,25 @@ def test_ci_launcher_requires_all_tier_environments(tmp_path):
 
     complete = {
         "VLAF_ENV_BASE": interpreter,
-        "VLAF_ENV_ACT": interpreter,
         "VLAF_ENV_PI": interpreter,
         "HF_TOKEN": "hf_test",
     }
     assert ci_launcher.validate_ci_environments(complete) is None
-    assert "act" in ci_launcher.validate_ci_environments({
+    assert "pi" in ci_launcher.validate_ci_environments({
         "VLAF_ENV_BASE": interpreter,
+        "HF_TOKEN": "hf_test",
+    })
+    assert "base" in ci_launcher.validate_ci_environments({
         "VLAF_ENV_PI": interpreter,
         "HF_TOKEN": "hf_test",
     })
     assert "pi" in ci_launcher.validate_ci_environments({
         "VLAF_ENV_BASE": interpreter,
-        "VLAF_ENV_ACT": interpreter,
         "VLAF_ENV_PI": str(tmp_path / "missing-python"),
         "HF_TOKEN": "hf_test",
     })
     assert "HF_TOKEN" in ci_launcher.validate_ci_environments({
         "VLAF_ENV_BASE": interpreter,
-        "VLAF_ENV_ACT": interpreter,
         "VLAF_ENV_PI": interpreter,
     })
 

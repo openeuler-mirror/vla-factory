@@ -1,11 +1,12 @@
-# openpi pi0 family end-to-end smoke (openpi PI0Pytorch).
+# pi0 family end-to-end smoke (lerobot 0.5 PI0Policy, the openpi-style PyTorch
+# port that lerobot/pi0_base weights come from).
 #
 # One recipe for the whole pi0 series. As written it runs pi0 with LoRA — the
 # portable path that fits a 12 GB GPU. Two commented switches cover the rest of
 # the family; nothing else needs to change.
 #
-# Run in the uv-installed pi env (see scripts/install.sh):
-#   source .venv/bin/activate   # (or wherever install.sh created it)
+# Run in the model venv (see scripts/install.sh --model pi0):
+#   source .pi0/bin/activate
 #   HF_HUB_OFFLINE=1 HF_HUB_ENABLE_HF_TRANSFER=1 \
 #     vlafactory-cli train --config examples/pi0_lora.yaml
 #
@@ -25,10 +26,18 @@
 # weights; the action expert + projections stay fully trainable (openpi freeze
 # semantics — the action head must adapt to the new action space).
 #
+# Checkpoints trained through the former openpi route are NOT loadable here
+# (state_dict nesting + saved image range differ — loud failure by design);
+# start from lerobot/pi0_base or a checkpoint this lerobot route produced.
+#
 # The dataset carries per-frame task text; default_task is only the fallback
 # for frames without one. right_wrist_0_rgb is intentionally unmapped
-# (pi0_base expects 3 cameras; openpi PI0Pytorch consumes whatever images the
-# Observation holds).
+# (pi0_base expects 3 cameras; the adapter declares every slot, so the policy
+# fills this one with its -1 image + zero mask placeholder — keeping the
+# pretrained 3-image token sequence. Unmapped slots must trail the mapped
+# ones in the declared order, or the factory refuses: lerobot appends
+# placeholders at the sequence tail and a non-trailing gap would shift real
+# cameras into the wrong pretrained position).
 model:
   name: pi0
   path: lerobot/pi0_base          # pytorch safetensors (openpi weights, ported by lerobot)

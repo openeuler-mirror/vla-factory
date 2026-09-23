@@ -58,13 +58,14 @@ OPENPI_ZSCORE_EPS = 1e-6
 OPENPI_QUANTILE_EPS = 1e-6
 
 # ─────────────────────────────────────────────────────────────────────
-# UPSTREAM: lerobot 0.4.4 (pyproject `[act]` extra; exact PyPI release)
+# UPSTREAM: lerobot 0.5.1 (pyproject `[act]` extra; exact PyPI release)
 #   lerobot/processor/normalize_processor.py:94   eps: float = 1e-8
 #   lerobot/processor/normalize_processor.py:335  denom = std + self.eps
-# Verified: 2026-07-28
+# Verified: 2026-09-23 (line numbers identical in 0.4.4, the pre-unification
+# pin; the live re-derivation below runs against the installed 0.5.1)
 # ─────────────────────────────────────────────────────────────────────
 LEROBOT_ZSCORE_EPS = 1e-8
-LEROBOT_VERSION = "0.4.4"
+LEROBOT_VERSION = "0.5.1"
 
 
 def _profile_eps(model_name: str) -> float:
@@ -152,7 +153,9 @@ def test_openpi_pin_has_not_moved():
 
 def test_lerobot_pin_has_not_moved():
     pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text()
-    match = re.search(r'act = \["lerobot==([^\"]+)"\]', pyproject)
+    match = re.search(
+        r'^act\s*=\s*\["lerobot(?:\[[^\]]+\])?==([^\"]+)"\]', pyproject, re.M
+    )
     assert match, "[act] must pin lerobot to an exact compatible release"
     assert match.group(1) == LEROBOT_VERSION
 

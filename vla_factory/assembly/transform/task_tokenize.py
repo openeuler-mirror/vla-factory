@@ -79,7 +79,7 @@ def build_prompt(
 
     We append it to the string instead of to the token list; the PaliGemma
     tokenizer emits the same id (108) either way, verified against upstream by
-    ``test/l1/test_openpi_pipeline_parity.py``. pi05 needs no addition — its
+    ``test/l1/test_lerobot_pipeline_parity.py``. pi05 needs no addition — its
     template already carries ``;\\nAction: ``.
     """
     cleaned = str(task).strip().replace("_", " ").replace("\n", " ")
