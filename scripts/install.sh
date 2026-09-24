@@ -2,38 +2,42 @@
 # install.sh — set up vla-factory model environment(s) with uv.
 #
 # Usage:
-#   bash scripts/install.sh [--model {act|pi0|pi05|openvla|pi0fast|diffusion_policy}] [--venv <dir>] [-y|--yes]
+#   bash scripts/install.sh [--model {act|pi0|pi05|pi0fast|openpi|openvla|diffusion_policy}] [--venv <dir>] [-y|--yes]
 #
-#   --model   act | pi0 | pi05 | openvla | pi0fast | diffusion_policy
-#             Omit it to install ALL model environments (act, pi0, pi05,
+#   --model   act | pi0 | pi05 | pi0fast | openpi | openvla | diffusion_policy
+#             Omit it to install ALL model environments (act, pi0,
 #             diffusion_policy) — the script prints what will be installed
 #             and asks for confirmation (yes/y) before proceeding.
 #             Use -y/--yes to skip the prompt in non-interactive contexts.
-#             (openvla and pi0fast are excluded from the all-models batch:
+#             (openvla and openpi are excluded from the all-models batch:
 #             they pin transformers versions that conflict with the core
-#             bound, so each must be installed explicitly --model <name>.)
-#   --venv    venv directory    (default: ./.{model}, e.g. ./.act;
-#                                only valid together with --model)
+#             bound / carry the openpi patch, so each must be installed
+#             explicitly --model <name>.)
+#   --venv    venv directory    (default: ./.{model}; only valid together
+#                                with --model)
 #   -y|--yes  assume yes at the all-models confirmation prompt
 #
-# Each model gets a minimal install — only its own deps, no cross-contamination:
+# Each model gets a minimal install into its own ./.{model} venv — only its
+# own deps, no cross-contamination:
 #
-#   act   lerobot from PyPI + CPU torch. No openpi, no CUDA, no patches.
-#   pi0   openpi (pinned git source) + CUDA torch + transformers_replace patch.
-#   pi05  same as pi0 (shares the openpi/pi0 codebase, pi05=True flag).
+#   act | pi0 | pi05 | pi0fast  lerobot==0.5.1 with transformers==5.3.0 +
+#           CUDA torch + scipy (ACTPolicy + PI0Policy / PI05Policy /
+#           PI0FastPolicy, the openpi-style PyTorch ports) — identical
+#           stack per model, one venv each. The extras are plain-pip-
+#           installable (core transformers bound is <6); the script
+#           additionally routes torch through the CUDA wheel index picked
+#           from the local compute capability and pins the ABI-matched
+#           torchcodec.
+#   openpi  openpi source (pinned git commit) + CUDA torch +
+#           transformers_replace patch, venv ./.openpi. Reserved for a future
+#           JAX engine route; the pi0/pi05 PyTorch path no longer uses it.
 #   openvla prismatic (pinned git source) + CUDA torch + transformers==4.40.1 /
 #           peft==0.11.1 (upstream OpenVLA pins these; its own venv keeps them
 #           from clashing with the framework's newer transformers).
-#   pi0fast lerobot==0.5.1 (upstream pi0_fast, the openpi-style PyTorch port of
-#           π0-FAST) + CUDA torch + transformers==5.3.0 + scipy. lerobot's
-#           pi0_fast line hard-requires transformers 5.x (PiGemma classes),
-#           which conflicts with the core `transformers<5` bound — hence its
-#           own venv, with vla-factory installed --no-deps plus the core deps
-#           re-added by hand (mirrors the openvla pattern).
 #   diffusion_policy  real-stanford source (pinned commit, namespace-package
 #                     patch) + robomimic/diffusers + CUDA torch.
 #
-# Override torch backend for pi0/openvla: VLA_TORCH_BACKEND=cu126|cu128
+# Override torch backend for the CUDA models: VLA_TORCH_BACKEND=cu126|cu128
 # Override PyPI mirror:           VLA_PYPI_INDEX=https://...
 
 set -euo pipefail
@@ -58,28 +62,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$VENV_DIR" && -z "$MODEL" ]]; then
-  echo "install.sh: --venv is only valid together with --model (all-models mode uses ./.act ./.pi0 ./.pi05 ./.diffusion_policy)"
+  echo "install.sh: --venv is only valid together with --model (all-models mode uses the per-model defaults)"
   exit 1
 fi
 
 case "$MODEL" in
-  act|pi0|pi05|openvla|pi0fast|diffusion_policy|"") ;;
-  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|openvla|pi0fast|diffusion_policy)"; exit 1 ;;
+  act|pi0|pi05|pi0fast|openpi|openvla|diffusion_policy|"") ;;
+  *) echo "install.sh: unknown model '$MODEL' (expected act|pi0|pi05|pi0fast|openpi|openvla|diffusion_policy)"; exit 1 ;;
 esac
 
 # ── All-models mode: notice + confirmation ───────────────────────────
 
 if [[ -z "$MODEL" ]]; then
-  MODELS=(act pi0 pi05 diffusion_policy)
+  MODELS=(act pi0 diffusion_policy)
   echo ""
   echo "== no --model given: installing ALL model environments =="
-  echo "   act               -> ./.act               (lerobot + CPU torch)"
-  echo "   pi0               -> ./.pi0               (openpi + CUDA torch)"
-  echo "   pi05              -> ./.pi05              (openpi + CUDA torch)"
+  echo "   act               -> ./.act               (lerobot 0.5.1 + CUDA torch)"
+  echo "   pi0               -> ./.pi0               (lerobot 0.5.1 + CUDA torch)"
   echo "   diffusion_policy  -> ./.diffusion_policy  (real-stanford + robomimic + CUDA torch)"
   echo ""
-  echo "This creates 4 separate venvs and downloads multi-GB dependencies"
-  echo "(torch CUDA wheels, openpi source); it can take a long while and"
+  echo "This creates 3 separate venvs and downloads multi-GB dependencies"
+  echo "(torch CUDA wheels); it can take a long while and"
   echo "use significant disk space."
   echo ""
   if [[ "$ASSUME_YES" -eq 1 ]]; then
@@ -87,7 +90,7 @@ if [[ -z "$MODEL" ]]; then
   elif [ ! -t 0 ]; then
     echo "install.sh: stdin is not a terminal — refusing to install everything"
     echo "without confirmation. Re-run with -y/--yes, or pick one model:"
-    echo "  bash scripts/install.sh --model {act|pi0|pi05|diffusion_policy}"
+    echo "  bash scripts/install.sh --model {act|pi0|diffusion_policy}"
     exit 1
   else
     read -r -p "Proceed with installing ALL environments? [yes/y] " answer || true
@@ -95,7 +98,7 @@ if [[ -z "$MODEL" ]]; then
     ans="${ans,,}"
     case "$ans" in
       yes|y) ;;
-      *) echo "Cancelled. Install a single environment with: bash scripts/install.sh --model {act|pi0|pi05|diffusion_policy}"; exit 1 ;;
+      *) echo "Cancelled. Install a single environment with: bash scripts/install.sh --model {act|pi0|pi0fast|pi05|openpi|diffusion_policy}"; exit 1 ;;
     esac
   fi
 else
@@ -214,7 +217,10 @@ install_torchcodec() {
 install_one_model() {
   local model="$1"
   local venv_dir
-  if [[ -n "$VENV_DIR" ]]; then venv_dir="$VENV_DIR"; else venv_dir="./.$model"; fi
+  # Default venv is simply ./.{model} — one predictable name per model.
+  if [[ -n "$VENV_DIR" ]]; then venv_dir="$VENV_DIR"
+  else venv_dir="./.$model"
+  fi
 
   # ── Create venv ────────────────────────────────────────────────────
 
@@ -224,36 +230,6 @@ install_one_model() {
   # shellcheck disable=SC1091
   source "$venv_dir/bin/activate"
 
-  # ═══════════════════════════════════════════════════════════════════
-  #  ACT — minimal: lerobot from PyPI + CPU torch
-  # ═══════════════════════════════════════════════════════════════════
-  if [[ "$model" == "act" ]]; then
-    echo ""
-    echo "== installing act (lerobot + CPU torch) =="
-
-    retry_uv pip install \
-      --default-index "$UV_DEFAULT_INDEX" \
-      --torch-backend cpu \
-      --index-strategy first-index \
-      --no-sources-package torch \
-      --no-sources-package torchvision \
-      ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
-      -e ".[act,dev]"
-
-    install_torchcodec
-
-    echo ""
-    echo "Done."
-    echo "  venv:   $(cd "$venv_dir" && pwd)"
-    echo "  python: $(cd "$venv_dir" && pwd)/bin/python"
-    echo ""
-    echo "Activate and run:"
-    echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
-    echo "  vlafactory-cli train --config examples/act_lekiwi.yaml"
-    return 0
-  fi
-
-  # ═══════════════════════════════════════════════════════════════════
   # ═══════════════════════════════════════════════════════════════════
   #  OPENVLA — prismatic source + CUDA torch + transformers<5
   # ═══════════════════════════════════════════════════════════════════
@@ -324,12 +300,13 @@ install_one_model() {
     return 0
   fi
   # ═══════════════════════════════════════════════════════════════════
-  #  PI0FAST — lerobot 0.5.1 pi0_fast + transformers 5.3 + CUDA torch
+  #  LEROBOT FAMILY (act | pi0 | pi05 | pi0fast) — lerobot 0.5.1 +
+  #  transformers 5.3 + CUDA torch, one venv per model
   # ═══════════════════════════════════════════════════════════════════
 
-  if [[ "$model" == "pi0fast" ]]; then
+  if [[ "$model" == "act" || "$model" == "pi0" || "$model" == "pi05" || "$model" == "pi0fast" ]]; then
     echo ""
-    echo "== installing pi0fast (lerobot 0.5.1 + transformers 5.3 + ${VLA_TORCH_BACKEND:-$(detect_cuda_index)} torch) =="
+    echo "== installing $model (lerobot 0.5.1 + transformers 5.3 + ${VLA_TORCH_BACKEND:-$(detect_cuda_index)} torch) =="
 
     local pf_cuda_index="${VLA_TORCH_BACKEND:-$(detect_cuda_index)}"
     case "$pf_cuda_index" in
@@ -344,23 +321,14 @@ install_one_model() {
       --no-sources-package torchvision
     )
 
-    # Torch first (explicit CUDA index), then the pi0_fast ecosystem: lerobot
-    # 0.5.1 ships the openpi-style PyTorch port; transformers 5.3.0 is its
-    # pinned line (PiGemma backbone); scipy backs the FAST tokenizer's DCT.
+    # One resolved install: the [<model>,dev] extra pins lerobot[pi]==0.5.1
+    # (which owns transformers==5.3.0 + scipy) and every core dep — the
+    # core transformers bound is <6, so nothing conflicts anymore.
+    # --no-sources-package is load-bearing: pyproject's [tool.uv.sources]
+    # routes torch/torchvision to the cu126 index, which would silently
+    # override the detected cu128 on Blackwell machines.
     retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
-      "torch>=2.7,<2.11" torchvision
-    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
-      "lerobot==0.5.1" "transformers==5.3.0" "scipy>=1.10"
-
-    # vla-factory itself: --no-deps because the core `transformers<5` bound
-    # (see pyproject.toml) conflicts with this venv's transformers 5.x, then
-    # every core dep is re-added by hand so the framework still runs whole.
-    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} --no-deps -e .
-    retry_uv pip install "${pf_uv_flags[@]}" ${UV_UPGRADE[@]+"${UV_UPGRADE[@]}"} \
-      "peft>=0.11" "omegaconf>=2.3" "pyyaml>=6.0" "av>=12.0" "pyzmq>=25.0" \
-      "safetensors>=0.4" "opencv-python-headless>=4.5" "pandas>=2.0" \
-      "pyarrow>=14.0" "tqdm>=4.60" "pytest>=7" pytest-cov "tensorboard>=2.14" \
-      "requests>=2.28"
+      -e ".[$model,dev]"
 
     install_torchcodec
 
@@ -371,7 +339,12 @@ install_one_model() {
     echo ""
     echo "Activate and run:"
     echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
-    echo "  vlafactory-cli train --config examples/pi0fast_lora.yaml"
+    case "$model" in
+      act)     local pi_example="examples/act_lekiwi.yaml" ;;
+      pi0fast) local pi_example="examples/pi0fast_lora.yaml" ;;
+      *)       local pi_example="examples/pi0_lora.yaml" ;;
+    esac
+    echo "  vlafactory-cli train --config $pi_example"
     return 0
   fi
   # ═══════════════════════════════════════════════════════════════════
@@ -444,8 +417,13 @@ install_one_model() {
     echo "  vlafactory-cli train --config <recipe.yaml>"
     return 0
   fi
-  #  PI0 / PI05 — full: openpi source + CUDA torch + transformers patch
   # ═══════════════════════════════════════════════════════════════════
+  #  OPENPI — openpi source + CUDA torch + transformers patch (venv .openpi).
+  #  Reserved for a future JAX engine route; the pi0/pi05 PyTorch path now
+  #  runs on lerobot 0.5 (the per-model venvs above).
+  # ═══════════════════════════════════════════════════════════════════
+
+  if [[ "$model" == "openpi" ]]; then
 
   local cuda_index="${VLA_TORCH_BACKEND:-$(detect_cuda_index)}"
   case "$cuda_index" in
@@ -518,7 +496,7 @@ install_one_model() {
   }
 
   echo ""
-  echo "== installing $model (openpi + $cuda_index torch) =="
+  echo "== installing openpi ($cuda_index torch) =="
 
   if [ "${VLA_LOCAL_LEROBOT:-0}" = "1" ]; then
     ensure_lerobot_source
@@ -547,7 +525,13 @@ install_one_model() {
   echo ""
   echo "Activate and run:"
   echo "  source $(cd "$venv_dir" && pwd)/bin/activate"
-  echo "  vlafactory-cli train --config examples/pi0_lora.yaml"
+  echo "  (openpi env: JAX-engine reference — no registered adapter consumes"
+  echo "   it yet; pi0/pi05 train via their own lerobot-0.5 venvs)"
+  return 0
+  fi
+
+  echo "install.sh: internal error — unhandled model '$model'" >&2
+  return 1
 }
 
 # All-models mode reports per-model outcome and keeps going past failures

@@ -86,14 +86,10 @@ GitCode PR API，覆盖**所有贡献者**的 PR，只需要出站 HTTPS。
 | 环境 | 依赖 | 跑哪些 tier | 覆盖的用例 |
 |------|------|------------|-----------|
 | **base** | core + `[dev]` | L0 | 全部框架契约测试 |
-| **act** | + lerobot | L1 + L2 | lerobot parity + 过拟合冒烟（计划中，见 §4） |
-| **pi** | + openpi | L1 | openpi parity（计划中，见 §4） |
+| **pi** | + lerobot 0.5.1（`install.sh --model pi0`） | L1 + L2 | 全部 lerobot parity（ACT + pi 家族 + normalize + peft）+ 过拟合冒烟（计划中，见 §4） |
 
-L1 测试通过 `pytest.importorskip` 自动分流：act 环境跑 lerobot 相关用例，
-pi 环境跑 openpi 相关用例，互不干扰。缺依赖时自动 skip，不报错。
-
-> openpi 和 lerobot 无法共存于同一环境（openpi 通过 uv git source pin 了
-> 旧版 lerobot），所以必须分环境。见 `scripts/ci/build_ci_envs.sh`。
+L1 测试在可能缺上游的地方用 `pytest.importorskip` 自动分流；pi 环境装了
+全部 L1 上游，因此整个 tier 都会真跑。其它环境缺依赖时自动 skip，不报错。
 
 ---
 
@@ -139,7 +135,7 @@ junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）�
 |------|------|---------|-----------|
 | `test/l1/utils.py` | — (helper) | — | `assert_tensor_parity`：报告首个不匹配元素位置/双方值/shape/dtype |
 | `test/l1/test_normalize_parity.py` | 10 | openpi (eps 1e-6) + lerobot (eps 1e-8) | eps 是 per-model 上游契约；config eps 到达算术；两个数量级差异；openpi pin 未漂移 |
-| `test/l1/test_openpi_pipeline_parity.py` | ~10 | openpi (`PI0Pytorch`) | pi0/pi05 全链 parity：state/actions 逐元素相等、图像角色匹配、letterbox padding、prompt token 对齐 |
+| `test/l1/test_lerobot_pipeline_parity.py` | ~10 | lerobot 0.5（`PI0Policy`/`PI05Policy`） | pi0/pi05 全链 parity：prompt token 对齐、state/actions 容差内相等（eps 分歧是有意的）、letterbox padding、未映射槽占位 |
 | `test/l1/test_act_pipeline_parity.py` | 6 | lerobot (`processor_act`) | ACT 全链 parity：state/actions/images 逐元素相等、channels-first layout、ImageNet 归一化等价 |
 | `test/l1/test_peft_parity.py` | 10 | peft (张量级) + openpi (契约级) | LoRA 挂载面张量一致、scaling 公式 == openpi、adapter 保持 float32 on bf16 base、merge 写入 delta |
 
@@ -163,9 +159,9 @@ junit 报告目录整个缺失（环境根本没跑，如崩溃/配置错误）�
 ### 首次准备
 
 ```bash
-# 1. 准备三个必需的测试环境
+# 1. 准备两个必需的测试环境
 #    daemon 首次启动时会自动 clone 仓库，不需要手动 clone
-bash scripts/ci/build_ci_envs.sh base act pi
+bash scripts/ci/build_ci_envs.sh base pi
 ```
 
 ### 日常启动
@@ -180,7 +176,7 @@ bash scripts/run_ci.sh
 python3 scripts/ci/run_local_ci.py
 ```
 
-该脚本使用与 daemon 相同的 base/act/pi 解释器和测试矩阵。远程 CI 只测试干净的
+该脚本使用与 daemon 相同的 base/pi 解释器和测试矩阵。远程 CI 只测试干净的
 detached 提交，因此默认拒绝脏工作区；仅在提交前迭代时使用 `--allow-dirty`。
 
 交互式配置（首次运行，之后存到 `~/.vlaf_ci.conf` 自动复用）：
@@ -199,8 +195,7 @@ detached 提交，因此默认拒绝脏工作区；仅在提交前迭代时使�
   测试环境（L0/L1/L2 均需配置）:
 
   base python (L0) [/.../python3.12]:    ← 当前解释器
-  act python (L1+L2) [/.../envs/act/bin/python]:
-  pi python (L1) [/.../envs/pi/bin/python]:
+  pi python (L1+L2) [/.../envs/pi/bin/python]:
 ```
 
 配置完成后 daemon 开始轮询，看到新 PR 自动跑测试并发评论。
@@ -238,8 +233,7 @@ sudo systemctl enable --now vlaf-ci
 | `HF_TOKEN` | 已获 `google/paligemma-3b-pt-224` 访问权限的 Hugging Face token（必填；PI L1） | 配置值 |
 | `VLAF_BASE_DIR` | CI 目录（不存在自动 clone） | `~/vla-factory-ci` |
 | `VLAF_ENV_BASE` | base 环境 python（必填，L0） | 配置路径 |
-| `VLAF_ENV_ACT` | act 环境 python（必填，L1/L2） | 配置路径 |
-| `VLAF_ENV_PI` | pi 环境 python（必填，L1） | 配置路径 |
+| `VLAF_ENV_PI` | pi 环境 python（必填，L1/L2） | 配置路径 |
 | `VLAF_POLL_INTERVAL` | 轮询间隔秒 | 30 |
 | `VLAF_DB_PATH` | 去重 DB 路径 | `~/.vlaf_ci.db` |
 | `VLAF_UPSTREAM` | upstream 仓库 | `openeuler/vla-factory` |
@@ -275,7 +269,7 @@ sudo systemctl enable --now vlaf-ci
 
 daemon 对每个 PR 先发一条「运行中」评论，跑完后编辑为结果表格：
 
-配置三个环境后，结果表按各自负责的 tier 展示：
+配置两个环境后，结果表按各自负责的 tier 展示：
 
 ```markdown
 ## CI 测试报告 — pass
@@ -287,7 +281,7 @@ branch: `dev_ci` · commit: `517028f8f6fe` · all tests passed · 32s
 | base | 159 passed, 3 skipped | — (skip) | — (skip) | 21s |
 ```
 
-daemon 会对每个新的 PR head 运行这组三环境矩阵。
+daemon 会对每个新的 PR head 运行这组两环境矩阵。
 
 ---
 
@@ -302,7 +296,7 @@ scripts/
     daemon.py              核心 daemon（轮询 GitCode → 跑测试 → 发评论）
     pr_reporter.py         GitCode PR 评论工具（创建/编辑/格式化）
     parse_results.py       JUnit XML → 结构化结果摘要
-    build_ci_envs.sh       一条命令建 base/act/pi 三个 venv
+    build_ci_envs.sh       一条命令建 base/pi 两个 venv
 ```
 
 **核心 daemon 循环**（主循环只轮询与派发，任务在双线程池上异步执行）：
@@ -322,7 +316,7 @@ while True:
 ```
 
 `ci_task` 在独立检出目录（`pr-<N>-<sha8>`，互不干扰）按环境 × tier 执行：
-base 跑 L0，act 跑 L1+L2，pi 跑 L1。每个 tier 直接调 `pytest --junitxml`，
+base 跑 L0，pi 跑 L1+L2。每个 tier 直接调 `pytest --junitxml`，
 不依赖 PR 分支上的脚本（版本可能不一致）。单个 tier exit 5（无测试收集）不
 算失败，tier 收集 0 例视为 skip；**某环境的报告目录整个缺失（一个 junit 都
 没产出）才判 FAIL**。tier 超时写一条合成失败用例（`tier-timeout`），不会
@@ -340,4 +334,4 @@ base 跑 L0，act 跑 L1+L2，pi 跑 L1。每个 tier 直接调 `pytest --junitx
 | GitCode PR API 变更 | 只用标准 `GET /pulls?state=open`，最稳定的端点 |
 | merge ref 不存在（冲突） | 捕获 → 评论报 "fetch failed" |
 | daemon 挂了漏掉 PR | SQLite 只把 `done`/`failed` 视为已完成；`running`/`crashed` 状态重启后自动重试，并复用记录的 comment_id 编辑原「运行中」评论（不留残骸） |
-| openpi + lerobot 环境冲突 | 三环境隔离（`build_ci_envs.sh`） |
+| transformers 大版本偏斜（openvla/openpi venv 与 lerobot 栈） | 按生态隔离环境（`build_ci_envs.sh`、`scripts/install.sh`） |

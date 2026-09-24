@@ -38,12 +38,13 @@ dependencies = [
     "torch>=2.7,<2.11.0",
     "torchvision>=0.22.0,<0.26.0",
     "numpy>=1.24",
-    # Upper bound: transformers 5.x removed TrainingArguments.save_safetensors,
-    # which _build_training_args relies on to save pi0-base's tied weights via
-    # torch.save (safetensors refuses shared-storage tensors). openpi also
-    # patches transformers in place (scripts/install.sh), and that patch targets
-    # the 4.x layout.
-    "transformers>=4.40,<5",
+    # Both transformers 4.x and 5.x are supported: _build_training_args
+    # (training/trainer.py) signature-probes TrainingArguments for
+    # save_safetensors, a 4.x-only parameter it disables there so pi0-base's
+    # tied weights save via torch.save (safetensors refuses shared-storage
+    # tensors). 4.x stays available for the openvla venv (==4.40.1, upstream
+    # pin) — see scripts/install.sh --model openvla.
+    "transformers>=4.40,<6",
     # LoRA / adapter fine-tuning (framework-level strategy, available by default).
     "peft>=0.11",
     "pyyaml>=6.0",
@@ -65,32 +66,23 @@ dependencies = [
 vlafactory-cli = "vla_factory.user_interface.cli:main"
 
 [project.optional-dependencies]
-# Per-model ecosystem deps. ACT wraps lerobot's ACTPolicy (standard PyPI, pip-friendly).
-# LeRobot 0.5+ requires huggingface-hub >= 1, while Transformers 4.x requires
-# huggingface-hub < 1. Keep ACT on the last compatible release line.
-act = ["lerobot==0.4.4"]
-# pi0/pi05 use openpi's native PI0Pytorch (jax + pytorch). openpi is pinned to a
-# known-good commit for reproducibility. It also imports pytest at runtime
-# (gemma_pytorch.py), so pytest is listed here even though it's a test dep.
-# NOTE: `pip install -e ".[pi0]"` does NOT work — openpi's strict pins + the
-# in-place transformers patch require the uv installer: `bash scripts/install.sh --model pi0`.
-pi0 = [
-    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
-    "pytest>=7",
-]
-pi05 = [
-    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
-    "pytest>=7",
-]
-# pi0fast wraps lerobot 0.5's pi0_fast (openpi-style PyTorch port of π0-FAST:
-# FAST-tokenizer autoregressive actions; openpi itself ships π0-FAST as
-# JAX-only). lerobot's pi0_fast line (0.5.1 … 0.6.x) hard-requires
-# transformers 5.x (PiGemma classes), which conflicts with this package's
-# `transformers<5` core bound — so, like openvla, pi0fast is vendored into its
-# own venv (see scripts/install.sh --model pi0fast) and this extra is metadata
-# only. Environment contents: vla-factory (--no-deps) + lerobot 0.5.1 +
-# transformers==5.3.0 + CUDA torch + scipy (FAST DCT).
-pi0fast = []
+# Per-model ecosystem deps. The lerobot-riding models (act + the pi family)
+# share ONE stack: lerobot 0.5.1 with transformers 5.3. lerobot's own [pi]
+# extra bundles exactly that face — transformers-dep (transformers==5.3.0,
+# the PiGemma line) + scipy-dep (scipy>=1.14, the FAST tokenizer's DCT) —
+# so the transformers/scipy pins stay owned by upstream, and any environment
+# with lerobot 0.5.1 resolves transformers 5.x anyway (lerobot requires
+# huggingface-hub>=1; transformers 4.x caps it below 1). ACT needs only
+# lerobot core but declares the same face so `pip install -e ".[act]"`
+# reproduces the install.sh venv contents (scipy rides along — ACT itself
+# never imports it). For GPU work prefer `bash scripts/install.sh --model
+# act|pi0|pi05|pi0fast` (venv ./.{model} each): it routes torch through the
+# CUDA wheel index selected from the local compute capability and pins the
+# ABI-matched torchcodec.
+act     = ["lerobot[pi]==0.5.1"]
+pi0     = ["lerobot[pi]==0.5.1"]
+pi05    = ["lerobot[pi]==0.5.1"]
+pi0fast = ["lerobot[pi]==0.5.1"]
 # diffusion_policy wraps real-stanford's DiffusionUnetHybridImagePolicy. The
 # upstream repo ships no __init__.py anywhere (PEP 420 namespace layout), so
 # `pip install git+...` produces an empty wheel — the package itself is only
@@ -124,9 +116,11 @@ torchcodec = ["torchcodec>=0.4.0"]
 # upstream prismatic-vlm is not on PyPI and needs transformers<5, so it is NOT
 # installed as a plain extra here. This extra is metadata only.
 openvla = []
+# NOTE: openpi (JAX-engine reference, scripts/install.sh --model openpi) is
+# NOT installable as a plain extra — its strict `==` pins plus an in-place
+# transformers patch require the uv-installed vendored venv.
 all = [
-    "lerobot==0.4.4",
-    "openpi @ git+https://github.com/Physical-Intelligence/openpi@15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "lerobot[pi]==0.5.1",
     "robomimic==0.3.0",
     "diffusers>=0.31",
     "zarr>=2.12",
@@ -179,7 +173,7 @@ include = ["vla_factory*"]
 # local directories such as vendored skills or datasets).
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# CI tier markers (see docs/ci/ci-overview.md). L0 and L1 are selected by
+# CI tier markers (see docs/ci/ci-overview.cn.md). L0 and L1 are selected by
 # their test directories; markers remain for metadata and future L2/L3 tiers.
 markers = [
     "l1: parity tests against upstream implementations (needs model extras)",

@@ -87,8 +87,8 @@ def test_pi0_contract_fields():
     pi0 = list_entries()["pi0"]
     assert pi0.dim_policy == "padded_to_max"
     assert pi0.dim_policy_max == 32
-    assert pi0.image_input_range == (-1.0, 1.0)
-    assert pi0.image_normalize_mode is None       # SigLIP [-1,1], no ImageNet step
+    assert pi0.image_input_range == (0.0, 1.0)
+    assert pi0.image_normalize_mode is None       # policy maps to SigLIP [-1,1] itself
     assert pi0.vector_normalization == "mean_std"
     assert pi0.expected_hz == 50
     assert pi0.language_template == "{task}"

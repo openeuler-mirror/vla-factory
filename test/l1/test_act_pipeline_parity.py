@@ -1,6 +1,6 @@
 """L1 parity: ACT 整条预处理链 vs lerobot 官方链。
 
-与 ``test_openpi_pipeline_parity.py`` 同一目的，但上游换成 lerobot，链的形状完全不同：
+与 ``test_lerobot_pipeline_parity.py`` 同一目的，但上游换成 lerobot，链的形状完全不同：
 openpi 把 resize / to-float / tokenize 都放进 transform 链，lerobot 则把这些留给
 **数据集加载器**，策略侧的官方链只剩归一化：
 

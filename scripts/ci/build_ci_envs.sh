@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the three CI test environments in one shot.
+# Build the two CI test environments in one shot.
 #
 # Usage:
-#   bash scripts/ci/build_ci_envs.sh [-u|--upgrade] [base|act|pi]...
-#                                       # default: all three
+#   bash scripts/ci/build_ci_envs.sh [-u|--upgrade] [base|pi]...
+#                                       # default: both
 #
 # Idempotent: an environment that already has its marker package installed is
 # left alone (with a hint on how to resync it). Delete the environment
@@ -21,18 +21,18 @@
 # After installation, the python paths are printed — paste them into run_ci.py
 # (or just press Enter there, the defaults already point here).
 #
-# Why three environments rather than one: openpi pins lerobot to an old commit
-# through a uv git source, so no single environment can hold both openpi and a
-# current lerobot. Each environment covers the part of L1 it can; cases whose
-# upstream is absent skip themselves via pytest.importorskip.
+# Why two environments rather than one: base must stay minimal so a
+# mis-scoped skip guard in L0 is exposed rather than hidden behind whatever
+# the loaded environment happens to provide; pi carries the full lerobot
+# stack that L1/L2 need.
 #
 #   base  core + [dev] only, CPU torch — deliberately CI-shaped. Running L0
 #         here (rather than in a fully-loaded environment) is what exposes a
 #         mis-scoped skip guard instead of hiding it.
-#   act   + lerobot        → ACT parity, L2 overfit smoke. CPU torch is enough;
-#         the smoke test is a CPU run by design.
-#   pi    + openpi via scripts/install.sh, which picks the torch CUDA index
-#         from the local compute capability (Blackwell → cu128).
+#   pi    + lerobot 0.5.1 (the whole lerobot-riding line: ACT + the pi
+#         family, unified on one stack) via scripts/install.sh, which picks
+#         the torch CUDA index from the local compute capability
+#         (Blackwell → cu128). L1 + L2 both run here.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -129,9 +129,9 @@ provision_venv() {  # <label> <marker module> <extra pip args...>
     [[ -x "$python_bin" ]] || "$UV" venv --python "$PY_VERSION" "$env_dir"
     # --no-sources is load-bearing: pyproject routes torch/torchvision to the
     # cu126 index via [tool.uv.sources] so that a GPU install resolves without
-    # extra flags. base and act want the CPU build, and that routing overrides
-    # a plain --index-url — without --no-sources these environments silently
-    # pull ~3 GB of CUDA libraries that neither tier ever executes.
+    # extra flags. base wants the CPU build, and that routing overrides
+    # a plain --index-url — without --no-sources this environment silently
+    # pulls ~3 GB of CUDA libraries that the tier never executes.
     #
     # Fresh builds stay quiet; upgrades show uv's download/install progress —
     # -U re-downloads torch-sized wheels and a silent multi-minute download
@@ -174,11 +174,11 @@ for arg in "$@"; do
   case "$arg" in
     -u|--upgrade) UPGRADE=1 ;;
     --latest)     UPGRADE=1; FULL=1 ;;
-    base|act|pi)  targets+=("$arg") ;;
-    *) echo "provision: unknown environment '$arg' (expected base|act|pi, --upgrade, --latest)" >&2; exit 1 ;;
+    base|pi)  targets+=("$arg") ;;
+    *) echo "provision: unknown environment '$arg' (expected base|pi, --upgrade, --latest)" >&2; exit 1 ;;
   esac
 done
-[[ ${#targets[@]} -eq 0 ]] && targets=(base act pi)
+[[ ${#targets[@]} -eq 0 ]] && targets=(base pi)
 
 # Safe empty-array expansion for set -u (bash < 4.4 would treat "" as unbound).
 # Light sync (default): no -U — uv installs only unsatisfied requirements.
@@ -192,9 +192,10 @@ for target in "${targets[@]}"; do
       provision_venv base pytest -e ".[dev]"
       install_torchcodec_for_python "$ENV_PREFIX/base/bin/python"
       ;;
-    act)  provision_via_install act act lerobot ;;
-    pi)   provision_via_install pi  pi0 openpi ;;
-    *)    echo "provision: unknown environment '$target' (expected base|act|pi)" >&2; exit 1 ;;
+    # marker: lerobot.processor.tokenizer_processor exists only in lerobot
+    # >=0.5 (the processor layer the lerobot family rides); 0.4.x lacks it.
+    pi)   provision_via_install pi  pi0 lerobot.processor.tokenizer_processor ;;
+    *)    echo "provision: unknown environment '$target' (expected base|pi)" >&2; exit 1 ;;
   esac
 done
 
@@ -216,6 +217,6 @@ if [[ "$SKIPPED" -gt 0 ]]; then
   echo "  已跳过 $SKIPPED 个已存在的环境；如需同步依赖（新合入 PR 后环境可能有变化），执行:"
   echo "    bash scripts/ci/build_ci_envs.sh --upgrade          # 同步项目声明的依赖（快，只装增量）"
   echo "    bash scripts/ci/build_ci_envs.sh --upgrade --latest # 连同允许范围内的新版本全部刷新（慢，大下载）"
-  echo "    （以上命令均可追加 base / act / pi 只处理指定环境）"
+  echo "    （以上命令均可追加 base / pi 只处理指定环境）"
 fi
 echo

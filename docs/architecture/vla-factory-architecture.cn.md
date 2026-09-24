@@ -797,17 +797,17 @@ Trainer 生态提供混合精度、梯度累积、checkpoint、日志、优化�
 
 核心依赖只覆盖配置解析、数据管线、PyTorch 训练基础、CLI 和通用部署能力（见 `pyproject.toml` 的 `dependencies`），模型生态依赖按需引入。框架用 [uv](https://github.com/astral-sh/uv) 管理版本、虚拟环境和包安装，而不是系统 Python 或 conda：
 
-- uv 的 PubGrub 解析器能解开源生态（尤其 openpi）严格的 `==` 版本钉；这些钉加上 openpi 的 in-place transformers patch，会让普通 `pip install -e ".[pi0]"` 直接解析失败。
+- uv 的 PubGrub 解析器能解开源生态严格的 `==` 版本钉——openpi 参考环境（为将来的 JAX 引擎路线保留）仍需要它，包括它的 in-place transformers patch。
 - uv 原生支持把 torch / torchvision 路由到 PyTorch 的 CUDA wheel index（`--torch-backend`），无需手写 `--find-links` 或 `PIP_EXTRA_INDEX_URL`。
-- uv 创建和管理 venv 极快，每个模型环境相互隔离，避免 lerobot / openpi 的依赖冲突污染全局。
+- uv 创建和管理 venv 极快，每个模型环境相互隔离。这不只是卫生问题：真正互冲的生态（openpi 的 in-place transformers patch 与 lerobot 栈、diffusion_policy 的 robomimic 钉版）只能靠独立 venv 共存——而骑 lerobot 的模型（ACT + pi 家族，统一后都在 lerobot 0.5 + transformers 5.3 上）则刻意共用一个 `.pi` venv。
 
 ### 5.2 环境搭建
 
 模型环境由 `scripts/install.sh` 封装，推荐入口：
 
 ```bash
-bash scripts/install.sh [--model {act|pi0|pi05}] [--venv <dir>] [-y|--yes]
-# venv 默认 ./.{model}（如 ./.act）；省略 --model 则安装全部（会先确认）
+bash scripts/install.sh [--model {act|pi0|pi05|pi0fast|openpi|openvla|diffusion_policy}] [--venv <dir>] [-y|--yes]
+# venv 默认 ./.{model}；省略 --model 则安装全家桶（会先确认）
 ```
 
 脚本依次完成：
@@ -815,14 +815,13 @@ bash scripts/install.sh [--model {act|pi0|pi05}] [--venv <dir>] [-y|--yes]
 - 用 `uv venv --python 3.12` 创建虚拟环境（默认 `./.{model}`）并激活。
 - 按 GPU 的 **compute capability**（而非驱动 CUDA 版本）自动选 torch CUDA wheel 后端：Blackwell（sm_100 及以上，如 RTX 5090 sm_120）→ `cu128`；其它（Hopper sm_90 及更早）→ `cu126`。可用 `VLA_TORCH_BACKEND=cu126|cu128` 覆盖。之所以看 compute cap 而非驱动版本，是因为 Blackwell 卡驱动报 CUDA 12.4，但需要 cu128 的 torch 2.8+ 才带 sm_100/sm_120 kernel。
 - 自动探测 PyPI 镜像（国内网络走清华，否则 PyPI），可用 `VLA_PYPI_INDEX` 覆盖。
-- 把 openpi（以及 `VLA_LOCAL_LEROBOT=1` 时的 lerobot）以 tarball 下到 `.local-deps/` 再从本地路径安装，规避 GitHub git transport 在弱网下的不稳定；openpi 固定到已知可用 commit。
-- 装完 openpi 后，把它的 `transformers_replace` 补丁覆盖到 site-packages（SigLIP / PaliGemma / Gemma 的 dtype 修复，PI0Pytorch 需要）。
+- 按模型安装：lerobot 家族（`act` / `pi0` / `pi05` / `pi0fast`）把 `lerobot[pi]==0.5.1`（transformers 5.3 + scipy 经 lerobot 自己的 extra 带入）+ CUDA torch 装进各自的 `./.{model}` venv——一次普通解析安装即可，核心 transformers 上界已放宽到 `<6`；`openpi` 装 openpi 源码（固定 git commit）加 `transformers_replace` 补丁到 `./.openpi`，为将来的 JAX 引擎路线保留——pi0/pi05 的 PyTorch 路径已不再使用它。
 - 以 editable 模式装上 vla-factory 自身（`uv pip install -e .`）。
 
 装完后即可：
 
 ```bash
-source .venv/bin/activate
+source .pi0/bin/activate
 vlafactory-cli list
 vlafactory-cli train --config examples/pi0_lora.yaml
 ```
@@ -833,13 +832,12 @@ vlafactory-cli train --config examples/pi0_lora.yaml
 
 | extra | 内容 | 安装方式 |
 |---|---|---|
-| `act` | lerobot（ACT 策略） | 可直接 `uv pip install -e ".[act]"` |
-| `pi0` / `pi05` | openpi（固定 commit） | **必须走 `scripts/install.sh`** |
+| `act` / `pi0` / `pi05` / `pi0fast` | `lerobot[pi]==0.5.1`（完整 lerobot 栈：transformers 5.3 + scipy 由 lerobot 的 extra 持有） | 可直接 `uv pip install -e ".[act]"`；`scripts/install.sh` 额外把 torch 路由到 CUDA wheel 索引并钉住 ABI 匹配的 torchcodec |
 | `robotwin` | h5py（RoboTwin 原生 hdf5 数据） | 可直接 `uv pip install -e ".[robotwin]"` |
-| `all` | 以上全部 | pi0/pi05 部分仍需 install.sh |
+| `all` | 以上全部（不含 openpi 钉） | 可直接 `uv pip install -e ".[all]"` |
 | `dev` | pytest、pytest-cov、tensorboard | `uv pip install -e ".[dev]"` |
 
-需要强调：**pi0 / pi05 不能用普通 pip 安装**——openpi 的严格钉和 transformers patch 必须由 `install.sh` 配合 uv 处理。
+openpi 环境（`--model openpi`，venv `./.openpi`）只能走脚本，为将来的 JAX 引擎路线保留；今天没有任何注册 adapter 依赖它。
 
 `ModelMetadata.install_hint` 在缺少依赖时给出明确提示，CLI 的 `list` 命令列出已注册模型及其安装提示。
 

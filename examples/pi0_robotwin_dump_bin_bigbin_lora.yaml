@@ -4,8 +4,8 @@ model:
   path: lerobot/pi0_base
   config:
     num_inference_steps: 10
-    # Eager inference avoids max-autotune's high first-call VRAM demand.
-    pytorch_compile_mode: null
+    # Off by default: compile benchmarking on the first call needs extra VRAM.
+    compile_model: false
 
 overrides:
   # RoboTwin's front_camera is intentionally not mapped into PI0's slots.

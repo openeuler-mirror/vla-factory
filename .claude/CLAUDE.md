@@ -76,9 +76,10 @@ execute. Do not infer robot camera/joint bindings from names.
     and `list_entries()`. Built-ins are discovered under `adapters/`; external
     packages use the `vla_factory.models` entry-point group.
   - `adapters/` — upstream model bindings. `act.py`, `pi0.py`, `pi05.py`, and
-    `pi0fast.py` own each family declaration/factory; `openpi.py` holds code
-    deliberately shared by PI0 and PI0.5. These are the worked extension
-    examples.
+    `pi0fast.py` own each family declaration/factory; `lerobot_pi.py` holds
+    code shared by the lerobot-0.5 pi family (PI0/PI05 wrapper + loader);
+    `openpi.py` is unreferenced (kept as the JAX-engine reference; env via
+    `--model openpi`). These are the worked extension examples.
 - **`vla_factory/data/`** — read-only Canonical IR only (no sample building):
   start at `data_schema.py` (`describe_dataset()` plus `DataSchema` /
   `NormStats` / `Episode` / `Frame` / `VideoRef`). Here, data schema means the
@@ -156,11 +157,15 @@ execute. Do not infer robot camera/joint bindings from names.
   do not re-declare these in a dimension.
 - **`examples/`** — ready recipes. `reference.yaml` is the fully-annotated
   template (every field documented); `act_lekiwi.yaml`, `pi0.yaml`.
-- **`scripts/install.sh`** — uv-based env setup for openpi (see Installing).
-- **`test/`** — pytest: `test_act_model.py`, `test_pi0_model.py`,
-  `test_data_pipeline.py`, `test_checkpoint_validation.py`,
-  `test_inference_engine.py`, `test_phase4_engine.py`,
-  `test_protocols_registry_config.py`.
+- **`scripts/install.sh`** — uv-based env setup per model (see Installing);
+  default venv `./.{model}`.
+- **`test/`** — pytest, layered by what is verified: `l0/` unit + smoke
+  (model adapters, data pipeline, resolver, CLI; runs without heavy extras),
+  `l1/` upstream parity against real installed ecosystems
+  (`test_lerobot_pipeline_parity.py` for the pi family,
+  `test_act_pipeline_parity.py`, `test_peft_parity.py`,
+  `test_normalize_parity.py`, …), `l2/`/`l3/` + `integration/` higher rungs,
+  `data/` fixtures.
 
 ---
 
@@ -205,26 +210,25 @@ postprocessor is the planned inverse, never the forward list reversed.
 
 ## Installing
 
-Two install paths, by ecosystem friction:
-
-- **ACT** (lerobot's `ACTPolicy`, standard PyPI, pip-friendly):
-  `pip install -e ".[act]"`.
-- **pi0 / pi05** (openpi's `PI0Pytorch`): `bash scripts/install.sh --model pi0`.
-  A plain `pip install -e ".[pi0]"` **does not work** — openpi's strict `==`
-  pins + in-place `transformers` patch require the **uv** installer
-  (PubGrub resolver). The script auto-detects the local CUDA driver and
-  routes torch/torchvision through the matching PyTorch CUDA wheel index
-  (cu126 / cu128); it pins openpi to a known-good git commit for
-  reproducibility (no release tags upstream).
-- **pi0fast** (lerobot 0.5's `pi0_fast`, the openpi-style PyTorch port of
-  π0-FAST): `bash scripts/install.sh --model pi0fast`. The upstream line
-  hard-requires **transformers 5.x** (PiGemma classes), which conflicts with
-  the core `transformers<5` bound, so it lives in its own venv with
-  vla-factory installed `--no-deps` plus the core deps re-added by hand
-  (openvla pattern). Pretrained start: `lerobot/pi0fast-libero` is the only
-  FAST-trained PyTorch checkpoint (openpi ships π0-FAST JAX-only;
-  `lerobot/pi0fast-base` measured structure-only — a PaliGemma init in the
-  pi0_fast layout).
+- **ACT / pi0 / pi05 / pi0fast** (lerobot 0.5's `ACTPolicy` / `PI0Policy` /
+  `PI05Policy` / `PI0FastPolicy`, the openpi-style PyTorch ports): one
+  shared stack — `bash scripts/install.sh --model act|pi0|pi05|pi0fast`
+  (each into its own `./.{model}` venv). The
+  extras are also plain-pip-installable (`pip install -e ".[act]"` etc. —
+  they all pin `lerobot[pi]==0.5.1`, and the core transformers bound is
+  `<6`); the script additionally routes torch/torchvision through the
+  PyTorch CUDA wheel index auto-detected from the local compute capability
+  (cu126 / cu128) and pins the ABI-matched torchcodec. Pretrained start:
+  `lerobot/pi0_base` / `lerobot/pi05_base`; for pi0fast,
+  `lerobot/pi0fast-libero` is the only FAST-trained PyTorch checkpoint
+  (openpi ships π0-FAST JAX-only; `lerobot/pi0fast-base` measured
+  structure-only — a PaliGemma init in the pi0_fast layout).
+- **openpi** (JAX reference, reserved): `bash scripts/install.sh --model
+  openpi` (venv `./.openpi`). Not used by any registered adapter today;
+  openpi's strict `==` pins + in-place `transformers` patch still require
+  the **uv** installer (PubGrub resolver), and it stays pinned to a
+  known-good git commit (no release tags upstream). `test_normalize_parity`
+  is the one consumer of the pinned source.
 
 Dev deps: `pip install -e ".[dev]"` (pytest, pytest-cov, tensorboard).
 

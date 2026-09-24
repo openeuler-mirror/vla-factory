@@ -1,8 +1,7 @@
 # π0-FAST end-to-end smoke (lerobot 0.5 PI0FastPolicy — FAST-tokenizer
 # autoregressive action head, no flow-matching expert).
 #
-# Run in the vendored pi0fast env (transformers 5.x conflict — see
-# scripts/install.sh --model pi0fast):
+# Run in the model venv (see scripts/install.sh --model pi0fast):
 #   source .pi0fast/bin/activate
 #   vlafactory-cli train --config examples/pi0fast_lora.yaml
 #
@@ -25,7 +24,12 @@
 #
 # The dataset carries per-frame task text; default_task is only the fallback
 # for frames without one. right_wrist_0_rgb is intentionally unmapped — the
-# policy fills unmapped slots with masked placeholder images.
+# adapter declares every vision slot, so the policy fills this one with a
+# masked (-1 image, zero mask) placeholder, keeping the pretrained 3-image
+# token sequence. Unmapped slots must trail the mapped ones in the declared
+# slot order, or the factory refuses (placeholders are appended at the
+# sequence tail; a non-trailing gap would shift real cameras into the wrong
+# pretrained position).
 model:
   name: pi0fast
   # Pretrained-start options (verified 2026-09, measured not assumed):

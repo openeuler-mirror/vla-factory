@@ -57,6 +57,11 @@ import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
 
+from vla_factory.model.adapters.lerobot_pi import load_pretrained_strict
+from vla_factory.model.adapters.lerobot_version import (
+    LEROBOT_MIN,
+    lerobot_version_supported,
+)
 from vla_factory.model.model_interface import ModelMetadata, Observation, VisionSlot
 from vla_factory.model.registry import register_vla
 from vla_factory.user_interface import TrainRecipe
@@ -86,6 +91,14 @@ def _try_import_lerobot_pi0fast():
     """
     if getattr(_try_import_lerobot_pi0fast, "_cached", None) is not None:
         return _try_import_lerobot_pi0fast._cached  # type: ignore[attr-defined]
+    if not lerobot_version_supported():
+        logger.info(
+            "lerobot missing or older than %s — reinstall with "
+            '`pip install -e ".[pi0fast]"` or `bash scripts/install.sh --model pi0fast`',
+            LEROBOT_MIN,
+        )
+        _try_import_lerobot_pi0fast._cached = None  # type: ignore[attr-defined]
+        return None
     try:
         from lerobot.policies.pi0_fast.configuration_pi0_fast import PI0FastConfig
         from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy
@@ -322,6 +335,9 @@ def load_pi0fast(recipe: TrainRecipe, assembly) -> PI0FASTModelWrapper:
     # resolved CameraMapping — never from the schema or the recipe here.
     io_spec = assembly.model_io_spec
     action_horizon = int(io_spec.action_horizon)
+    # Declaration order = the pretrained checkpoint's image-token order: the
+    # mapping keeps one entry per declared vision slot, mapped or not.
+    all_slots = [entry["model_slot"] for entry in assembly.camera_mapping.entries]
     camera_mapping = {
         entry["model_slot"]: entry["data_source"]
         for entry in assembly.camera_mapping.entries
@@ -332,6 +348,20 @@ def load_pi0fast(recipe: TrainRecipe, assembly) -> PI0FASTModelWrapper:
             "pi0fast needs at least one camera, but the resolved camera "
             "mapping has no data source for any vision slot."
         )
+    # lerobot's placeholder ordering constraint (same as the pi0/pi05 loader):
+    # _preprocess_images appends missing-slot placeholders at the END of the
+    # image sequence, so an unmapped slot that is not trailing would shift
+    # later real cameras into the wrong pretrained position. Refuse instead.
+    unmapped = [slot for slot in all_slots if slot not in camera_mapping]
+    if unmapped and unmapped != all_slots[-len(unmapped):]:
+        raise ValueError(
+            f"pi0fast: unmapped vision slots {unmapped} do not trail the "
+            f"mapped ones in the declared slot order {all_slots}. The policy "
+            "appends missing-slot placeholder images at the end of the image "
+            "sequence, so a non-trailing unmapped slot would shift later real "
+            "cameras into the wrong pretrained position. Map the slots in "
+            "declaration order (or map all of them)."
+        )
 
     cfg = TrackedConfig(
         OmegaConf.to_container(
@@ -339,15 +369,21 @@ def load_pi0fast(recipe: TrainRecipe, assembly) -> PI0FASTModelWrapper:
         )
     )
 
-    # Image features follow the resolved slots; state/action features are
-    # auto-completed by PI0FastConfig.validate_features at max_state_dim /
-    # max_action_dim — the same 32 the model_io_spec pads to.
-    input_features = {}
-    for slot in camera_mapping:
-        input_features[f"{_IMAGE_KEY_PREFIX}{slot}"] = PolicyFeature(
+    # Declare ALL vision slots, not just the mapped ones: a slot absent from
+    # input_features never reaches config.image_features, so the policy would
+    # not generate its -1 image + zero mask placeholder and the image-token
+    # sequence would shrink against the pretrained checkpoint. Placeholder
+    # ordering is why unmapped slots must be trailing (checked above).
+    # State/action features are auto-completed by PI0FastConfig
+    # .validate_features at max_state_dim / max_action_dim — the same 32 the
+    # model_io_spec pads to.
+    input_features = {
+        f"{_IMAGE_KEY_PREFIX}{slot}": PolicyFeature(
             type=FeatureType.VISUAL,
             shape=(3, 224, 224),
         )
+        for slot in all_slots
+    }
 
     config_kwargs = dict(
         chunk_size=action_horizon,
@@ -366,11 +402,14 @@ def load_pi0fast(recipe: TrainRecipe, assembly) -> PI0FASTModelWrapper:
     config = PI0FastConfig(**config_kwargs)
 
     if recipe.model.path:
-        # lerobot's from_pretrained handles the openpi→pytorch key fixes and
-        # the "model." prefix remap; our resolved config keeps the composition
-        # in charge of shapes regardless of what the checkpoint shipped.
-        policy = PI0FastPolicy.from_pretrained(recipe.model.path, config=config)
-        logger.info("Loaded pi0fast weights from %s", recipe.model.path)
+        # Construct from our resolved config, then load weights through the
+        # shared strict helper — never through the family's from_pretrained,
+        # whose overrides print-and-continue on every load failure (see
+        # lerobot_pi.load_pretrained_strict). The composition stays in charge
+        # of shapes regardless of what the checkpoint shipped.
+        policy = PI0FastPolicy(config)
+        load_pretrained_strict(policy, recipe.model.path, "pi0fast")
+        logger.info("Loaded pi0fast weights from %s (strict)", recipe.model.path)
     else:
         # finetune-only; inference path constructs structure, weights via
         # load_state_dict.

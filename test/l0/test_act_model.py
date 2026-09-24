@@ -49,12 +49,14 @@ def _make_recipe_and_assembly(action_dim=6, action_horizon=10, cameras=("front",
 
 
 def _lerobot_available():
-    """Check whether lerobot can be imported."""
+    """Check whether lerobot (new enough for the adapter) can be imported."""
     try:
         from lerobot.policies.act.modeling_act import ACTPolicy  # noqa: F401
-        return True
     except Exception:
         return False
+    from vla_factory.model.adapters.lerobot_version import lerobot_version_supported
+
+    return lerobot_version_supported()
 
 
 def _lerobot_skip_reason():
@@ -65,7 +67,9 @@ def _lerobot_skip_reason():
         from lerobot.policies.act.modeling_act import ACTPolicy  # noqa: F401
     except Exception as e:
         return f"lerobot not available: {type(e).__name__}: {e}"
-    return "lerobot not installed"
+    from vla_factory.model.adapters.lerobot_version import LEROBOT_MIN
+
+    return f"installed lerobot is older than {LEROBOT_MIN} (adapter needs the 0.5 line)"
 
 
 skip_no_lerobot = pytest.mark.skipif(

@@ -1,4 +1,16 @@
-"""Shared OpenPI adapter used by the PI0 and PI0.5 model declarations.
+"""[RETAINED, currently unreferenced] OpenPI-era PI0/PI0.5 adapter.
+
+pi0/pi05 migrated to lerobot 0.5's ``PI0Policy``/``PI05Policy``
+(:mod:`vla_factory.model.adapters.lerobot_pi`) — the PyTorch checkpoints this
+framework loads were lerobot ports in the first place, and the lerobot route
+avoids openpi's in-place transformers patch. This module is kept as the
+reference for a future **JAX engine** route; its environment still exists via
+``bash scripts/install.sh --model openpi`` (venv ``.openpi``). No registered
+adapter imports it.
+
+---
+
+Shared OpenPI adapter used by the PI0 and PI0.5 model declarations.
 
 Thin **composition** adapter (NOT inheritance): holds a ``PI0Pytorch``
 instance, translates ``vla_factory.Observation`` ↔ ``openpi.Observation``
