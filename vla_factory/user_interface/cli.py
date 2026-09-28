@@ -111,6 +111,12 @@ def main():
     train_parser.add_argument("--steps", type=int, default=None, help="Override total_steps.")
     train_parser.add_argument("--batch-size", type=int, default=None, help="Override batch_size.")
     train_parser.add_argument("--output-dir", type=str, default=None, help="Override output_dir.")
+    train_parser.add_argument(
+        "--profile", action="store_true", default=False,
+        help="Enable per-step profiling: print a stage-time breakdown (data_load, "
+             "h2d, forward, backward, optimizer) at every logging_steps so the "
+             "bottleneck is visible. Default off.",
+    )
 
     export_parser = subparsers.add_parser("export", help="Export one checkpoint for deployment.")
     export_parser.add_argument("--checkpoint", required=True, help="Training checkpoint or run root.")
@@ -291,6 +297,7 @@ def main():
             override_steps=args.steps,
             override_batch_size=args.batch_size,
             override_output_dir=args.output_dir,
+            profile=args.profile,
         )
         print(f"Training complete. Final metrics: {metrics}")
 

@@ -209,6 +209,18 @@ install_torchcodec() {
     echo "Installing latest torchcodec for torch ${torch_version%%+*}"
     retry_uv pip install --default-index "$UV_DEFAULT_INDEX" "torchcodec>=0.4.0"
   fi
+  # torchcodec's native wheels (libtorchcodec_core*.so) link against
+  # libnppicc.so.12 (NVIDIA NPP image color conversion, used for video frame
+  # decode), but neither torchcodec's nor torch's wheel METADATA declares the
+  # nvidia-npp-cu12 dependency it lives in. torch ships its own CUDA deps
+  # (cublas, cudnn, ...) as separate nvidia-*-cu12 packages but does NOT need
+  # NPP, so a plain torch + torchcodec install ends up without libnppicc.so.12
+  # and torchcodec fails to import ("Could not load libtorchcodec"). Install
+  # the missing CUDA component explicitly so a fresh venv Just Works.
+  # (vla_factory's _load_torchcodec additionally preloads nvidia/*/lib into the
+  # process symbol table at runtime, since those dirs are not on the linker
+  # search path — but that only helps once the file exists on disk.)
+  retry_uv pip install --default-index "$UV_DEFAULT_INDEX" "nvidia-npp-cu12"
 }
 
 # ── Per-model install ────────────────────────────────────────────────

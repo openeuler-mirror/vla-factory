@@ -110,7 +110,13 @@ robotwin = ["h5py>=3.0"]
 # 2.11 -> 0.11.x, 2.11+ -> 0.15.0. The >=0.4.0 bound keeps the extra
 # installable across that range; on an older torch, pin the matching row
 # explicitly on top (e.g. `pip install torchcodec==0.4.0`).
-torchcodec = ["torchcodec>=0.4.0"]
+# nvidia-npp-cu12 ships libnppicc.so.12, which torchcodec's native wheels
+# (libtorchcodec_core*.so) link against for video frame color conversion but
+# do NOT declare in their METADATA — and torch itself does not pull NPP in
+# (it doesn't use it), so a plain torch + torchcodec install is missing it and
+# torchcodec fails to import ("Could not load libtorchcodec"). Declare it here
+# so `pip install -e ".[torchcodec]"` yields a working install.
+torchcodec = ["torchcodec>=0.4.0", "nvidia-npp-cu12"]
 # OpenVLA (Llama-2 7B + Prismatic fused DINOv2/SigLIP + action head) is
 # vendored via `bash scripts/install.sh --model openvla` into its own venv —
 # upstream prismatic-vlm is not on PyPI and needs transformers<5, so it is NOT
