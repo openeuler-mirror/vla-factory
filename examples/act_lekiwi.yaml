@@ -24,6 +24,10 @@ model:
     action_horizon: 100              # chunk_size — ACT trains from scratch, so
                                      # the chunk length is the user's choice
 
+robot:
+  name: lekiwi                       # LeKiwi mobile manipulator: arm joint_pos
+                                     # + base joint_vel action modes
+
 data:
   path: data/banana
   format: lerobot-v3

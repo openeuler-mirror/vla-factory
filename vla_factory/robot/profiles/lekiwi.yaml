@@ -47,7 +47,7 @@ gripper:
   close_value: 1.0
   joint_index: 8
 
-control_modes: [joint_pos]
+control_modes: [joint_pos, joint_vel]
 native_action_type: joint_pos
 
 coordinate_frame: base_link

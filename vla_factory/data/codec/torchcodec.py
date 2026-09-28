@@ -20,6 +20,7 @@ is no point holding frames on a CUDA device.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,53 @@ from .registry import CodecRegistry
 logger = logging.getLogger(__name__)
 
 
+def _expose_nvidia_cuda_libs() -> None:
+    """Preload bundled CUDA ``.so`` files so torchcodec can link them.
+
+    torchcodec's native wheels (``libtorchcodec_core*.so``) link against
+    CUDA libraries that the torch wheel ships as separate ``nvidia-*-cu12``
+    packages, whose files land under ``site-packages/nvidia/*/lib``. torch
+    itself finds its own CUDA deps via RPATH, but torchcodec's ``.so`` has no
+    such RPATH and the ``nvidia/*/lib`` dirs are not on the dynamic linker's
+    search path, so importing torchcodec fails with e.g.
+    ``libnppicc.so.12: cannot open shared object file`` even though the file
+    is installed.
+
+    The robust runtime fix is to preload those ``.so`` files into the process
+    global symbol table (``RTLD_GLOBAL``) before torchcodec is imported: once
+    loaded globally, the dynamic linker satisfies torchcodec's references
+    from the already-loaded symbols. ``LD_LIBRARY_PATH`` cannot be set at
+    runtime (the linker reads it once at process start), so ``ctypes.CDLL``
+    is the only working in-process mechanism.
+
+    Only ``nvidia/*/lib`` is scanned — ``torch/lib`` is left to torch's own
+    ``_load_global_deps``. The two directories share no filenames, so there
+    is no risk of a preload shadowing a torch-loaded library. Failures
+    (non-ELF files, already loaded, unrelated) are silently skipped.
+    """
+    import ctypes
+    import glob
+    import sysconfig
+    from pathlib import Path
+
+    try:
+        rtld_global = ctypes.RTLD_GLOBAL
+    except AttributeError:
+        return  # non-POSIX; nothing to do
+
+    # site-packages root: resolve via sysconfig (purelib) which is stable
+    # across venv layouts.
+    purelib = Path(sysconfig.get_paths().get("purelib", ""))
+    if not purelib.is_dir():
+        return
+    for lib_dir in glob.glob(str(purelib / "nvidia" / "*" / "lib")):
+        for so in glob.glob(os.path.join(lib_dir, "*.so*")):
+            try:
+                ctypes.CDLL(so, mode=rtld_global)
+            except OSError:
+                pass
+
+
 def _load_torchcodec() -> Any:
     """Import the torchcodec ``VideoDecoder`` lazily with an actionable error.
 
@@ -42,7 +90,16 @@ def _load_torchcodec() -> Any:
     ("Could not load libtorchcodec"), while a missing install raises
     ``ImportError``. We catch all three so the user gets a hint pointing at
     the fix, not a raw linker traceback.
+
+    Before importing, :func:`_expose_nvidia_cuda_libs` preloads the bundled
+    CUDA ``.so`` files (e.g. ``libnppicc.so.12``) into the process symbol
+    table so torchcodec can link them — without this, a torchcodec wheel
+    whose native libs reference CUDA components shipped as separate
+    ``nvidia-*-cu12`` packages fails to load even when those packages are
+    installed, because their ``nvidia/*/lib`` dirs are not on the linker
+    search path.
     """
+    _expose_nvidia_cuda_libs()
     try:
         from torchcodec.decoders import VideoDecoder
     except (ImportError, OSError, RuntimeError) as exc:  # pragma: no cover - exercised only without the extra / with an ABI-mismatched wheel

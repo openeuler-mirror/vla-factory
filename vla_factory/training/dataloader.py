@@ -24,6 +24,7 @@ import torch
 from vla_factory.assembly import ResolvedAssembly
 from vla_factory.assembly.transform import TransformContext, build_pipeline
 from vla_factory.data.codec import resolve_codec
+from vla_factory.data.codec.base import VideoCodec
 from vla_factory.data.reader import get_reader
 from vla_factory.user_interface import TrainRecipe
 from vla_factory.training.dataset import (
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 def create_dataloader(
     recipe: TrainRecipe,
     assembly: ResolvedAssembly,
+    *,
+    codec: VideoCodec | None = None,
 ) -> torch.utils.data.DataLoader:
     """Build the training DataLoader from a resolved recipe and assembly.
 
@@ -59,7 +62,10 @@ def create_dataloader(
 
     # 1. Reader + codec (frame access; the descriptions come from the assembly)
     reader = get_reader(data_cfg.format, path=path)
-    codec = resolve_codec(data_cfg.video_codec, data_cfg.format)
+    # Reuse a caller-resolved codec (e.g. one already logged in train()) rather
+    # than re-resolving, which would repeat the torchcodec availability probe.
+    if codec is None:
+        codec = resolve_codec(data_cfg.video_codec, data_cfg.format)
 
     schema = assembly.schema
     norm_stats = assembly.norm_stats

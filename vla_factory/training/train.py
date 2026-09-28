@@ -18,6 +18,7 @@ from vla_factory.model.registry import get_entry
 from vla_factory.user_interface import TrainRecipe, merge_model_config, parse_recipe
 from vla_factory.training.checkpoint import save_training_contract
 from vla_factory.training.dataloader import create_dataloader
+from vla_factory.data.codec import resolve_codec
 from vla_factory.training.strategies import get_strategy
 from vla_factory.training.trainer import VLATrainer, build_training_args
 
@@ -31,6 +32,7 @@ def train(
     override_steps: int | None = None,
     override_batch_size: int | None = None,
     override_output_dir: str | None = None,
+    profile: bool = False,
 ) -> dict:
     """Resolve, train, and persist one recipe-driven VLA model."""
     recipe = _prepare_recipe(
@@ -39,12 +41,19 @@ def train(
         override_batch_size=override_batch_size,
         override_output_dir=override_output_dir,
     )
+    # Resolve the video codec early so its concrete name (after "auto"
+    # -> torchcodec/pyav/hdf5_jpeg selection) can be reported alongside the
+    # other recipe config. The resolved codec is reused by
+    # create_dataloader() to avoid repeating the selection/probe.
+    codec = resolve_codec(recipe.data.video_codec, recipe.data.format)
     logger.info(
-        "Recipe: model=%s, strategy=%s, lr=%s, steps=%d",
+        "Recipe: model=%s, strategy=%s, lr=%s, steps=%d, codec=%s%s",
         recipe.model.name,
         recipe.finetuning.strategy,
         recipe.training.lr,
         recipe.training.total_steps,
+        codec.name,
+        ", profile=on" if profile else "",
     )
 
     # Resolve every data/model/robot relationship before creating or deleting
@@ -64,7 +73,7 @@ def train(
 
     model = entry.factory(recipe=recipe, assembly=assembly)
     model = strategy.prepare_model(model, strategy_config, metadata)
-    train_loader = create_dataloader(recipe, assembly)
+    train_loader = create_dataloader(recipe, assembly, codec=codec)
 
     trainer = VLATrainer(
         model=model,
@@ -77,6 +86,7 @@ def train(
             "lora_wrapped_full" if recipe.finetuning.strategy == "lora" else
             "bare_full"
         ),
+        profile=profile,
     )
     logger.info(
         "Starting training: %d steps, batch_size=%d",

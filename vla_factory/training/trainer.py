@@ -19,6 +19,7 @@ from transformers import Trainer, TrainingArguments
 
 from vla_factory.user_interface import TrainRecipe
 from vla_factory.utils.constants import WEIGHTS_META_FILE
+from vla_factory.training.profiler import StepProfiler
 
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,14 @@ class VLATrainer(Trainer):
     def __init__(self, *args, **kwargs):
         self.save_delta_only = kwargs.pop("save_delta_only", False)
         self.checkpoint_format = kwargs.pop("checkpoint_format", "bare_full")
+        # Opt-in step profiler: --profile on the CLI enables it. When disabled
+        # the StepProfiler is a complete no-op (every hook short-circuits on
+        # an enabled flag), so unprofiled runs pay nothing but one attribute
+        # read per hook point.
+        profile = kwargs.pop("profile", False)
         super().__init__(*args, **kwargs)
         self._last_loss_dict: dict | None = None
+        self.profiler = StepProfiler(enabled=profile)
 
     def _save(self, output_dir=None, state_dict=None):
         """Let LoRA runs persist only parameters changed by training."""
@@ -56,6 +63,11 @@ class VLATrainer(Trainer):
         super()._save(output_dir, state_dict)
         path = Path(output_dir or self.args.output_dir) / WEIGHTS_META_FILE
         path.write_text(json.dumps({"format": self.checkpoint_format}) + "\n")
+
+    def get_train_dataloader(self):
+        """Wrap the train dataloader so each batch fetch is timed."""
+        loader = super().get_train_dataloader()
+        return self.profiler.wrap_dataloader(loader)
 
     def _save_checkpoint(self, model, trial):
         """Log the checkpoint only after Trainer has finished writing it."""
@@ -75,12 +87,18 @@ class VLATrainer(Trainer):
         # Observation is a dataclass — move manually.
         device = next(model.parameters()).device
         if not isinstance(obs, torch.Tensor):
-            obs = obs.to(device)
-            actions = actions.to(device)
-            if action_is_pad is not None:
-                action_is_pad = action_is_pad.to(device)
+            with self.profiler.stage("h2d"):
+                obs = obs.to(device)
+                actions = actions.to(device)
+                if action_is_pad is not None:
+                    action_is_pad = action_is_pad.to(device)
 
-        loss, loss_dict = model.compute_loss(obs, actions, action_is_pad=action_is_pad)
+        with self.profiler.stage("forward"):
+            loss, loss_dict = model.compute_loss(obs, actions, action_is_pad=action_is_pad)
+        # Forward→backward boundary: backward runs inside training_step
+        # (accelerator.backward), so timestamp here and close the span on
+        # training_step's return (record_backward_from).
+        self.profiler.mark_forward_end()
 
         # Record loss_dict for logging — detach to prevent autograd graph leak.
         # Storing tensors with grad_fn keeps the entire backward computation graph
@@ -94,8 +112,35 @@ class VLATrainer(Trainer):
 
         return (loss, loss_dict) if return_outputs else loss
 
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        """Forward + backward, with the backward span timed by delta.
+
+        HuggingFace's ``training_step`` runs ``compute_loss`` (forward) then
+        ``accelerator.backward`` (backward). We inherit that wholesale and only
+        close the backward timer opened in ``compute_loss`` on return.
+        ``num_items_in_batch`` is forwarded when the installed transformers
+        accepts it (4.41+); 4.40 does not, so it is dropped via *args probing.
+        """
+        sig = inspect.signature(super().training_step)
+        if "num_items_in_batch" in sig.parameters and num_items_in_batch is not None:
+            result = super().training_step(model, inputs, num_items_in_batch=num_items_in_batch)
+        else:
+            result = super().training_step(model, inputs)
+        self.profiler.record_backward_from()
+        self.profiler.commit_step()
+        return result
+
     def log(self, logs: dict, start_time: float | None = None):
-        """Merge auxiliary loss metrics into the log dict."""
+        """Merge auxiliary loss metrics into the log dict and emit the profile."""
+        if self.state.is_world_process_zero:
+            report = self.profiler.drain_and_report(
+                self.state.global_step,
+                gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            )
+            if report:
+                # The bottleneck breakdown prints just before the loss/metrics
+                # line Trainer is about to emit, so they read as one block.
+                logger.info("\n%s", report)
         if hasattr(self, "_last_loss_dict") and self._last_loss_dict:
             logs.update(self._last_loss_dict)
         # Trainer.log(start_time=...) was added after transformers 4.40 (the
@@ -128,9 +173,18 @@ class VLATrainer(Trainer):
                 ],
                 weight_decay=self.args.weight_decay,
             )
+            self.profiler.wrap_optimizer(self.optimizer)
             return self.optimizer
 
-        return super().create_optimizer()
+        opt = super().create_optimizer()
+        self.profiler.wrap_optimizer(opt)
+        return opt
+
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        """Wrap the LR scheduler's step into the optimizer timing stage."""
+        sched = super().create_scheduler(num_training_steps, optimizer)
+        self.profiler.wrap_lr_scheduler(sched)
+        return sched
 
 
 def build_training_args(recipe: TrainRecipe) -> TrainingArguments:
