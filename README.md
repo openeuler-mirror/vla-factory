@@ -134,9 +134,10 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 | Data | Model | Algorithm | Deployment |
 |------|-------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** |
-| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | ✅ **RoboCasa365** · ✅ **SimplerEnv** |
-| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | | |
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
+| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | ✅ **RoboTwin 2.0** |
+| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | ✅ **RoboCasa365** |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** | | ✅ **SimplerEnv** |
+| | ⬜ **GR00T** | | |
 
 ---
