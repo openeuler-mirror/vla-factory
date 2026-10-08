@@ -1,0 +1,7 @@
+# Minimal bootstrap config for the SimplerEnv benchmark connector.
+#
+# The task list, trials, seed, and report path are supplied by CLI flags on
+# `python -m vla_factory.inference.connectors.simplerenv`. The actual model
+# and checkpoint live in the VLA Factory server process; this module only
+# selects the external connector that drives the SimplerEnv env.
+policy_name: vla_factory.inference.connectors.simplerenv

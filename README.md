@@ -104,7 +104,7 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
 ```
 
-Other simulator platforms (RoboTwin 2.0, RoboCasa365) run in separate
+Other simulator platforms (RoboTwin 2.0, RoboCasa365, SimplerEnv) run in separate
 simulator environments and connect to the model server over TCP. See the
 platform tutorials under [`docs/tutorial/`](./docs/tutorial/) for installation,
 native dataset, and evaluation instructions.
@@ -134,7 +134,7 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 | Data | Model | Algorithm | Deployment |
 |------|-------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** · ✅ **SimplerEnv** |
 | ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | |
 | ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
 | ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | ✅ **LoRA SFT** | |
