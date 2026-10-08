@@ -132,23 +132,11 @@ The most complete annotated template is [`examples/reference.yaml`](./examples/r
 
 ## Support Roadmap
 
-| Category | Item | Status |
-|------|-------|--------|
-| Data | LeRobot v2 / v3 | ✅ |
-| Data | RLDS | ⬜ |
-| Data | ROS bags | ⬜ |
-| Data | HDF5 (Robomimic / ALOHA) | ⬜ |
-| Model | ACT | ✅ |
-| Model | π₀ / π₀.₅ / π-FAST | ✅ |
-| Model | Diffusion Policy | ✅ |
-| Model | OpenVLA / OFT | ✅ |
-| Model | GR00T | ⬜ |
-| Algorithm | Full-parameter SFT | ✅ |
-| Algorithm | LoRA SFT | ✅ |
-| Algorithm | Selective SFT | ⬜ |
-| Deployment | LeRobot | ✅ |
-| Deployment | RoboTwin 2.0 | ✅ |
-| Deployment | RoboCasa365 | ✅ |
-| Deployment | SimplerEnv | ✅ |
+| Data | Model | Algorithm | Deployment |
+|------|-------|-------|------|
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** |
+| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | ✅ **RoboCasa365** · ✅ **SimplerEnv** |
+| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | | |
 
 ---
