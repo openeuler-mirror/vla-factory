@@ -128,11 +128,23 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
 
 ## 支持路标
 
-| 数据 | 模型 | 算法 | 部署 |
-|------|------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** |
-| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | ✅ **RoboCasa365** · ✅ **SimplerEnv** |
-| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | | |
+| 分类 | 项目 | 状态 |
+|------|------|------|
+| 数据 | LeRobot v2 / v3 | ✅ |
+| 数据 | RLDS | ⬜ |
+| 数据 | ROS bags | ⬜ |
+| 数据 | HDF5（Robomimic / ALOHA） | ⬜ |
+| 模型 | ACT | ✅ |
+| 模型 | π₀ / π₀.₅ / π-FAST | ✅ |
+| 模型 | Diffusion Policy | ✅ |
+| 模型 | OpenVLA / OFT | ✅ |
+| 模型 | GR00T | ⬜ |
+| 算法 | Full-parameter SFT | ✅ |
+| 算法 | LoRA SFT | ✅ |
+| 算法 | Selective SFT | ⬜ |
+| 部署 | LeRobot | ✅ |
+| 部署 | RoboTwin 2.0 | ✅ |
+| 部署 | RoboCasa365 | ✅ |
+| 部署 | SimplerEnv | ✅ |
 
 ---
