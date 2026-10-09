@@ -43,7 +43,9 @@ class DeploymentConfig:
     port: int = 9999
 
     def __post_init__(self) -> None:
-        if self.platform not in {"simulator", "lerobot", "robotwin", "robocasa"}:
+        if self.platform not in {
+            "simulator", "lerobot", "robotwin", "robocasa", "simplerenv",
+        }:
             raise ValueError(f"Unknown deployment platform {self.platform!r}.")
         if self.max_loop_freq_hz <= 0:
             raise ValueError("max_loop_freq_hz must be a positive number")
@@ -172,7 +174,9 @@ def deploy(config: DeploymentConfig) -> None:
         action_horizon=engine.action_horizon,
         action_dim=engine.execution_action_dim,
         n_action_steps=(
-            5 if config.platform == "robocasa" and config.n_action_steps is None
+            min(5, engine.action_horizon)
+            if config.platform in ("robocasa", "simplerenv")
+            and config.n_action_steps is None
             else config.n_action_steps
         ),
     )
@@ -182,6 +186,8 @@ def deploy(config: DeploymentConfig) -> None:
         _deploy_robotwin(config, engine, policy, device)
     elif config.platform == "robocasa":
         _deploy_robocasa(config, engine, policy, device)
+    elif config.platform == "simplerenv":
+        _deploy_simplerenv(config, engine, policy, device)
     else:
         _deploy_zmq(config, engine, policy, strategy, device)
 
@@ -266,6 +272,55 @@ def _deploy_robocasa(
         f"[deploy] Listening on {config.host}:{config.port} — start the "
         "RoboCasa benchmark client with the matching port "
         "(`python -m vla_factory.inference.connectors.robocasa --port "
+        f"{config.port} ...`).",
+        flush=True,
+    )
+    server.serve_forever()
+
+
+def _deploy_simplerenv(
+    config: DeploymentConfig,
+    engine: InferenceEngine,
+    policy: PolicyExecutor,
+    device: str,
+) -> None:
+    """Serve a SimplerEnv benchmark model server over the JSON-RPC transport.
+
+    Same wire format as the RoboTwin / RoboCasa servers (length-prefixed
+    numpy-aware JSON); the difference is the platform adapter that re-assembles
+    a SimplerEnv camera/robot-state reading into the checkpoint's DataSchema
+    contract. The env-side connector
+    (``vla_factory.inference.connectors.simplerenv``) drives the SimplerEnv
+    environment and connects as the client.
+    """
+    from vla_factory.inference.platforms.simplerenv import SimplerEnvAdapter
+    from vla_factory.inference.transports.length_prefixed_json import (
+        LengthPrefixedJsonRpcServer,
+    )
+
+    adapter = SimplerEnvAdapter(
+        camera_keys=engine.camera_keys,
+        state_dim=engine.schema.state_dim,
+    )
+    model = RemotePolicyModel(policy, adapter, task=config.task)
+    server = LengthPrefixedJsonRpcServer(
+        model,
+        host=config.host,
+        port=config.port,
+    )
+
+    print(f"[deploy] Model: {engine.recipe.model.name}", flush=True)
+    print(f"[deploy] Device: {device}", flush=True)
+    print(
+        f"[deploy] Platform: simplerenv (cameras={list(engine.camera_keys)}, "
+        f"state_dim={engine.schema.state_dim}, "
+        f"action_dim={engine.execution_action_dim})",
+        flush=True,
+    )
+    print(
+        f"[deploy] Listening on {config.host}:{config.port} — start the "
+        "SimplerEnv benchmark client with the matching port "
+        "(`python -m vla_factory.inference.connectors.simplerenv --port "
         f"{config.port} ...`).",
         flush=True,
     )

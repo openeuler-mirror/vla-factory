@@ -102,7 +102,7 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
     --platform lerobot --remote-ip <robot-ip> --strategy receding_horizon
 ```
 
-其他仿真平台（RoboTwin 2.0、RoboCasa365）使用独立仿真环境通过 TCP 连接
+其他仿真平台（RoboTwin 2.0、RoboCasa365、SimplerEnv）使用独立仿真环境通过 TCP 连接
 模型服务，完整安装、训练数据和评测步骤见 [`docs/tutorial/`](./docs/tutorial/)
 下的各平台教程。
 
@@ -130,9 +130,10 @@ vlafactory-cli deploy --checkpoint outputs/act_so101_banana \
 
 | 数据 | 模型 | 算法 | 部署 |
 |------|------|-------|------|
-| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** · ✅ **RoboTwin 2.0** · ✅ **RoboCasa365** |
-| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | |
-| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ⬜ **Selective SFT** | |
-| ⬜ **HDF5** | ✅ **OpenVLA / OFT** · ⬜ **GR00T** | ✅ **LoRA SFT** | |
+| ✅ **LeRobot v2 / v3** | ✅ **ACT** | ✅ **Full-parameter SFT** | ✅ **LeRobot** |
+| ⬜ **RLDS** | ✅ **π₀ / π₀.₅ / π-FAST** | ✅ **LoRA SFT** | ✅ **RoboTwin 2.0** |
+| ⬜ **ROS bags** | ✅ **Diffusion Policy** | ✅ **Selective SFT** | ✅ **RoboCasa365** |
+| ⬜ **HDF5** | ✅ **OpenVLA / OFT** | | ✅ **SimplerEnv** |
+| | ⬜ **GR00T** | | |
 
 ---
