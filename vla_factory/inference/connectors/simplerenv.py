@@ -1,11 +1,27 @@
 """SimplerEnv connector and closed-loop benchmark client.
 
 This module runs in the SimplerEnv (ManiSkill / SAPIEN) environment and
-drives the SimplerEnv benchmark: it makes one env per task, reads the agent
-cameras and robot state, forwards them to the VLA Factory model server
-(speaking the same length-prefixed JSON-RPC protocol RoboTwin / RoboCasa
-use), executes the returned action chunk via ``env.step``, and aggregates
-the binary success flag into a per-task success-rate report.
+drives the SimplerEnv benchmark: it makes one env per task, reads the
+third-person camera frame and the end-effector state from the observation
+dict, forwards them to the VLA Factory model server (speaking the same
+length-prefixed JSON-RPC protocol RoboTwin / RoboCasa use), executes the
+returned action chunk via ``env.step``, and aggregates the binary success
+flag into a per-task success-rate report.
+
+The runtime contract mirrors the upstream SimplerEnv code and the NVIDIA
+GR00T reference integration (``gr00t/eval/sim/SimplerEnv``):
+
+- env entry: ``simpler_env.make(task)``;
+- images: ``obs["image"][camera]["rgb"]`` — each embodiment exposes a
+  single third-person camera, ``overhead_camera`` for Google-robot tasks
+  and ``3rd_view_camera`` for WidowX tasks;
+- robot state: ``obs["agent"]["eef_pos"]`` — 8-D: translation (3) +
+  quaternion (4, wxyz) + gripper (1);
+- instruction: ``env.unwrapped.get_language_instruction()``;
+- actions: flat 7-D vectors (end-effector delta + gripper) consumed
+  directly by ``env.step``; 4-D checkpoints (xyz + gripper) are expanded
+  with zero rotations, and an optional gripper-convention post-processor
+  covers checkpoints whose gripper semantics differ from the env's.
 
 It deliberately imports only the standard library and numpy at module level
 (the shared :class:`ModelClient` lives in the robocasa connector, which has
@@ -28,25 +44,14 @@ from vla_factory.inference.connectors.robocasa import (
 )
 
 
-# Per-task step caps from the SimplerEnv evaluation scripts; tasks absent
-# from this table fall back to --max-steps / DEFAULT_MAX_STEPS.
-TASK_MAX_STEPS: dict[str, int] = {
-    "google_robot_pick_coke_can": 280,
-    "google_robot_move_near": 280,
-    "google_robot_open_drawer": 280,
-    "google_robot_close_drawer": 280,
-    "google_robot_place_apple": 280,
-    "widowx_spoon_on_towel": 150,
-    "widowx_carrot_on_plate": 150,
-    "widowx_stack_blocks": 150,
-    "widowx_put_eggplant_in_basket": 150,
-    "widowx_put_item_in_basket": 150,
+# Embodiment task-name prefix → its single third-person camera. SimplerEnv
+# has no wrist camera on either embodiment.
+EMBODIMENT_CAMERAS: dict[str, str] = {
+    "google_robot": "overhead_camera",
+    "widowx": "3rd_view_camera",
 }
 
-DEFAULT_MAX_STEPS = 300
-
-# SimplerEnv camera names exposed by env.get_image().
-DEFAULT_CAMERAS = ("agentview", "robot0_eye_in_hand")
+ACTION_DIM = 7
 
 
 def _ensure_simulator():
@@ -63,31 +68,146 @@ def _ensure_simulator():
         )
 
 
-def _success_flag(info, terminated: bool, env) -> bool:
-    """Read the binary success flag from a SimplerEnv terminal step.
+def _embodiment_camera(task: str, cameras: tuple[str, ...] | None) -> str:
+    """Resolve the single camera to forward for a task.
 
-    SimplerEnv terminates the episode on success; ``info["success"]`` and
-    the wrapper's ``success_once`` latching cover the non-terminating
-    variants.
+    Explicit ``cameras`` wins (one entry); otherwise the task-name prefix
+    selects the embodiment's registered camera.
     """
-    if terminated:
-        return True
+    if cameras:
+        if len(cameras) != 1:
+            raise ValueError(
+                "SimplerEnv exposes a single third-person camera per "
+                "embodiment; pass at most one --cameras entry, got "
+                f"{list(cameras)}."
+            )
+        return cameras[0]
+    for prefix, camera in EMBODIMENT_CAMERAS.items():
+        if task.startswith(prefix):
+            return camera
+    known = " / ".join(sorted(EMBODIMENT_CAMERAS))
+    raise ValueError(
+        f"Cannot infer the SimplerEnv embodiment camera for task {task!r}; "
+        f"pass --cameras explicitly. Known task prefixes: {known}."
+    )
+
+
+def _get_image(obs: dict, camera: str):
+    """Read one camera's RGB frame from a ManiSkill obs dict."""
+    import numpy as np
+
+    image = obs.get("image", {}).get(camera)
+    if image is None:
+        raise KeyError(
+            f"Camera {camera!r} not found in obs['image']. Available: "
+            f"{sorted(obs.get('image', {}).keys())}. SimplerEnv exposes one "
+            "third-person camera per embodiment (overhead_camera for Google "
+            "robot, 3rd_view_camera for WidowX)."
+        )
+    frame = image.get("rgb") if isinstance(image, dict) else image
+    if frame is None:
+        raise KeyError(
+            f"obs['image'][{camera!r}] has no 'rgb' entry; run SimplerEnv "
+            "with an rgb-bearing obs_mode (e.g. the default 'rgbd')."
+        )
+    return np.ascontiguousarray(frame)
+
+
+def _get_state(obs: dict):
+    """Read the 8-D end-effector state from a ManiSkill obs dict."""
+    import numpy as np
+
+    agent = obs.get("agent", {})
+    state = agent.get("eef_pos")
+    if state is None:
+        raise KeyError(
+            "obs['agent']['eef_pos'] not found. Available agent keys: "
+            f"{sorted(agent.keys())}."
+        )
+    return np.asarray(state, dtype=np.float32)
+
+
+def _success_flag(info, terminated: bool, env) -> bool:
+    """Read the binary success flag from a SimplerEnv step.
+
+    ManiSkill2_real2sim sets ``done = info["success"]``; SimplerEnv also
+    terminates successful episodes, and some wrappers latch
+    ``success_once``. ``truncated`` alone (TimeLimit) is not success.
+    """
     if isinstance(info, dict):
         for key in ("success", "is_success"):
             if key in info and bool(info[key]):
                 return True
-        eval_info = info.get("eval")
-        if isinstance(eval_info, dict):
-            for key in ("success_rate", "success"):
-                if key in eval_info and bool(eval_info[key]):
-                    return True
+    if terminated:
+        return True
     return bool(getattr(env, "success_once", False))
 
 
-def _resolve_max_steps(task: str, max_steps: int | None) -> int:
-    if max_steps is not None:
-        return max_steps
-    return TASK_MAX_STEPS.get(task, DEFAULT_MAX_STEPS)
+class _GripperPostProcessor:
+    """Adapt checkpoint gripper semantics to the env's [-1, 1] convention.
+
+    ``raw`` forwards the model action unchanged (default — correct for
+    checkpoints whose actions already follow the env convention). ``google``
+    maps a [0, 1] gripper to [-1, 1] and, once the model commands a close,
+    keeps the gripper closed for ``sticky_steps`` steps (the sticky-gripper
+    protocol SimplerEnv's Google-robot tasks need). ``widowx`` binarises the
+    command around 0.5.
+    """
+
+    def __init__(self, mode: str = "raw", sticky_steps: int = 15) -> None:
+        if mode not in ("raw", "google", "widowx"):
+            raise ValueError(
+                f"Unknown gripper mode {mode!r}; expected raw / google / widowx."
+            )
+        self.mode = mode
+        self.sticky_steps = sticky_steps
+        self._sticky_remaining = 0
+
+    def reset(self) -> None:
+        self._sticky_remaining = 0
+
+    def process(self, action):
+        import numpy as np
+
+        values = np.array(action, dtype=np.float32, copy=True)
+        if self.mode == "raw":
+            return values
+        gripper = values[-1]
+        if self.mode == "widowx":
+            values[-1] = 2.0 * (gripper > 0.5) - 1.0
+            return values
+        # google: [0, 1] open → [-1, 1], closing latched for sticky_steps.
+        if self._sticky_remaining > 0:
+            values[-1] = -1.0
+            self._sticky_remaining -= 1
+        elif gripper <= 0.5:
+            values[-1] = -1.0
+            self._sticky_remaining = self.sticky_steps - 1
+        else:
+            values[-1] = 1.0
+        return values
+
+
+def _to_simplerenv_action(action, gripper: _GripperPostProcessor):
+    """Convert a raw model action to the env's flat 7-D action vector.
+
+    SimplerEnv consumes ``[dx, dy, dz, droll, dpitch, dyaw, gripper]`` on
+    both embodiments. 7-D actions pass through (after gripper
+    post-processing); 4-D checkpoints (xyz + gripper) are expanded with zero
+    rotations. The result is clipped to [-1, 1].
+    """
+    import numpy as np
+
+    values = np.asarray(action, dtype=np.float32).reshape(-1)
+    if values.shape[0] == 4:
+        values = np.concatenate([values[:3], np.zeros(3, np.float32), values[3:4]])
+    if values.shape[0] != ACTION_DIM:
+        raise ValueError(
+            f"SimplerEnv expects a {ACTION_DIM}-D action "
+            "(end-effector delta + gripper), got {values.shape[0]}. "
+            "Checkpoints must emit either 7-D actions or 4-D (xyz + gripper)."
+        )
+    return np.clip(gripper.process(values), -1.0, 1.0)
 
 
 def run_benchmark(
@@ -99,36 +219,49 @@ def run_benchmark(
     trials: int = 25,
     max_steps: int | None = None,
     seed: int = 0,
-    image_size: tuple[int, int] = (224, 224),
-    cameras: tuple[str, ...] = DEFAULT_CAMERAS,
+    cameras: tuple[str, ...] | None = None,
+    instruction: str | None = None,
+    gripper_mode: str = "raw",
     report: str | None = None,
 ):
     """Drive the SimplerEnv closed-loop benchmark and return a report dict.
 
-    For each task, makes ``trials`` SimplerEnv envs
-    (``make_sim_env(task)``), reads the ``cameras`` images plus
-    ``env.get_robot_state()``, forwards them to the model, executes the
-    returned action chunk via ``env.step``, and records the binary success
-    flag from the episode's terminal step. Results are aggregated by task
-    and overall, and written to ``report`` as JSON when given.
+    For each task, makes one env (``simpler_env.make(task)``) and runs
+    ``trials`` reset/eval episodes on it, forwarding the single
+    third-person camera frame plus ``obs["agent"]["eef_pos"]`` to the model,
+    executing the returned action chunk via ``env.step``, and recording the
+    binary success flag from the episode's terminal step. Episodes end at
+    the env's registered TimeLimit unless ``max_steps`` overrides it.
+    Results are aggregated by task and overall, and written to ``report``
+    as JSON when given.
+
+    Note: this loop resets with ``env.reset(seed=seed + trial)``, i.e. the
+    prepackaged-initial-state protocol. SimplerEnv's official benchmark
+    additionally varies robot/object init states via ``options`` (variant
+    aggregation) and the visual-matching setting; numbers from this runner
+    are not directly comparable to the published benchmark.
 
     Parameters
     ----------
     model : object | None
         A model backend exposing ``.call(func_name, obs)`` and a context
         manager. ``None`` (default) builds a :class:`ModelClient` connecting
-        to the remote server at ``host:port`.
-    image_size : tuple[int, int]
-        (W, H) passed to ``env.get_image``; must match the resolution the
-        checkpoint was trained on.
-    cameras : tuple[str, ...]
-        SimplerEnv camera names to forward. Must match (after aliasing) the
-        checkpoint's trained camera set.
+        to the remote server at ``host:port``.
+    cameras : tuple[str, ...] | None
+        Single SimplerEnv camera to forward; by default inferred from the
+        task-name prefix (``overhead_camera`` / ``3rd_view_camera``).
+    instruction : str | None
+        Override the language instruction sent to the model; by default
+        ``env.unwrapped.get_language_instruction()`` per episode.
+    gripper_mode : str
+        Checkpoint gripper convention: ``raw`` passthrough (default),
+        ``google`` ([0, 1] → [-1, 1] + sticky close), ``widowx``
+        (binarise around 0.5).
     """
     _ensure_simulator()
     import time
 
-    from simpler_env.utils.env.env_builder import make_sim_env
+    import simpler_env
 
     if not tasks:
         raise ValueError(
@@ -145,51 +278,53 @@ def run_benchmark(
     backend = model if model is not None else ModelClient(host=host, port=port)
     with backend:
         for task in tasks:
-            step_limit = _resolve_max_steps(task, max_steps)
+            camera = _embodiment_camera(task, cameras)
+            gripper = _GripperPostProcessor(gripper_mode)
             try:
-                env = make_sim_env(task)
+                env = simpler_env.make(task)
             except Exception as exc:
                 per_task[task] = {
-                    "error": f"make_sim_env({task!r}) failed: {exc}",
+                    "error": f"simpler_env.make({task!r}) failed: {exc}",
                     "trials": 0, "successes": 0, "success_rate": 0.0,
                 }
                 continue
-            action_dim = env.action_space.shape[0]
 
             task_successes = 0
             progbar = _make_progress_bar(total=trials, desc=task)
             try:
                 for trial in range(trials):
                     episode_start = time.time()
-                    env.reset(seed=seed + trial)
+                    obs, info = env.reset(seed=seed + trial)
                     backend.call("reset_model")
-                    info: dict = {}
+                    gripper.reset()
+                    task_instruction = instruction or (
+                        env.unwrapped.get_language_instruction()
+                    )
                     terminated = truncated = False
+                    info: dict = info or {}
                     steps = 0
-                    while not (terminated or truncated) and steps < step_limit:
+                    while (
+                        not (terminated or truncated)
+                        and (max_steps is None or steps < max_steps)
+                    ):
                         env_obs = {
-                            f"image.{cam}": env.get_image(
-                                size=image_size, camera=cam
-                            )
-                            for cam in cameras
+                            f"image.{camera}": _get_image(obs, camera),
+                            "state": _get_state(obs),
                         }
-                        env_obs["state"] = env.get_robot_state()
                         request = {
                             "simplerenv_observation": env_obs,
-                            "instruction": task,
+                            "instruction": task_instruction,
                             "step": steps,
                         }
                         actions = backend.call("get_action", request)
                         for action in actions:
                             obs, reward, terminated, truncated, info = env.step(
-                                _to_simplerenv_action(action, action_dim)
+                                _to_simplerenv_action(action, gripper)
                             )
                             steps += 1
-                            if (
-                                terminated or truncated
-                                or _success_flag(info, terminated, env)
-                                or steps >= step_limit
-                            ):
+                            if terminated or truncated:
+                                break
+                            if max_steps is not None and steps >= max_steps:
                                 break
                     success = _success_flag(info, terminated, env)
                     if success:
@@ -234,27 +369,6 @@ def run_benchmark(
     return overall
 
 
-def _to_simplerenv_action(action, action_dim: int):
-    """Validate a raw model action against the env's action space.
-
-    SimplerEnv consumes flat vectors in the env's native action space
-    (4-D for the Google robot: xyz-delta + gripper; 7-D for WidowX:
-    end-effector delta + gripper), clipped to [-1, 1]. No re-ordering is
-    applied — the checkpoint's action semantics must already match the
-    embodiment.
-    """
-    import numpy as np
-
-    values = np.asarray(action, dtype=np.float32).reshape(-1)
-    if values.shape[0] != action_dim:
-        raise ValueError(
-            f"SimplerEnv expects a {action_dim}-D action, got "
-            f"{values.shape[0]}. The checkpoint's action space must match "
-            "the embodiment (Google robot: 4, WidowX: 7)."
-        )
-    return np.clip(values, -1.0, 1.0)
-
-
 def _main():
     import argparse
 
@@ -276,19 +390,25 @@ def _main():
     )
     parser.add_argument(
         "--max-steps", type=int, default=None,
-        help="Per-episode step cap; default uses the SimplerEnv per-task "
-             "horizon table.",
+        help="Per-episode step cap; by default the env's registered "
+             "TimeLimit ends the episode.",
     )
     parser.add_argument("--seed", type=int, default=0, help="Base RNG seed.")
     parser.add_argument(
-        "--image-size", type=int, nargs=2, default=(224, 224),
-        metavar=("WIDTH", "HEIGHT"),
-        help="Camera resolution requested from env.get_image (default 224 224).",
+        "--cameras", nargs="*", default=None,
+        help="Camera to forward (at most one — SimplerEnv exposes a single "
+             "third-person camera per embodiment). Default: inferred from "
+             "the task name (overhead_camera / 3rd_view_camera).",
     )
     parser.add_argument(
-        "--cameras", nargs="+", default=list(DEFAULT_CAMERAS),
-        help="SimplerEnv cameras to forward (agentview, "
-             "robot0_eye_in_hand).",
+        "--instruction", default=None,
+        help="Override the language instruction sent to the model (default: "
+             "env.unwrapped.get_language_instruction()).",
+    )
+    parser.add_argument(
+        "--gripper-mode", default="raw", choices=["raw", "google", "widowx"],
+        help="Checkpoint gripper convention: raw passthrough, google "
+             "([0,1]→[-1,1] + sticky close), widowx (binarise around 0.5).",
     )
     parser.add_argument(
         "--report", default=None,
@@ -304,8 +424,9 @@ def _main():
             trials=args.trials,
             max_steps=args.max_steps,
             seed=args.seed,
-            image_size=tuple(args.image_size),
-            cameras=tuple(args.cameras),
+            cameras=tuple(args.cameras) if args.cameras else None,
+            instruction=args.instruction,
+            gripper_mode=args.gripper_mode,
             report=args.report,
         )
     except ModuleNotFoundError as exc:

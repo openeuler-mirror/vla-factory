@@ -174,7 +174,8 @@ def deploy(config: DeploymentConfig) -> None:
         action_horizon=engine.action_horizon,
         action_dim=engine.execution_action_dim,
         n_action_steps=(
-            5 if config.platform in ("robocasa", "simplerenv")
+            min(5, engine.action_horizon)
+            if config.platform in ("robocasa", "simplerenv")
             and config.n_action_steps is None
             else config.n_action_steps
         ),

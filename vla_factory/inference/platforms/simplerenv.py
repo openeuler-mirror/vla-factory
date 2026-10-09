@@ -3,26 +3,29 @@
 Converts the observation dict produced by the SimplerEnv connector
 (``vla_factory.inference.connectors.simplerenv``) into VLA Factory's
 :class:`ObsDict`. This is the embodiment/platform boundary for the
-``simplerenv`` deploy platform: the connector forwards the images and robot
-state it read from the SimplerEnv environment and the InferenceEngine
-consumes :class:`ObsDict`.
+``simplerenv`` deploy platform: the connector forwards the camera frame and
+end-effector state it read from the SimplerEnv observation dict and the
+InferenceEngine consumes :class:`ObsDict`.
 
 The wire contract between the connector and this adapter is deliberately
 narrow and numpy-shaped::
 
     {
         "simplerenv_observation": {
-            "image.<camera>": uint8 HWC RGB,   # one per checkpoint camera
-            "state": float32[D],               # env.get_robot_state()
+            "image.<camera>": uint8 HWC RGB,   # SimplerEnv camera
+            "state": float32[8],               # obs["agent"]["eef_pos"]
         },
-        "instruction": str,                     # task instruction
+        "instruction": str,                     # get_language_instruction()
         "step": int,
     }
 
-The camera set is a data/model contract: images are returned for exactly
-``camera_keys`` (the checkpoint's trained cameras), each mapped back to its
-SimplerEnv source camera. A missing camera or a state-dim mismatch raises a
-clear error rather than silently degrading.
+SimplerEnv (ManiSkill2_real2sim) exposes a single third-person camera per
+embodiment — ``overhead_camera`` for Google-robot tasks and
+``3rd_view_camera`` for WidowX tasks. Checkpoints trained on more cameras
+than that cannot be evaluated on SimplerEnv; the adapter reports this
+rather than silently degrading. The robot state is
+``obs["agent"]["eef_pos"]``: 8-D = translation (3) + quaternion (4, wxyz) +
+gripper (1).
 """
 
 from __future__ import annotations
@@ -37,13 +40,15 @@ from vla_factory.inference.inference_engine import ObsDict
 logger = logging.getLogger(__name__)
 
 
-# Checkpoint camera name → SimplerEnv camera name. SimplerEnv (ManiSkill)
-# exposes "agentview" and "robot0_eye_in_hand"; checkpoints commonly store
-# the shorter "wrist" alias.
+# Checkpoint camera name → SimplerEnv camera name. Both embodiments have
+# exactly one third-person camera; common checkpoint aliases map onto it.
 _CAMERA_ALIASES: dict[str, str] = {
-    "wrist": "robot0_eye_in_hand",
-    "robot0_wrist": "robot0_eye_in_hand",
-    "eye_in_hand": "robot0_eye_in_hand",
+    "overhead": "overhead_camera",
+    "agentview": "overhead_camera",
+    "agent_view": "overhead_camera",
+    "third_person": "3rd_view_camera",
+    "third_person_front": "3rd_view_camera",
+    "front": "3rd_view_camera",
 }
 
 
@@ -64,12 +69,14 @@ class SimplerEnvAdapter:
     ----------
     camera_keys : tuple[str, ...]
         Camera names the checkpoint was trained on (from the saved schema).
-        Each is mapped back to a SimplerEnv camera (``agentview`` /
-        ``robot0_eye_in_hand``) and must arrive as an HWC uint8 RGB array.
+        SimplerEnv provides one camera per embodiment, so at most one
+        checkpoint camera is expected; it is matched to the forwarded
+        SimplerEnv camera by name (with aliasing) or, failing that, by
+        position when both sides are single-camera.
     state_dim : int
-        Expected proprioception width; asserted against the assembled state
-        (SimplerEnv's ``get_robot_state`` yields 8-D per arm: gripper open
-        amount + end-effector pos/quat).
+        Expected proprioception width; asserted against the forwarded state
+        (SimplerEnv's ``eef_pos`` is 8-D: translation 3 + quaternion 4 +
+        gripper 1).
     """
 
     def __init__(
@@ -110,17 +117,29 @@ class SimplerEnvAdapter:
             or None
         )
 
+        env_cameras = [
+            key[len("image."):]
+            for key in env_obs
+            if isinstance(key, str) and key.startswith("image.")
+        ]
+        if env_cameras and len(self._camera_keys) > len(env_cameras):
+            raise ValueError(
+                f"The checkpoint was trained on {len(self._camera_keys)} "
+                f"cameras {list(self._camera_keys)}, but SimplerEnv exposed "
+                f"{len(env_cameras)} ({env_cameras}). SimplerEnv provides a "
+                "single third-person camera per embodiment "
+                "(overhead_camera / 3rd_view_camera) and no wrist camera, so "
+                "multi-camera checkpoints cannot be evaluated on it."
+            )
+
         video: dict[str, np.ndarray] = {}
         for cam in self._camera_keys:
             env_key = _simplerenv_camera_key(cam)
             raw = env_obs.get(f"image.{env_key}")
-            if raw is None:
-                # Tolerate bare camera names for custom wrappers.
-                raw = (
-                    env_obs.get(env_key)
-                    or env_obs.get(cam)
-                    or env_obs.get(f"image.{cam}")
-                )
+            if raw is None and len(env_cameras) == 1:
+                # Positional pairing for single-camera checkpoints whose
+                # trained camera name does not match the SimplerEnv camera.
+                raw = env_obs.get(f"image.{env_cameras[0]}")
             if raw is None:
                 raise KeyError(
                     f"Camera '{cam}' (SimplerEnv key 'image.{env_key}') not "
@@ -141,7 +160,7 @@ class SimplerEnvAdapter:
         if state is None:
             raise KeyError(
                 "SimplerEnv observation must contain 'state' "
-                "(env.get_robot_state())."
+                "(obs['agent']['eef_pos'])."
             )
         state = np.asarray(state, dtype=np.float32)
         if state.shape != (self._state_dim,):
@@ -149,8 +168,8 @@ class SimplerEnvAdapter:
                 f"SimplerEnv robot state has width {state.shape[-1]}, but the "
                 f"checkpoint was trained with state_dim={self._state_dim}. "
                 "Check the embodiment used at deploy vs train time "
-                "(SimplerEnv's get_robot_state yields 8-D per arm: gripper "
-                "open amount + end-effector pos/quat)."
+                "(SimplerEnv's obs['agent']['eef_pos'] is 8-D: translation 3 "
+                "+ quaternion 4 + gripper 1)."
             )
 
         return ObsDict(video=video, state=state, language=language)
