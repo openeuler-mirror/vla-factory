@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2240" viewBox="0 0 1600 2240">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 38px sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 18px sans-serif; fill: #475569; }
+      .phase { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 20; }
+      .phase-label { font: 700 22px sans-serif; fill: #334155; }
+      .box { fill: #ffffff; stroke: #64748b; stroke-width: 2.5; rx: 14; }
+      .agent { fill: #eff6ff; stroke: #2563eb; }
+      .judge { fill: #f5f3ff; stroke: #7c3aed; }
+      .repair { fill: #fff7ed; stroke: #ea580c; }
+      .success { fill: #ecfdf5; stroke: #059669; }
+      .fail { fill: #fef2f2; stroke: #dc2626; }
+      .incomplete { fill: #fffbeb; stroke: #d97706; }
+      .text { font: 600 20px sans-serif; fill: #0f172a; text-anchor: middle; }
+      .small { font: 400 16px sans-serif; fill: #475569; text-anchor: middle; }
+      .decision { fill: #f8fafc; stroke: #475569; stroke-width: 2.5; }
+      .line { fill: none; stroke: #475569; stroke-width: 3; marker-end: url(#arrow); }
+      .dash { fill: none; stroke: #94a3b8; stroke-width: 2.5; stroke-dasharray: 9 7; marker-end: url(#arrow); }
+      .label { font: 600 16px sans-serif; fill: #334155; text-anchor: middle; }
+      .note { font: 400 16px sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="2240"/>
+  <text class="title" x="800" y="58" text-anchor="middle">VLA Factory Agent Harness 整体运行流程</text>
+  <text class="subtitle" x="800" y="91" text-anchor="middle">初始双 Agent 并行；候选修复有序；Judge 独占验证、样本与最终判定</text>
+
+  <!-- Initialization -->
+  <rect class="phase" x="120" y="120" width="1360" height="205"/>
+  <text class="phase-label" x="155" y="158">① 初始化</text>
+  <rect class="box" x="590" y="145" width="420" height="62"/>
+  <text class="text" x="800" y="184">启动 run.py 并收集任务参数</text>
+  <path class="line" d="M800 207 V238"/>
+  <rect class="box" x="420" y="238" width="760" height="66"/>
+  <text class="text" x="800" y="269">锁定 checkpoint · 写入 manifest · 创建两个隔离 workspace</text>
+  <text class="small" x="800" y="292">并向各 workspace 注入 Judge 所有的角色合约和只读输入</text>
+
+  <!-- Parallel initial agents -->
+  <rect class="phase" x="120" y="350" width="1360" height="405"/>
+  <text class="phase-label" x="155" y="388">② 初始候选构建（并行）</text>
+  <rect class="box agent" x="210" y="420" width="500" height="120"/>
+  <text class="text" x="460" y="457">Reference Agent</text>
+  <text class="small" x="460" y="487">重建 upstream 原生策略与运行环境</text>
+  <text class="small" x="460" y="514">输出 policy_impl / spec / install / smoke</text>
+
+  <rect class="box agent" x="890" y="420" width="500" height="120"/>
+  <text class="text" x="1140" y="457">Adapter Agent</text>
+  <text class="small" x="1140" y="487">实现 Factory adapter 并转换 checkpoint</text>
+  <text class="small" x="1140" y="514">输出 Factory bundle / install / smoke</text>
+
+  <path class="line" d="M800 304 V374 H460 V420"/>
+  <path class="line" d="M800 374 H1140 V420"/>
+
+  <rect class="box incomplete" x="310" y="575" width="980" height="92"/>
+  <text class="text" x="800" y="609">每个 OpenCode 调用都带独立基础设施重试</text>
+  <text class="small" x="800" y="638">HTTP 408 / 429 / 5xx / 连接超时：保留 workspace，按 5s → 15s → 30s 重试，不消耗 repair</text>
+  <path class="line" d="M460 540 V575"/>
+  <path class="line" d="M1140 540 V575"/>
+
+  <rect class="box incomplete" x="70" y="683" width="360" height="58"/>
+  <text class="text" x="250" y="718">重试耗尽 → INCOMPLETE</text>
+  <path class="dash" d="M310 621 H250 V683"/>
+
+  <rect class="box" x="590" y="683" width="420" height="58"/>
+  <text class="text" x="800" y="718">等待两个 Agent 全部结束</text>
+  <path class="line" d="M800 667 V683"/>
+
+  <!-- Candidate validation -->
+  <rect class="phase" x="120" y="780" width="1360" height="300"/>
+  <text class="phase-label" x="155" y="818">③ 候选产物校验与构建修复</text>
+  <path class="decision" d="M800 830 L1015 905 L800 980 L585 905 Z"/>
+  <text class="text" x="800" y="898">两个候选的必需产物</text>
+  <text class="text" x="800" y="925">和静态契约都有效？</text>
+  <path class="line" d="M800 741 V830"/>
+
+  <rect class="box repair" x="170" y="860" width="320" height="92"/>
+  <text class="text" x="330" y="895">修复失败候选</text>
+  <text class="small" x="330" y="924">保留已有工作，按角色有序执行</text>
+  <path class="line" d="M585 905 H490"/>
+  <text class="label" x="537" y="890">否，有配额</text>
+  <path class="line" d="M330 860 V800 H555 V847"/>
+
+  <rect class="box fail" x="170" y="982" width="320" height="62"/>
+  <text class="text" x="330" y="1020">无 repair 配额 → FAIL</text>
+  <path class="dash" d="M330 952 V982"/>
+
+  <!-- Judge -->
+  <rect class="phase" x="120" y="1110" width="1360" height="650"/>
+  <text class="phase-label" x="155" y="1148">④ Judge 验证</text>
+  <path class="line" d="M1015 905 H1300 V1183 H1050"/>
+  <text class="label" x="1090" y="890">是</text>
+
+  <rect class="box judge" x="550" y="1170" width="500" height="64"/>
+  <text class="text" x="800" y="1210">Factory 合规检查</text>
+  <path class="line" d="M800 1234 V1262"/>
+
+  <rect class="box judge" x="480" y="1262" width="640" height="86"/>
+  <text class="text" x="800" y="1296">Reference Preflight ∥ Factory Preflight（并行）</text>
+  <text class="small" x="800" y="1324">两个隔离 runtime 同时执行各自 installer、完整依赖安装与 smoke test</text>
+  <path class="line" d="M800 1348 V1376"/>
+
+  <rect class="box judge" x="480" y="1376" width="640" height="86"/>
+  <text class="text" x="800" y="1410">Preflight 汇合屏障</text>
+  <text class="small" x="800" y="1438">两边都成功后才生成 Judge 固定样本；任一失败则单独归因</text>
+  <path class="line" d="M800 1462 V1490"/>
+
+  <rect class="box judge" x="430" y="1490" width="740" height="100"/>
+  <text class="text" x="800" y="1524">Judge 固定 Parity Sample</text>
+  <text class="small" x="800" y="1553">Reference native loss ∥ Factory native loss（并行）→ 汇合后固定规则比较</text>
+  <text class="small" x="800" y="1577">候选无权修改样本、容差或比较逻辑</text>
+  <path class="line" d="M800 1590 V1616"/>
+
+  <path class="decision" d="M800 1616 L990 1680 L800 1744 L610 1680 Z"/>
+  <text class="text" x="800" y="1688">Parity 一致？</text>
+
+  <rect class="box incomplete" x="70" y="1325" width="330" height="92"/>
+  <text class="text" x="235" y="1360">Judge / 数据集 / 环境错误</text>
+  <text class="small" x="235" y="1389">无法归因候选 → INCOMPLETE</text>
+  <path class="dash" d="M480 1305 H400"/>
+
+  <rect class="box repair" x="70" y="1460" width="330" height="92"/>
+  <text class="text" x="235" y="1495">可归因的安装 / smoke 错误</text>
+  <text class="small" x="235" y="1524">修复对应候选后重新进入 Judge</text>
+  <path class="dash" d="M480 1419 H430 V1506 H400"/>
+  <path class="line" d="M235 1460 V1198 H550"/>
+
+  <!-- Results and parity diagnosis -->
+  <rect class="box success" x="620" y="1810" width="360" height="72"/>
+  <text class="text" x="800" y="1854">PASS</text>
+  <path class="line" d="M800 1744 V1810"/>
+  <text class="label" x="835" y="1784">是</text>
+
+  <rect class="box judge" x="1090" y="1640" width="400" height="82"/>
+  <text class="text" x="1290" y="1674">只读 Parity Diagnosis Agent</text>
+  <text class="small" x="1290" y="1702">基于证据选择责任角色</text>
+  <path class="line" d="M990 1680 H1090"/>
+  <text class="label" x="1040" y="1664">否</text>
+  <path class="line" d="M1290 1722 V1770"/>
+
+  <path class="decision" d="M1290 1770 L1490 1840 L1290 1910 L1090 1840 Z"/>
+  <text class="text" x="1290" y="1834">诊断能可靠归因？</text>
+  <text class="small" x="1290" y="1862">Reference / Adapter / Both</text>
+
+  <rect class="box incomplete" x="1110" y="1980" width="360" height="66"/>
+  <text class="text" x="1290" y="2020">inconclusive → INCOMPLETE</text>
+  <path class="dash" d="M1290 1910 V1980"/>
+
+  <rect class="box repair" x="680" y="1935" width="350" height="94"/>
+  <text class="text" x="855" y="1970">修复诊断选中的角色</text>
+  <text class="small" x="855" y="1999">Both 时两边并行；一个诊断周期计一次 repair</text>
+  <path class="line" d="M1090 1840 H1035 V1935"/>
+  <text class="label" x="1058" y="1824">能归因且有配额</text>
+  <path class="line" d="M680 1982 H520 V1202 H550"/>
+
+  <rect class="box fail" x="160" y="1935" width="360" height="94"/>
+  <text class="text" x="340" y="1970">repair 配额耗尽</text>
+  <text class="small" x="340" y="1999">候选问题仍未解决 → FAIL</text>
+  <path class="dash" d="M1090 1870 H1060 V2080 H340 V2029"/>
+
+  <!-- Footer notes -->
+  <rect x="120" y="2110" width="1360" height="90" rx="14" fill="#e2e8f0"/>
+  <text class="note" x="155" y="2144">责任边界：候选 installer 负责完整运行依赖；Judge 不向候选环境注入模型或框架依赖。</text>
+  <text class="note" x="155" y="2174">Repair 配额由整个 workflow 共享；基础设施重试不计入 repair；所有最终结果写入 artifacts/final-verdict.json。</text>
+</svg>

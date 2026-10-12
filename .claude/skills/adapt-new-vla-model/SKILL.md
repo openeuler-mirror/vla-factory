@@ -49,6 +49,21 @@ Action contract:          Checkpoint format:
 
 ---
 
+## Step 0.5 — Self-contained inference checkpoint recovery
+
+A full inference checkpoint must restore and run with an empty user cache and
+no network. A tensor `state_dict` alone may not be sufficient: account for any
+configuration, processor, tokenizer, or other model-owned state needed at
+inference, and persist what is required with the checkpoint. Do not record
+host-local paths or make a pre-existing cache/network an inference dependency.
+
+Verify recovery with a fresh temporary `HOME` / `HF_HOME` and offline Hub
+variables. For LoRA/delta checkpoints, verify the exported full inference
+checkpoint. The storage and loading design should fit the adapter and existing
+Factory checkpoint architecture; do not add a second platform interface.
+
+---
+
 ## Step 1 — Dependencies: route them into the install path
 
 The dep analysis from Step 0 picks one of two routes.
