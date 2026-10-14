@@ -1,0 +1,12 @@
+{
+  "name": "robotwin-beat-block-hammer",
+  "comparison": {"success_rate": 0.0},
+  "task": "beat_block_hammer",
+  "task_config": "demo_randomized",
+  "instruction_type": "unseen",
+  "seed": 0,
+  "episodes": 100,
+  "parity_dataset_relative_path": "data/beat_block_hammer/demo_randomized",
+  "parity_dataset_revision": "robotwin-beat-block-hammer-data/v1",
+  "action_schema": {"type": "qpos", "dim": 14}
+}

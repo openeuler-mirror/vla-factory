@@ -1,0 +1,10 @@
+# Per-run harness state: cloned worktrees, virtual environments, downloaded
+# checkpoints, OpenCode state, logs, and generated bundles.
+/tmp_dir/
+/tmp_dir_6d/
+
+# Local Python by-products.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

@@ -1,0 +1,20 @@
+{
+  "name": "lerobot-leisaac-pickup-cude-30-v2",
+  "platform": "lerobot",
+  "comparison": {},
+  "parity_dataset_root_env": "LEROBOT_DATASET_ROOT",
+  "parity_dataset_default_root": "~/.cache/huggingface/lerobot",
+  "parity_dataset_relative_path": "leisaac/pickup_cude_30_v2",
+  "parity_dataset_revision": "leisaac/pickup_cude_30_v2@v2.1",
+  "task": "Lift the red cube up.",
+  "camera_keys": ["front", "wrist"],
+  "state_keys": [
+    "shoulder_pan.pos",
+    "shoulder_lift.pos",
+    "elbow_flex.pos",
+    "wrist_flex.pos",
+    "wrist_roll.pos",
+    "gripper.pos"
+  ],
+  "action_schema": {"type": "joint_position", "dim": 6}
+}
