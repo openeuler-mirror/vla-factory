@@ -102,6 +102,10 @@ diffusion_policy = [
 # Only h5py is needed to read the data; the RoboTwin simulator itself runs in
 # its own environment and is not a dependency of the framework.
 robotwin = ["h5py>=3.0"]
+# RLDS records use TensorFlow's official tf.train.Example bindings. CRC32C is
+# the checksum required by the TFRecord container format; the native package
+# keeps full-shard index scans inexpensive.
+rlds = ["tensorflow-cpu>=2.16", "google-crc32c>=1.5"]
 # Optional video decoder (PyAV alternative). torchcodec wheels are ABI-locked
 # to a specific torch version (1:1 pairing until 0.12) and none declare a torch
 # dependency in their METADATA, so pip/uv always installs the newest wheel and a

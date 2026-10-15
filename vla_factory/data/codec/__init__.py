@@ -10,6 +10,7 @@ from .registry import CodecRegistry
 # Built-ins register on import. HDF5 keeps h5py lazy until its first decode.
 from .hdf5_jpeg import Hdf5JpegCodec
 from .pyav import PyAVCodec
+from .rlds_jpeg import RldsJpegCodec
 
 # torchcodec is optional - import the module to register it, but tolerate
 # missing torch/torchcodec (the codec raises only on first decode).
@@ -29,21 +30,33 @@ _TORCHCODEC_FAIL_REASON: str = ""
 logger = logging.getLogger(__name__)
 
 
-def resolve_codec(name: str = "auto", format: str | None = None) -> VideoCodec:
+def resolve_codec(
+    name: str = "auto",
+    format: str | None = None,
+    *,
+    source_format: str | None = None,
+) -> VideoCodec:
     """Construct a registered codec.
 
     ``auto`` is format-aware:
       - lerobot-v3  -> torchcodec when importable (ABI-safe), else PyAV
       - robotwin    -> hdf5_jpeg
+      - rlds        -> rlds_jpeg (frames embedded in TFRecord examples)
       - other/None  -> PyAV stable default
 
-    Explicit ``name`` always overrides format-based defaults.
+    Explicit ``name`` always overrides format-based defaults. ``source_format``
+    is used only for storage formats that require a dedicated decoder; this
+    lets an auto-detected RLDS dataset select its embedded-image codec without
+    changing the existing fallback for other ``format: auto`` datasets.
     """
     global _TORCHCODEC_AVAILABLE, _TORCHCODEC_FAIL_REASON
     if name.lower() != "auto":
         return CodecRegistry.create(name)
 
     fmt = (format or "").lower()
+    detected = (source_format or "").lower()
+    if detected in ("rlds", "rlds_tfrecord"):
+        fmt = detected
     if fmt in ("lerobot-v3", "lerobot_v3", "lerobot"):
         if _TORCHCODEC_AVAILABLE is None:
             try:
@@ -65,6 +78,8 @@ def resolve_codec(name: str = "auto", format: str | None = None) -> VideoCodec:
         return CodecRegistry.create("pyav")
     if fmt in ("robotwin",):
         return CodecRegistry.create("hdf5_jpeg")
+    if fmt in ("rlds", "rlds_tfrecord"):
+        return CodecRegistry.create("rlds_jpeg")
     return CodecRegistry.create("pyav")
 
 
@@ -109,6 +124,7 @@ __all__ = [
     "CodecRegistry",
     "Hdf5JpegCodec",
     "PyAVCodec",
+    "RldsJpegCodec",
     "VideoCodec",
     "resolve_codec",
 ]
