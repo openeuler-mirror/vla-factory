@@ -25,16 +25,16 @@ from ...data_schema import (
     DataSchema,
     Episode,
     Frame,
+    ImageStorage,
+    ImageRef,
     NormStats,
     StateDim,
-    VideoRef,
 )
 from ...semantics import (
     DATA_INFERRED,
     DATA_UNDECLARED,
     infer_camera_semantic,
 )
-from ...codec.base import VideoCodec
 from ..registry import ReaderRegistry
 from . import tfrecord
 from .episode import (
@@ -296,6 +296,7 @@ class RldsReader:
                 key=cam.key,
                 resolution=(height, width) if height and width else None,
                 encoding=cam.encoding,
+                image_storage=ImageStorage.ENCODED_BYTES,
                 semantic=semantic,
                 semantic_source=DATA_INFERRED if semantic else DATA_UNDECLARED,
             ))
@@ -368,13 +369,11 @@ class RldsReader:
 
     # ── Episode reading ────────────────────────────────────────────
 
-    def read_episode(
-        self, path: Path, episode_index: int, codec: VideoCodec
-    ) -> Episode:
+    def read_episode(self, path: Path, episode_index: int) -> Episode:
         """Read one episode into canonical ``Frame`` objects.
 
-        Images stay lazy as :class:`VideoRef` entries carrying the encoded
-        bytes (decoded by ``codec``); state/action materialise from the
+        Images stay lazy as :class:`ImageRef` entries carrying the encoded
+        bytes (decoded by an :class:`ImageDecoder`); state/action materialise from the
         float lists; language gathers every instruction variant recorded
         for the step.
         """
@@ -414,7 +413,7 @@ class RldsReader:
 
         def frame_loader() -> Iterator[Frame]:
             for t in range(num_steps):
-                images: dict[str, VideoRef] = {}
+                images: dict[str, ImageRef] = {}
                 for cam in spec.cameras:
                     payload = step_bytes(feats, cam.path, t, entry)
                     if payload is not None:
@@ -423,11 +422,12 @@ class RldsReader:
                             if cam.height and cam.width
                             else self._probe_camera_hw(root, spec, index, cam)
                         )
-                        images[cam.key] = VideoRef(
-                            video_path=entry.shard,
+                        images[cam.key] = ImageRef(
+                            path=entry.shard,
                             frame_index=t,
                             height=height,
                             width=width,
+                            storage=ImageStorage.ENCODED_BYTES,
                             stream=cam.key,
                             payload=payload,
                         )

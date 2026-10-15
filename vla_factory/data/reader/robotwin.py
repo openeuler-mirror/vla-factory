@@ -18,7 +18,7 @@ which is the qpos control space RoboTwin's ``take_action(action_type='qpos')``
 expects. Following RoboTwin/ACT convention, ``state[t]`` is the qpos at ``t``
 and ``action[t]`` is the qpos at ``t+1`` (the joint target to reach next).
 
-Images are left as :class:`VideoRef` pointing at the hdf5 file with the camera
+Images are left as :class:`ImageRef` pointing at the hdf5 file with the camera
 name in ``stream``; the :class:`Hdf5JpegCodec` decodes them. RoboTwin ships no
 precomputed normalisation stats, so :meth:`get_norm_stats` computes them by
 scanning the joint trajectories.
@@ -46,9 +46,10 @@ from ..data_schema import (
     Episode,
     FeatureStats,
     Frame,
+    ImageStorage,
+    ImageRef,
     NormStats,
     StateDim,
-    VideoRef,
 )
 from ..semantics import (
     DATA_INFERRED,
@@ -56,7 +57,6 @@ from ..semantics import (
     DATA_UNDECLARED,
     infer_camera_semantic,
 )
-from ..codec.base import VideoCodec
 from .registry import ReaderRegistry
 
 logger = logging.getLogger(__name__)
@@ -231,6 +231,7 @@ class RoboTwinReader:
             CameraEntry(
                 key=cam,
                 resolution=cam_hw.get(cam),
+                image_storage=ImageStorage.HDF5_JPEG,
                 semantic=(sem := infer_camera_semantic(cam)),
                 semantic_source=DATA_INFERRED if sem else DATA_UNDECLARED,
             )
@@ -312,12 +313,10 @@ class RoboTwinReader:
 
     # ── Episode reading ───────────────────────────────────────────
 
-    def read_episode(
-        self, path: Path, episode_index: int, codec: VideoCodec
-    ) -> Episode:
+    def read_episode(self, path: Path, episode_index: int) -> Episode:
         """Read one episode into canonical ``Frame`` objects.
 
-        Images stay lazy as :class:`VideoRef` (decoded later by ``codec``);
+        Images stay lazy as :class:`ImageRef` (decoded later by the pipeline);
         state/action are materialised from the joint trajectory.
         """
         h5py = _load_h5py()
@@ -337,11 +336,12 @@ class RoboTwinReader:
         def frame_loader() -> Iterator[Frame]:
             for t in range(num_frames):
                 images = {
-                    cam: VideoRef(
-                        video_path=ep_path,
+                    cam: ImageRef(
+                        path=ep_path,
                         frame_index=t,
                         height=cam_hw[cam][0],
                         width=cam_hw[cam][1],
+                        storage=ImageStorage.HDF5_JPEG,
                         stream=cam,
                     )
                     for cam in cameras

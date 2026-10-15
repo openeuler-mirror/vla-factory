@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable, TYPE_CHECKING
+from typing import Protocol, runtime_checkable
 
 from ..data_schema import DataSchema, Episode, NormStats
-
-if TYPE_CHECKING:
-    from ..codec.base import VideoCodec
-
 
 @runtime_checkable
 class FormatReader(Protocol):
@@ -35,8 +31,10 @@ class FormatReader(Protocol):
         """Return ``{episode_index: (global_start, global_end)}`` (inclusive)."""
         ...
 
-    def read_episode(
-        self, path: Path, episode_index: int, codec: VideoCodec
-    ) -> Episode:
-        """Read a single episode with the given video codec."""
+    def read_episode(self, path: Path, episode_index: int) -> Episode:
+        """Read one episode as lazy frames containing image references.
+
+        Reader plugins must implement this exact two-argument method. Image
+        decoding is owned by the data pipeline and is never passed to a Reader.
+        """
         ...

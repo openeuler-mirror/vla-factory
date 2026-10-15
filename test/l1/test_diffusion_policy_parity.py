@@ -277,9 +277,9 @@ class TestLimitsParity:
 
 
 class _ArrayCodec:
-    """VideoCodec stand-in: each frame's image is its (unique) index value."""
+    """ImageDecoder stand-in: each frame's image is its unique index value."""
 
-    def decode_frame(self, ref):
+    def decode_image(self, ref):
         value = (ref.frame_index * 30) % 256
         return np.full((96, 96, 3), value, dtype=np.uint8)
 
@@ -287,14 +287,14 @@ class _ArrayCodec:
 class _FakeReader:
     """FormatReader stand-in serving one synthetic 4-frame episode."""
 
-    def read_episode(self, path, ep_idx, codec):
-        from vla_factory.data.data_schema import Episode, Frame, VideoRef
+    def read_episode(self, path, ep_idx):
+        from vla_factory.data.data_schema import Episode, Frame, ImageRef
 
         frames = [
             Frame(
                 index=i,
-                images={"front": VideoRef(
-                    video_path=None, frame_index=i,
+                images={"front": ImageRef(
+                    path=Path("unused"), frame_index=i,
                     height=96, width=96, channels=3,
                 )},
                 state=np.full(6, i, dtype=np.float32),

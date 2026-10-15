@@ -93,10 +93,10 @@ class TestTorchCodec(unittest.TestCase):
         cls.video_path = video_path
 
     def test_decode_frame_shape(self):
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
-        ref = VideoRef(
-            video_path=self.video_path,
+        ref = ImageRef(
+            path=self.video_path,
             frame_index=0,
             height=IMAGE_H,
             width=IMAGE_W,
@@ -107,11 +107,11 @@ class TestTorchCodec(unittest.TestCase):
         self.assertEqual(img.dtype, np.uint8)
 
     def test_decode_multiple_frames(self):
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         for idx in [0, 100, 200]:
-            ref = VideoRef(
-                video_path=self.video_path,
+            ref = ImageRef(
+                path=self.video_path,
                 frame_index=idx,
                 height=IMAGE_H,
                 width=IMAGE_W,
@@ -123,11 +123,11 @@ class TestTorchCodec(unittest.TestCase):
     def test_lru_reuses_decoded_frame(self):
         """Re-decoding a cached frame must return the same pixels."""
         from vla_factory.data.codec.torchcodec import TorchCodec
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         codec = TorchCodec()
-        ref = VideoRef(
-            video_path=self.video_path,
+        ref = ImageRef(
+            path=self.video_path,
             frame_index=50,
             height=IMAGE_H,
             width=IMAGE_W,
@@ -140,14 +140,14 @@ class TestTorchCodec(unittest.TestCase):
     def test_lru_eviction(self):
         """The per-video frame LRU must evict the least-recently-used frame."""
         from vla_factory.data.codec.torchcodec import TorchCodec
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         codec = TorchCodec(max_cached_per_video=3)
         cache = codec._decoder_for(self.video_path)
         for idx in range(4):
             codec.decode_frame(
-                VideoRef(
-                    video_path=self.video_path,
+                ImageRef(
+                    path=self.video_path,
                     frame_index=idx,
                     height=IMAGE_H,
                     width=IMAGE_W,
@@ -164,13 +164,13 @@ class TestTorchCodec(unittest.TestCase):
         """torchcodec and pyav must decode the same pixels (codec parity)."""
         from vla_factory.data.codec.pyav import PyAVCodec
         from vla_factory.data.codec.torchcodec import TorchCodec
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         tc = TorchCodec()
         pv = PyAVCodec()
         for idx in [0, 1, 50, 100, 200, 300, 413]:
-            ref = VideoRef(
-                video_path=self.video_path,
+            ref = ImageRef(
+                path=self.video_path,
                 frame_index=idx,
                 height=IMAGE_H,
                 width=IMAGE_W,

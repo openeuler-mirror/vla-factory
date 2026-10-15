@@ -5,24 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib.metadata import EntryPoint, entry_points
 
-from .base import VideoCodec
+from .base import ImageDecoder
 
 
-CodecFactory = Callable[[], VideoCodec]
+DecoderFactory = Callable[[], ImageDecoder]
 
 
-class CodecRegistry:
-    """Name-to-codec registry with optional external entry-point plugins."""
+class ImageDecoderRegistry:
+    """Name-to-image-decoder registry with optional entry-point plugins."""
 
     ENTRY_POINT_GROUP = "vla_factory.codecs"
-    _factories: dict[str, CodecFactory] = {}
+    _factories: dict[str, DecoderFactory] = {}
 
     @classmethod
     def register(cls, name: str, *, aliases: tuple[str, ...] = ()):
         """Register a codec class or zero-argument factory."""
         names = tuple(cls._normalise(value) for value in (name, *aliases))
 
-        def decorator(factory: CodecFactory) -> CodecFactory:
+        def decorator(factory: DecoderFactory) -> DecoderFactory:
             cls._validate_registration(names, factory)
             for registered_name in names:
                 cls._factories[registered_name] = factory
@@ -31,8 +31,8 @@ class CodecRegistry:
         return decorator
 
     @classmethod
-    def create(cls, name: str) -> VideoCodec:
-        """Construct the codec registered under ``name``."""
+    def create(cls, name: str) -> ImageDecoder:
+        """Construct the decoder registered under ``name``."""
         key = cls._normalise(name)
         if key not in cls._factories:
             cls._load_plugin(key)
@@ -43,9 +43,9 @@ class CodecRegistry:
             raise ValueError(
                 f"Unknown video codec {name!r}. Available: {available}"
             ) from None
-        if not isinstance(codec, VideoCodec):
+        if not _is_decoder_compatible(codec):
             raise TypeError(
-                f"Codec {name!r} does not implement VideoCodec: {codec!r}"
+                f"Decoder {name!r} must expose name plus decode_image(): {codec!r}"
             )
         return codec
 
@@ -85,7 +85,7 @@ class CodecRegistry:
         return tuple(entry_points(group=cls.ENTRY_POINT_GROUP))
 
     @classmethod
-    def _add(cls, name: str, factory: CodecFactory) -> None:
+    def _add(cls, name: str, factory: DecoderFactory) -> None:
         cls._validate_registration((name,), factory)
         cls._factories[name] = factory
 
@@ -93,7 +93,7 @@ class CodecRegistry:
     def _validate_registration(
         cls,
         names: tuple[str, ...],
-        factory: CodecFactory,
+        factory: DecoderFactory,
     ) -> None:
         if not callable(factory):
             raise TypeError(f"Codec factory must be callable, got {factory!r}")
@@ -101,7 +101,7 @@ class CodecRegistry:
             raise ValueError(f"Codec registration repeats a name: {names}")
         conflicts = [name for name in names if name in cls._factories]
         if conflicts:
-            raise ValueError(f"Video codec {conflicts[0]!r} is already registered")
+            raise ValueError(f"Image decoder {conflicts[0]!r} is already registered")
 
     @staticmethod
     def _normalise(name: str) -> str:
@@ -109,3 +109,15 @@ class CodecRegistry:
         if not key:
             raise ValueError("Codec name must not be empty")
         return key
+
+
+# Historical public name retained for third-party codec plugins.
+CodecRegistry = ImageDecoderRegistry
+
+
+def _is_decoder_compatible(decoder: object) -> bool:
+    """Validate the public ImageDecoder protocol without importing plugins eagerly."""
+    return (
+        isinstance(getattr(decoder, "name", None), str)
+        and callable(getattr(decoder, "decode_image", None))
+    )

@@ -3,7 +3,7 @@
 ``create_dataloader()`` wires together:
 
 1. ``FormatReader``   — read raw dataset (e.g. LeRobot v3)
-2. ``VideoCodec``     — pluggable video decoding (default PyAV)
+2. ``ImageDecoder``   — storage-aware image decoding
 3. Transforms         — instantiated from the assembly's ``data_to_model`` plan
 4. Sample windows     — temporal indexing over every episode
 5. ``VLADataset``     — per-sample loading (numpy output)
@@ -23,8 +23,8 @@ import torch
 
 from vla_factory.assembly import ResolvedAssembly
 from vla_factory.assembly.transform import TransformContext, build_pipeline
-from vla_factory.data.codec import resolve_codec
-from vla_factory.data.codec.base import VideoCodec
+from vla_factory.data.codec import resolve_codec, validate_image_decoder
+from vla_factory.data.codec.base import ImageDecoder
 from vla_factory.data.reader import get_reader
 from vla_factory.user_interface import TrainRecipe
 from vla_factory.training.dataset import (
@@ -40,7 +40,7 @@ def create_dataloader(
     recipe: TrainRecipe,
     assembly: ResolvedAssembly,
     *,
-    codec: VideoCodec | None = None,
+    codec: ImageDecoder | None = None,
 ) -> torch.utils.data.DataLoader:
     """Build the training DataLoader from a resolved recipe and assembly.
 
@@ -60,18 +60,29 @@ def create_dataloader(
     data_cfg = recipe.data
     path = Path(data_cfg.path)
 
-    # 1. Reader + codec (frame access; the descriptions come from the assembly)
+    # 1. Reader + decoder. The assembly schema declares each camera's image storage;
+    # resolve/validate before a worker can attempt any decoding.
     reader = get_reader(data_cfg.format, path=path)
+    schema = assembly.schema
     # Reuse a caller-resolved codec (e.g. one already logged in train()) rather
     # than re-resolving, which would repeat the torchcodec availability probe.
     if codec is None:
         codec = resolve_codec(
             data_cfg.video_codec,
-            data_cfg.format,
-            source_format=assembly.schema.source_format,
+            camera_storages={
+                camera.key: camera.image_storage for camera in schema.cameras_entries
+            },
+            dataset_format=schema.source_format,
+        )
+    else:
+        validate_image_decoder(
+            codec,
+            camera_storages={
+                camera.key: camera.image_storage for camera in schema.cameras_entries
+            },
+            dataset_format=schema.source_format,
         )
 
-    schema = assembly.schema
     norm_stats = assembly.norm_stats
     episode_lengths = reader.get_episode_lengths(path)
 

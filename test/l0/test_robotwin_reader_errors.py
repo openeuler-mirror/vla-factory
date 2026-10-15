@@ -5,7 +5,7 @@ there is no upstream API to compare against, so their correctness rests on
 their own boundary behaviour. ``test_robotwin_reader.py`` covers the happy path
 on a synthetic dataset; this file covers what happens when the dataset is
 wrong: no episodes, a missing episode index, a camera that is not there, a
-corrupt JPEG stream, a VideoRef with no camera name.
+corrupt JPEG stream, an ImageRef with no camera name.
 
 Every case is what a user hits after pointing the recipe at the wrong
 directory or copying a truncated dataset, so the error has to say which of
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 import cv2  # noqa: E402 — after skip guard; cv2 is a core dep
 
 from vla_factory.data.codec.hdf5_jpeg import Hdf5JpegCodec  # noqa: E402
-from vla_factory.data.data_schema import VideoRef  # noqa: E402
+from vla_factory.data.data_schema import ImageRef  # noqa: E402
 from vla_factory.data.reader import RoboTwinReader  # noqa: E402
 
 CAMERAS = ("head_camera",)
@@ -120,27 +120,27 @@ def test_read_episode_with_unknown_index_raises(dataset_root):
     from vla_factory.data.codec import resolve_codec
 
     with pytest.raises(KeyError, match="Episode 42 not found"):
-        RoboTwinReader().read_episode(dataset_root, 42, resolve_codec("hdf5_jpeg"))
+        RoboTwinReader().read_episode(dataset_root, 42)
 
 
 # ── Codec: frame-shaped failures ─────────────────────────────────────
 
 
 def test_decode_frame_without_a_stream_name_raises(dataset_root):
-    """VideoRef.stream carries the camera name; None means the reader is broken."""
-    ref = VideoRef(
-        video_path=dataset_root / "data" / "episode0.hdf5",
+    """ImageRef.stream carries the camera name; None means the reader is broken."""
+    ref = ImageRef(
+        path=dataset_root / "data" / "episode0.hdf5",
         frame_index=0, stream=None, height=H, width=W,
     )
 
-    with pytest.raises(ValueError, match="requires VideoRef.stream"):
+    with pytest.raises(ValueError, match="requires ImageRef.stream"):
         Hdf5JpegCodec().decode_frame(ref)
 
 
 def test_decode_frame_with_unknown_camera_lists_available(dataset_root):
     """A camera_mapping typo must enumerate the cameras the file actually has."""
-    ref = VideoRef(
-        video_path=dataset_root / "data" / "episode0.hdf5",
+    ref = ImageRef(
+        path=dataset_root / "data" / "episode0.hdf5",
         frame_index=0, stream="front_camera", height=H, width=W,
     )
 
@@ -161,8 +161,8 @@ def test_corrupt_jpeg_stream_raises_runtime_error(tmp_path):
     data_dir.mkdir(parents=True)
     _write_episode(data_dir / "episode0.hdf5", corrupt_jpeg=True)
 
-    ref = VideoRef(
-        video_path=data_dir / "episode0.hdf5",
+    ref = ImageRef(
+        path=data_dir / "episode0.hdf5",
         frame_index=0, stream="head_camera", height=H, width=W,
     )
     codec = Hdf5JpegCodec()
@@ -175,8 +175,8 @@ def test_corrupt_jpeg_stream_raises_runtime_error(tmp_path):
 
 def test_decode_frame_resizes_to_the_requested_shape(dataset_root):
     """The codec contract is (height, width) from the ref, not the stored size."""
-    ref = VideoRef(
-        video_path=dataset_root / "data" / "episode0.hdf5",
+    ref = ImageRef(
+        path=dataset_root / "data" / "episode0.hdf5",
         frame_index=0, stream="head_camera", height=H * 2, width=W * 2,
     )
     codec = Hdf5JpegCodec()
@@ -190,8 +190,8 @@ def test_decode_frame_resizes_to_the_requested_shape(dataset_root):
 
 def test_close_is_idempotent(dataset_root):
     """__del__ calls close() too; a double close must not raise."""
-    ref = VideoRef(
-        video_path=dataset_root / "data" / "episode0.hdf5",
+    ref = ImageRef(
+        path=dataset_root / "data" / "episode0.hdf5",
         frame_index=0, stream="head_camera", height=H, width=W,
     )
     codec = Hdf5JpegCodec()

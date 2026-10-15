@@ -10,37 +10,81 @@ lives behind :mod:`vla_factory.data.reader`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
 from numpy.typing import NDArray
 
 
-@dataclass(frozen=True)
-class VideoRef:
-    """Location of one encoded image frame, without decoding behaviour.
+class ImageStorage(str, Enum):
+    """How the encoded bytes of an :class:`ImageRef` are stored."""
 
-    ``stream`` is codec-private metadata (RoboTwin: the camera group inside
-    the hdf5 file). ``payload`` carries the encoded frame bytes directly
-    (RLDS: JPEG/PNG bytes embedded in the TFRecord example) for codecs that
-    decode from memory instead of re-reading a file.
+    VIDEO_FILE = "video_file"
+    HDF5_JPEG = "hdf5_jpeg"
+    ENCODED_BYTES = "encoded_bytes"
+
+
+def _legacy_image_storage(source_format: str) -> ImageStorage | None:
+    """Infer storage for schemas written before ``image_storage`` existed."""
+    normalized = source_format.lower()
+    if normalized in {"lerobot", "lerobot_v3", "lerobot-v3"}:
+        return ImageStorage.VIDEO_FILE
+    if normalized in {"robotwin", "robotwin_hdf5"}:
+        return ImageStorage.HDF5_JPEG
+    if normalized in {"rlds", "rlds_tfrecord"}:
+        return ImageStorage.ENCODED_BYTES
+    return None
+
+
+@dataclass(frozen=True, init=False)
+class ImageRef:
+    """Location of one encoded image, without decoding behaviour.
+
+    ``path`` identifies the storage object; it may be a video file, an HDF5
+    file, or an RLDS shard. ``storage`` tells a decoder how that object is to
+    be interpreted. ``stream`` is storage-private metadata (for example, an
+    HDF5 camera group), while ``payload`` carries in-record encoded bytes.
+
+    ``path`` is required. The storage type, rather than a path-name
+    convention, determines how the location is decoded.
     """
 
-    video_path: Path
+    path: Path
     frame_index: int
     height: int
     width: int
     channels: int = 3
+    storage: ImageStorage = ImageStorage.VIDEO_FILE
     stream: str | None = None
     payload: bytes | None = field(default=None, repr=False)
 
+    def __init__(
+        self,
+        path: Path,
+        frame_index: int = 0,
+        height: int = 0,
+        width: int = 0,
+        channels: int = 3,
+        storage: ImageStorage = ImageStorage.VIDEO_FILE,
+        stream: str | None = None,
+        payload: bytes | None = None,
+    ) -> None:
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "frame_index", frame_index)
+        object.__setattr__(self, "height", height)
+        object.__setattr__(self, "width", width)
+        object.__setattr__(self, "channels", channels)
+        object.__setattr__(self, "storage", ImageStorage(storage))
+        object.__setattr__(self, "stream", stream)
+        object.__setattr__(self, "payload", payload)
 
 @dataclass
 class Frame:
     """One format-neutral dataset timestep."""
 
     index: int
-    images: dict[str, VideoRef]
+    images: dict[str, ImageRef]
     state: NDArray | None
     action: NDArray | None
     timestamp: float | None = None
@@ -94,6 +138,7 @@ class CameraEntry:
     resolution: tuple[int, int] | None = None
     fps: int | None = None
     encoding: str | None = None
+    image_storage: ImageStorage = ImageStorage.VIDEO_FILE
     semantic: str | None = None
     semantic_source: str = "undeclared"
 
@@ -103,18 +148,33 @@ class CameraEntry:
             "resolution": list(self.resolution) if self.resolution is not None else None,
             "fps": self.fps,
             "encoding": self.encoding,
+            "image_storage": self.image_storage.value,
             "semantic": self.semantic,
             "semantic_source": self.semantic_source,
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CameraEntry":
+    def from_dict(
+        cls, d: dict[str, Any], *, source_format: str = ""
+    ) -> "CameraEntry":
         res = d.get("resolution")
+        # ``image_carrier`` appeared only on pre-merge revisions of this
+        # feature, but accepting it makes cached schema migration lossless.
+        image_storage = d.get("image_storage", d.get("image_carrier"))
+        if image_storage is None:
+            image_storage = _legacy_image_storage(source_format)
+        if image_storage is None:
+            raise ValueError(
+                "Camera entry lacks required 'image_storage' and it cannot be "
+                f"inferred from source_format={source_format!r}. Re-export the "
+                "dataset schema with an explicit image_storage value."
+            )
         return cls(
             key=d.get("key", ""),
             resolution=tuple(res) if res else None,
             fps=d.get("fps"),
             encoding=d.get("encoding"),
+            image_storage=ImageStorage(image_storage),
             semantic=d.get("semantic"),
             semantic_source=d.get("semantic_source", "undeclared"),
         )
@@ -299,7 +359,8 @@ class DataSchema:
             total_frames=int(identity.get("total_frames", 0)),
             robot_ref=(d.get("robot_ref") or {}).get("name"),
             cameras_entries=tuple(
-                CameraEntry.from_dict(e) for e in obs.get("cameras", [])
+                CameraEntry.from_dict(e, source_format=identity.get("source_format", ""))
+                for e in obs.get("cameras", [])
             ),
             state_dims=tuple(StateDim.from_dict(x) for x in (d.get("state") or {}).get("dims", [])),
             action_dims=tuple(ActionDim.from_dict(x) for x in action.get("dims", [])),

@@ -145,7 +145,7 @@ vla_factory/
 ├── data/            # 数据 reader 与中间表示
 │   ├── data_schema.py # 数据层统一表示及 describe_dataset 入口
 │   ├── reader/      # FormatReader、ReaderRegistry 与外部格式实现
-│   └── codec/       # VideoCodec、CodecRegistry 与解码实现
+│   └── codec/       # ImageDecoder、ImageDecoderRegistry 与解码实现
 ├── assembly/        # 数据集 × 机器人 × VLA 模型的组合解析
 │   ├── resolve_assembly.py # 公开编排入口、ResolvedAssembly 与持久化
 │   ├── resolve/     # 纯 resolve_from_facts 及解析规则
@@ -358,7 +358,7 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 `DataSchema` 是数据 reader 检查一份实际数据后生成的事实快照，描述数据中真实存在的字段、维度、相机、时间信息和动作语义。同一种格式下的不同数据集可以生成不同 DataSchema。组合解析关注以下信息类别：
 
-- 相机名称、分辨率、layout、颜色空间和帧语义；
+- 相机名称、分辨率、layout、颜色空间、帧语义和图像存储类型；
 - 状态 key、顺序、维度、单位和坐标系；
 - 动作 key、顺序、维度、单位、控制模式和旋转表示；
 - 夹爪约定；
@@ -369,7 +369,23 @@ VLA 模型 ─┼──> 组合解析器 ──> 具身组合
 
 `NormStats` 是与具体数据内容绑定的归一化统计量（mean/std、min/max 或 quantile）。它与 DataSchema 一起由 reader 读取或由框架计算，但保持独立结构。
 
-数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），视频解码作为读取过程中的可替换能力使用。训练层把解析出的 schema、norm stats、IO spec 和 pipeline plan 随 `ResolvedAssembly` 写入 `inference_metadata/assembly.json`，部署侧只读取这份训练时快照。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。
+数据模块负责把外部数据集解析为 VLA Factory 的 Canonical IR（`DataSchema` / `Episode` / `Frame` / `NormStats`），图像解码作为读取过程中的可替换能力使用。训练层把解析出的 schema、norm stats、IO spec 和 pipeline plan 随 `ResolvedAssembly` 写入 `inference_metadata/assembly.json`，部署侧只读取这份训练时快照。**样本构建**（把 IR 经 transform pipeline 组装成 `Observation`）与批处理不在数据层，而在微调层（4.3）完成。
+
+##### 图像存储与解码器边界
+
+图像读取分为两个明确阶段：**Reader 识别并产出图像引用，Decoder 将引用解码为 RGB 图像**。Reader 只理解数据格式及其字段组织，不能因为某个 decoder 的实现细节而改变 episode 解析；Decoder 只理解图像的存储方式，不能依赖 LeRobot、RLDS 等数据集的 schema 语义。这一边界让训练和评估复用同一套选择与校验逻辑，也避免为新数据格式在训练层增加条件分支。
+
+每一个相机（或更精确地，每一个图像引用）必须声明其图像存储类型，而不是仅由整个数据集格式隐式决定。一个数据集可以混合多种存储方式。初始受控词表如下：
+
+| 图像存储类型 | 典型来源 | 可用 decoder |
+|---|---|---|
+| `video_file` | LeRobot 的视频文件加帧号 | `pyav`、`torchcodec` |
+| `hdf5_jpeg` | RoboTwin HDF5 内的 JPEG 流 | `hdf5_jpeg` |
+| `encoded_bytes` | RLDS `tf.train.Example` 内嵌 JPEG/PNG 字节 | `rlds_jpeg` |
+
+`auto` 是默认且推荐的选择方式：框架根据实际出现的图像存储类型选择兼容 decoder。显式选择仍然保留，用于性能、依赖或运行环境控制；但它必须在创建 dataloader 前通过能力校验——所选 decoder 必须支持所有必需的存储类型，否则报出数据格式、相机和不兼容存储类型的结构化错误，绝不能拖到取样或训练中才解码失败。因此，例如 RLDS 的 `encoded_bytes` 不能配置为 `pyav` 或 `torchcodec`。
+
+当前兼容配置字段仍名为 `video_codec`，但其语义是“图像 decoder 选择”，不是“视频 decoder 选择”。数据层只使用 `ImageRef` / `ImageDecoder` 抽象；新增实现不得假定图像一定来自视频文件。Decoder 的缓存归 decoder 所有，并按稳定的图像引用定位信息建立 key；Reader 不维护与具体解码后端耦合的缓存。
 
 数据维度的描述**全部来自对数据集的实际读取**：Reader 探测客观事实（维度、分辨率、fps、episode 边界、逐维名称、`robot_type`），并在受控词表下对语义做确定性推断（如相机 key 唯一命中 `wrist_left`），每项事实标注来源（measured / inferred / undeclared）。探测不到的语义不进数据描述、不引入数据集侧声明文件——缺口由 recipe 的受控 override（3.1 区②）在组合解析时按需补齐，或归入框架级统一约定。
 

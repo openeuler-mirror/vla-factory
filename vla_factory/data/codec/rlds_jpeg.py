@@ -4,7 +4,7 @@ RLDS stores every camera's frames as JPEG/PNG-encoded bytes *inside* the
 ``tf.train.Example`` proto of each episode record (one encoded image per
 timestep under ``steps/observation/<camera>``), so there is no video file to
 point at. The :class:`RldsReader` parses an episode record once and hands each
-frame to this codec as a :class:`VideoRef` whose ``payload`` holds the encoded
+frame to this codec as an :class:`ImageRef` whose ``payload`` holds the encoded
 bytes; ``frame_index`` is only informational (step within the episode).
 
 Caching follows :class:`Hdf5JpegCodec`'s pattern, but the key is the payload
@@ -22,12 +22,12 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from ..data_schema import VideoRef
-from .base import CachedVideoCodec
+from ..data_schema import ImageRef, ImageStorage
+from .base import CachedImageDecoder
 from .registry import CodecRegistry
 
 @CodecRegistry.register("rlds_jpeg")
-class RldsJpegCodec(CachedVideoCodec):
+class RldsJpegCodec(CachedImageDecoder):
     """Decode JPEG/PNG frames embedded in RLDS TFRecord examples.
 
     The decoder is stateless (no file handles — the bytes arrive on the
@@ -37,6 +37,8 @@ class RldsJpegCodec(CachedVideoCodec):
     cause.
     """
 
+    supported_storages = frozenset({ImageStorage.ENCODED_BYTES})
+
     @property
     def name(self) -> str:
         return "rlds_jpeg"
@@ -44,7 +46,7 @@ class RldsJpegCodec(CachedVideoCodec):
     def _open_decoder(self, video_path: Path) -> dict[str, Any]:
         return {}
 
-    def _cache_key(self, ref: VideoRef) -> Any:
+    def _cache_key(self, ref: ImageRef) -> Any:
         if ref.payload is None:
             # Fall back to positional keying for refs without payload; the
             # collision risk is theoretical (this codec always receives
@@ -52,12 +54,12 @@ class RldsJpegCodec(CachedVideoCodec):
             return (ref.stream, ref.frame_index)
         return ref.payload
 
-    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
+    def _decode_frame(self, decoder: dict[str, Any], ref: ImageRef) -> NDArray:
         """Decode one frame -> numpy HWC uint8 RGB."""
         if ref.payload is None:
             raise ValueError(
-                "RldsJpegCodec requires VideoRef.payload (the encoded frame "
-                f"bytes); got None for {ref.video_path}. The RLDS reader must "
+                "RldsJpegCodec requires ImageRef.payload (the encoded frame "
+                f"bytes); got None for {ref.path}. The RLDS reader must "
                 "set it."
             )
         buf = np.frombuffer(ref.payload, dtype=np.uint8)
@@ -65,7 +67,7 @@ class RldsJpegCodec(CachedVideoCodec):
         if bgr is None:
             raise RuntimeError(
                 f"Failed to decode frame {ref.frame_index} of "
-                f"'{ref.stream}' in {ref.video_path}. The payload is not "
+                f"'{ref.stream}' in {ref.path}. The payload is not "
                 "valid JPEG/PNG data."
             )
         image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)

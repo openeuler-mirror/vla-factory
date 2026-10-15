@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from vla_factory.data.codec.registry import CodecRegistry
-from vla_factory.data.data_schema import DataSchema, Episode, NormStats, VideoRef
+from vla_factory.data.data_schema import DataSchema, Episode, ImageRef, ImageStorage, NormStats
 from vla_factory.data.reader.registry import ReaderRegistry
 
 
@@ -26,7 +26,7 @@ class _Reader:
     def get_episode_ranges(self, path: Path) -> dict[int, tuple[int, int]]:
         return {}
 
-    def read_episode(self, path: Path, episode_index: int, codec) -> Episode:
+    def read_episode(self, path: Path, episode_index: int) -> Episode:
         return Episode(str(episode_index), episode_index, 0)
 
 
@@ -35,7 +35,9 @@ class _Codec:
     def name(self) -> str:
         return "test"
 
-    def decode_frame(self, ref: VideoRef) -> np.ndarray:
+    supported_storages = frozenset(ImageStorage)
+
+    def decode_image(self, ref: ImageRef) -> np.ndarray:
         return np.empty((ref.height, ref.width, ref.channels), dtype=np.uint8)
 
 

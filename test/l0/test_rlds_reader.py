@@ -301,7 +301,7 @@ def test_read_episode_values(dataset):
     codec = resolve_codec("auto", "rlds")
     assert isinstance(codec, RldsJpegCodec)
 
-    frames = reader.read_episode(root, 1, codec).load_frames()
+    frames = reader.read_episode(root, 1).load_frames()
     data = episodes[1]["data"]
     assert len(frames) == 7
     for t, frame in enumerate(frames):
@@ -318,7 +318,7 @@ def test_read_episode_decodes_images(dataset):
     root, episodes = dataset
     reader = RldsReader()
     codec = resolve_codec("auto", "rlds")
-    frames = reader.read_episode(root, 0, codec).load_frames()
+    frames = reader.read_episode(root, 0).load_frames()
 
     for cam in CAMERAS:
         ref = frames[2].images[cam]
@@ -334,7 +334,7 @@ def test_read_episode_decodes_images(dataset):
 def test_read_episode_out_of_range(dataset):
     root, _ = dataset
     with pytest.raises(KeyError, match="Episode 99"):
-        RldsReader().read_episode(root, 99, resolve_codec("auto", "rlds"))
+        RldsReader().read_episode(root, 99)
 
 
 # ── Codec caching ──────────────────────────────────────────────────
@@ -345,8 +345,8 @@ def test_codec_content_addressed_cache(dataset):
     root, episodes = dataset
     reader = RldsReader()
     codec = RldsJpegCodec()
-    ref0 = reader.read_episode(root, 0, codec).load_frames()[0].images["image"]
-    ref1 = reader.read_episode(root, 2, codec).load_frames()[0].images["image"]
+    ref0 = reader.read_episode(root, 0).load_frames()[0].images["image"]
+    ref1 = reader.read_episode(root, 2).load_frames()[0].images["image"]
 
     first = codec.decode_frame(ref0)
     second = codec.decode_frame(ref1)

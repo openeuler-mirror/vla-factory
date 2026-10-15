@@ -3,8 +3,8 @@
 RoboTwin stores every camera's frames as JPEG byte streams *inside* the
 episode hdf5 file (``/observation/{camera}/rgb`` — one encoded frame per
 timestep), rather than as separate MP4 files like LeRobot. This codec adapts
-that layout to the :class:`VideoCodec` contract: a :class:`VideoRef` whose
-``video_path`` points at the ``.hdf5`` file and whose ``stream`` names the
+that layout to the :class:`ImageDecoder` contract: an :class:`ImageRef` whose
+``path`` points at the ``.hdf5`` file and whose ``stream`` names the
 camera; ``frame_index`` selects the timestep.
 
 Caching mirrors :class:`PyAVCodec`'s in-memory LRU: one open ``h5py.File``
@@ -28,8 +28,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from ..data_schema import VideoRef
-from .base import CachedVideoCodec
+from ..data_schema import ImageRef, ImageStorage
+from .base import CachedImageDecoder
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _load_h5py() -> Any:
 
 
 @CodecRegistry.register("hdf5_jpeg")
-class Hdf5JpegCodec(CachedVideoCodec):
+class Hdf5JpegCodec(CachedImageDecoder):
     """Decode JPEG frames stored inside RoboTwin episode hdf5 files.
 
     Caching mirrors :class:`PyAVCodec`: a per-hdf5-file cache of open handles
@@ -57,6 +57,8 @@ class Hdf5JpegCodec(CachedVideoCodec):
     entry holds an open h5py handle (an fd), so an unbounded registry
     eventually exhausts fds.
     """
+
+    supported_storages = frozenset({ImageStorage.HDF5_JPEG})
 
     def __init__(
         self,
@@ -74,10 +76,10 @@ class Hdf5JpegCodec(CachedVideoCodec):
     def _open_decoder(self, video_path: Path) -> dict[str, Any]:
         return {"handle": None}
 
-    def _cache_key(self, ref: VideoRef) -> tuple[str | None, int]:
+    def _cache_key(self, ref: ImageRef) -> tuple[str | None, int]:
         return ref.stream, ref.frame_index
 
-    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
+    def _decode_frame(self, decoder: dict[str, Any], ref: ImageRef) -> NDArray:
         """Decode one frame -> numpy HWC uint8 RGB.
 
         Reads the JPEG byte stream at ``/observation/{ref.stream}/rgb`` for
@@ -87,18 +89,18 @@ class Hdf5JpegCodec(CachedVideoCodec):
         """
         if ref.stream is None:
             raise ValueError(
-                "Hdf5JpegCodec requires VideoRef.stream (the camera name); got "
-                f"None for {ref.video_path}. The RoboTwin reader must set it."
+                "Hdf5JpegCodec requires ImageRef.stream (the camera name); got "
+                f"None for {ref.path}. The RoboTwin reader must set it."
             )
         if decoder["handle"] is None:
-            decoder["handle"] = _load_h5py().File(str(ref.video_path), "r")
+            decoder["handle"] = _load_h5py().File(str(ref.path), "r")
         f = decoder["handle"]
         ds_key = self._rgb_key_template.format(stream=ref.stream)
         try:
             raw = f[ds_key][ref.frame_index]
         except KeyError as exc:
             raise KeyError(
-                f"Camera stream '{ds_key}' not found in {ref.video_path}. "
+                f"Camera stream '{ds_key}' not found in {ref.path}. "
                 f"Available: {list(f.get('observation', {}).keys())}"
             ) from exc
 
@@ -106,7 +108,7 @@ class Hdf5JpegCodec(CachedVideoCodec):
         if bgr is None:
             raise RuntimeError(
                 f"Failed to JPEG-decode frame {ref.frame_index} of "
-                f"'{ref.stream}' in {ref.video_path}."
+                f"'{ref.stream}' in {ref.path}."
             )
         image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         if image.shape[:2] != (ref.height, ref.width):

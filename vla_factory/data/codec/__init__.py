@@ -1,11 +1,13 @@
-"""Video codec registration and selection."""
+"""Image-decoder registration, storage-aware selection, and validation."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
-from .base import VideoCodec
-from .registry import CodecRegistry
+from ..data_schema import ImageRef, ImageStorage
+from .base import ImageDecoder
+from .registry import CodecRegistry, ImageDecoderRegistry
 
 # Built-ins register on import. HDF5 keeps h5py lazy until its first decode.
 from .hdf5_jpeg import Hdf5JpegCodec
@@ -30,34 +32,155 @@ _TORCHCODEC_FAIL_REASON: str = ""
 logger = logging.getLogger(__name__)
 
 
+class ImageDecoderRouter:
+    """Route heterogeneous image references to storage-compatible decoders."""
+
+    def __init__(self, decoders: Mapping[ImageStorage, ImageDecoder]) -> None:
+        self._decoders = dict(decoders)
+
+    @property
+    def name(self) -> str:
+        names = ",".join(
+            f"{storage.value}:{decoder.name}"
+            for storage, decoder in sorted(self._decoders.items(), key=lambda item: item[0].value)
+        )
+        return f"auto[{names}]"
+
+    @property
+    def supported_storages(self) -> frozenset[ImageStorage]:
+        return frozenset(self._decoders)
+
+    def decode_image(self, ref: ImageRef):
+        try:
+            return self._decoders[ref.storage].decode_image(ref)
+        except KeyError:
+            supported = ", ".join(storage.value for storage in self.supported_storages)
+            raise ValueError(
+                f"Image decoder router does not support storage {ref.storage.value!r}; "
+                f"supports: {supported}"
+            ) from None
+
+    def close(self) -> None:
+        for decoder in self._decoders.values():
+            close = getattr(decoder, "close", None)
+            if close is not None:
+                close()
+
+
+def resolve_image_decoder(
+    name: str = "auto",
+    *,
+    camera_storages: Mapping[str, ImageStorage | str],
+    dataset_format: str | None = None,
+) -> ImageDecoder:
+    """Select and validate an image decoder for the observed storage types.
+
+    ``auto`` creates a storage router when a dataset has heterogeneous image
+    storage. An explicit decoder must support every storage type before a
+    dataloader is created; this is intentionally a configuration error rather
+    than a late failure in a worker process.
+    """
+    storages_by_camera = {
+        camera: ImageStorage(storage)
+        for camera, storage in camera_storages.items()
+    }
+    storages = frozenset(storages_by_camera.values())
+    if not storages:
+        raise ValueError(
+            f"Dataset format {dataset_format or 'unknown'!r} declares no image storage types; "
+            "a Reader must describe every camera's image storage."
+        )
+
+    if name.lower() == "auto":
+        decoders = {storage: _auto_decoder_for_storage(storage) for storage in storages}
+        if len(decoders) == 1:
+            return next(iter(decoders.values()))
+        return ImageDecoderRouter(decoders)
+
+    decoder = ImageDecoderRegistry.create(name)
+    validate_image_decoder(
+        decoder,
+        camera_storages=storages_by_camera,
+        dataset_format=dataset_format,
+    )
+    return decoder
+
+
+def validate_image_decoder(
+    decoder: ImageDecoder,
+    *,
+    camera_storages: Mapping[str, ImageStorage | str],
+    dataset_format: str | None = None,
+) -> None:
+    """Fail early when an existing decoder cannot read a schema's cameras."""
+    supported_storages = getattr(
+        decoder, "supported_storages", frozenset(ImageStorage)
+    )
+    unsupported = {
+        camera: storage
+        for camera, storage in (
+            (camera, ImageStorage(storage))
+            for camera, storage in camera_storages.items()
+        )
+        if storage not in supported_storages
+    }
+    if unsupported:
+        detail = ", ".join(
+            f"{camera}={storage.value}" for camera, storage in sorted(unsupported.items())
+        )
+        supports = ", ".join(sorted(storage.value for storage in supported_storages))
+        raise ValueError(
+            f"Image decoder {decoder.name!r} is incompatible with dataset format "
+            f"{dataset_format or 'unknown'!r}: {detail}. It supports: {supports}."
+        )
+
+
 def resolve_codec(
     name: str = "auto",
     format: str | None = None,
     *,
-    source_format: str | None = None,
-) -> VideoCodec:
-    """Construct a registered codec.
+    camera_storages: Mapping[str, ImageStorage | str] | None = None,
+    dataset_format: str | None = None,
+) -> ImageDecoder:
+    """Compatibility wrapper around :func:`resolve_image_decoder`.
 
-    ``auto`` is format-aware:
-      - lerobot-v3  -> torchcodec when importable (ABI-safe), else PyAV
-      - robotwin    -> hdf5_jpeg
-      - rlds        -> rlds_jpeg (frames embedded in TFRecord examples)
-      - other/None  -> PyAV stable default
-
-    Explicit ``name`` always overrides format-based defaults. ``source_format``
-    is used only for storage formats that require a dedicated decoder; this
-    lets an auto-detected RLDS dataset select its embedded-image codec without
-    changing the existing fallback for other ``format: auto`` datasets.
+    New callers must pass ``camera_storages`` from ``DataSchema``. ``format``
+    remains a legacy fallback for external users that have not yet adopted
+    image-storage declarations.
     """
-    global _TORCHCODEC_AVAILABLE, _TORCHCODEC_FAIL_REASON
-    if name.lower() != "auto":
-        return CodecRegistry.create(name)
+    if camera_storages is not None:
+        return resolve_image_decoder(
+            name,
+            camera_storages=camera_storages,
+            dataset_format=dataset_format or format,
+        )
 
-    fmt = (format or "").lower()
-    detected = (source_format or "").lower()
-    if detected in ("rlds", "rlds_tfrecord"):
-        fmt = detected
-    if fmt in ("lerobot-v3", "lerobot_v3", "lerobot"):
+    # Legacy direct construction has no dataset facts to validate. Preserve
+    # that API for callers that instantiate a codec in isolation; production
+    # train/eval paths always pass ``camera_storages`` and are validated.
+    if name.lower() != "auto":
+        return ImageDecoderRegistry.create(name)
+
+    storage = _legacy_storage_for_format(format)
+    return resolve_image_decoder(
+        name,
+        camera_storages={"<legacy>": storage},
+        dataset_format=dataset_format or format,
+    )
+
+
+def _legacy_storage_for_format(format_name: str | None) -> ImageStorage:
+    fmt = (format_name or "").lower()
+    if fmt in ("robotwin", "robotwin_hdf5"):
+        return ImageStorage.HDF5_JPEG
+    if fmt in ("rlds", "rlds_tfrecord"):
+        return ImageStorage.ENCODED_BYTES
+    return ImageStorage.VIDEO_FILE
+
+
+def _auto_decoder_for_storage(storage: ImageStorage) -> ImageDecoder:
+    global _TORCHCODEC_AVAILABLE, _TORCHCODEC_FAIL_REASON
+    if storage is ImageStorage.VIDEO_FILE:
         if _TORCHCODEC_AVAILABLE is None:
             try:
                 from .torchcodec import _load_torchcodec
@@ -71,16 +194,16 @@ def resolve_codec(
                     "torchcodec unavailable for %r video: %s "
                     "Falling back to pyav (frame-accurate, slower than "
                     "torchcodec but no native-dep requirements).",
-                    fmt, _TORCHCODEC_FAIL_REASON,
+                    storage.value, _TORCHCODEC_FAIL_REASON,
                 )
         if _TORCHCODEC_AVAILABLE:
             return CodecRegistry.create("torchcodec")
         return CodecRegistry.create("pyav")
-    if fmt in ("robotwin",):
+    if storage is ImageStorage.HDF5_JPEG:
         return CodecRegistry.create("hdf5_jpeg")
-    if fmt in ("rlds", "rlds_tfrecord"):
+    if storage is ImageStorage.ENCODED_BYTES:
         return CodecRegistry.create("rlds_jpeg")
-    return CodecRegistry.create("pyav")
+    raise AssertionError(f"Unhandled image storage {storage!r}")
 
 
 def _torchcodec_fail_reason(exc: BaseException) -> str:
@@ -123,8 +246,12 @@ def _torchcodec_fail_reason(exc: BaseException) -> str:
 __all__ = [
     "CodecRegistry",
     "Hdf5JpegCodec",
+    "ImageDecoder",
+    "ImageDecoderRegistry",
+    "ImageDecoderRouter",
     "PyAVCodec",
     "RldsJpegCodec",
-    "VideoCodec",
     "resolve_codec",
+    "resolve_image_decoder",
+    "validate_image_decoder",
 ]
