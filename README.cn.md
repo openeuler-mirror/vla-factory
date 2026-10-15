@@ -62,6 +62,10 @@ VLA Factory 使用 **LeRobot v3** 格式的数据集。将数据集放置在 rec
 
 在 recipe YAML 中修改 `data.source.path` 即可指向自己的数据。
 
+也支持 **RLDS / Open X-Embodiment** TFRecord 数据集。先安装
+`pip install -e ".[rlds]"`，再使用 `data.format: rlds`（或 `auto`），并将
+`data.path` 指向单个 TFDS config/version 目录。
+
 ### 1. 列出已注册模型
 
 ```bash

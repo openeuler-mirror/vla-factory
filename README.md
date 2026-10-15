@@ -62,6 +62,10 @@ VLA Factory expects datasets in **LeRobot v3** format. Place your dataset at the
 <dataset_path>/videos/          # MP4 video files
 ```
 
+**RLDS / Open X-Embodiment** TFRecord datasets are also supported. Install
+`pip install -e ".[rlds]"`, then use `data.format: rlds` (or `auto`) and point
+`data.path` at one TFDS config/version directory.
+
 Adjust `data.source.path` in the recipe YAML to point to your own data.
 
 ### 1. List registered models

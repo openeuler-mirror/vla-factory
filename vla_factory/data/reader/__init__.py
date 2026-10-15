@@ -10,6 +10,7 @@ from .registry import ReaderRegistry
 # Import built-ins once so their decorators populate the registry. Optional
 # format dependencies remain lazy inside reader methods.
 from .lerobot_v3 import LeRobotV3Reader
+from .rlds import RldsReader
 from .robotwin import RoboTwinReader
 
 
@@ -26,6 +27,7 @@ __all__ = [
     "FormatReader",
     "LeRobotV3Reader",
     "ReaderRegistry",
+    "RldsReader",
     "RoboTwinReader",
     "get_reader",
 ]

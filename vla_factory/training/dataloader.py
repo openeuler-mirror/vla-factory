@@ -65,7 +65,11 @@ def create_dataloader(
     # Reuse a caller-resolved codec (e.g. one already logged in train()) rather
     # than re-resolving, which would repeat the torchcodec availability probe.
     if codec is None:
-        codec = resolve_codec(data_cfg.video_codec, data_cfg.format)
+        codec = resolve_codec(
+            data_cfg.video_codec,
+            data_cfg.format,
+            source_format=assembly.schema.source_format,
+        )
 
     schema = assembly.schema
     norm_stats = assembly.norm_stats

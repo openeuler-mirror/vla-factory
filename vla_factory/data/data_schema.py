@@ -18,7 +18,13 @@ from numpy.typing import NDArray
 
 @dataclass(frozen=True)
 class VideoRef:
-    """Location of one encoded image frame, without decoding behaviour."""
+    """Location of one encoded image frame, without decoding behaviour.
+
+    ``stream`` is codec-private metadata (RoboTwin: the camera group inside
+    the hdf5 file). ``payload`` carries the encoded frame bytes directly
+    (RLDS: JPEG/PNG bytes embedded in the TFRecord example) for codecs that
+    decode from memory instead of re-reading a file.
+    """
 
     video_path: Path
     frame_index: int
@@ -26,6 +32,7 @@ class VideoRef:
     width: int
     channels: int = 3
     stream: str | None = None
+    payload: bytes | None = field(default=None, repr=False)
 
 
 @dataclass

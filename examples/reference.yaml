@@ -87,7 +87,7 @@ data:
                                #   │ auto         │ 自动检测 (推荐)              │
                                #   │ lerobot-v3   │ HuggingFace LeRobot v3 格式   │
                                #   │ hdf5         │ HDF5 (Robomimic / ALOHA)     │
-                               #   │ rlds         │ TFRecord RLDS 格式           │
+                               #   │ rlds         │ TFDS/RLDS TFRecord (需 .[rlds]) │
                                #   │ zarr         │ Zarr 数组 (BridgeData V2)    │
                                #   └──────────────┴──────────────────────────────┘
 
