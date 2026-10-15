@@ -1,4 +1,4 @@
-"""PyAV-based video decoder — default VideoCodec implementation.
+"""PyAV-based video-file image decoder.
 
 Uses PyAV for random-access decoding with an LRU-style frame cache.
 Each video file keeps its container and decoder state in the shared cache.
@@ -16,8 +16,8 @@ import av
 import numpy as np
 from numpy.typing import NDArray
 
-from ..data_schema import VideoRef
-from .base import CachedVideoCodec
+from ..data_schema import ImageRef, ImageStorage
+from .base import CachedImageDecoder
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ _MAX_DECODE_FORWARD_GAP = 12
 
 
 @CodecRegistry.register("pyav")
-class PyAVCodec(CachedVideoCodec):
+class PyAVCodec(CachedImageDecoder):
     """Default video codec — uses PyAV to decode video frames to numpy.
 
     Maintains a per-video-file cache of open video containers. The
@@ -40,6 +40,8 @@ class PyAVCodec(CachedVideoCodec):
     every entry holds an fd plus an H.264 decoder context, so an
     unbounded registry eventually exhausts fds.
     """
+
+    supported_storages = frozenset({ImageStorage.VIDEO_FILE})
 
     def __init__(
         self,
@@ -111,7 +113,7 @@ class PyAVCodec(CachedVideoCodec):
                 except StopIteration:
                     break
 
-    def _decode_frame(self, decoder: dict, ref: VideoRef) -> NDArray:
+    def _decode_frame(self, decoder: dict, ref: ImageRef) -> NDArray:
         frame_idx = ref.frame_index
         self._ensure_open(decoder)
         if frame_idx < decoder["position"] or frame_idx > decoder["position"] + _MAX_DECODE_FORWARD_GAP:

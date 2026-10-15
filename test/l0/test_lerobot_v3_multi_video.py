@@ -28,7 +28,7 @@ import pytest
 
 from vla_factory.data.codec.pyav import PyAVCodec
 from vla_factory.data.reader import LeRobotV3Reader
-from vla_factory.data.data_schema import VideoRef
+from vla_factory.data.data_schema import ImageRef
 
 # torchcodec parity is optional: cross-codec parity runs only when the
 # torchcodec package is importable (ABI-safe); the project codec module
@@ -278,13 +278,13 @@ def test_multi_video_maps_to_correct_file(dataset):
     reader = LeRobotV3Reader()
     mapping = _expected_mapping()
     for ep in range(N_EPISODES):
-        frames = reader.read_episode(dataset, ep, PyAVCodec()).load_frames()
+        frames = reader.read_episode(dataset, ep).load_frames()
         assert len(frames) == EP_LEN
         for frame in frames:
             file_idx, within = mapping[frame.index]
             assert len(frame.images) == 2  # front + wrist
             for ref in frame.images.values():
-                assert ref.video_path.name == f"file-{file_idx:03d}.mp4"
+                assert ref.path.name == f"file-{file_idx:03d}.mp4"
                 assert ref.frame_index == within
 
 
@@ -295,10 +295,10 @@ def test_decode_pixels_correct_both_codecs(dataset):
     compare the pixel value to the expected global index within a bounded
     yuv420p quantization tolerance. This catches wrong file/index mapping.
     """
-    refs: dict[int, dict[str, VideoRef]] = {}
+    refs: dict[int, dict[str, ImageRef]] = {}
     reader = LeRobotV3Reader()
     for ep in range(N_EPISODES):
-        frames = reader.read_episode(dataset, ep, PyAVCodec()).load_frames()
+        frames = reader.read_episode(dataset, ep).load_frames()
         for t in (0, EP_LEN // 2, EP_LEN - 1):
             refs[frames[t].index] = frames[t].images
 
@@ -312,7 +312,7 @@ def test_decode_pixels_correct_both_codecs(dataset):
     for g, images in refs.items():
         file_idx, within = _expected_mapping()[g]
         for cam, ref in images.items():
-            assert ref.video_path.name == f"file-{file_idx:03d}.mp4"
+            assert ref.path.name == f"file-{file_idx:03d}.mp4"
             assert ref.frame_index == within
             img = pyav.decode_frame(ref)
             assert img.shape == (H, W, 3)
@@ -333,7 +333,7 @@ def test_old_mapping_would_fail(dataset):
     """The pre-fix mapping (file-000 + global index) must fail loudly."""
     file0 = dataset / "videos" / "observation.images.front" / "chunk-000" / "file-000.mp4"
     # Global index 15 is inside file-001; asking file-000 for it is the old bug.
-    ref = VideoRef(video_path=file0, frame_index=15, height=H, width=W, channels=3)
+    ref = ImageRef(path=file0, frame_index=15, height=H, width=W, channels=3)
     pyav = PyAVCodec()
     img = pyav.decode_frame(ref)
     assert not np.all(img == 15)  # wrong/black frame, never the true frame 15
@@ -350,11 +350,11 @@ def test_per_episode_video_uses_frame_index(tmp_path):
     ds = _write_per_episode_dataset(tmp_path)
     reader = LeRobotV3Reader()
     for ep in range(2):
-        frames = reader.read_episode(ds, ep, PyAVCodec()).load_frames()
+        frames = reader.read_episode(ds, ep).load_frames()
         assert len(frames) == 5
         for t, frame in enumerate(frames):
             for ref in frame.images.values():
-                assert ref.video_path.name == f"episode_{ep:06d}.mp4"
+                assert ref.path.name == f"episode_{ep:06d}.mp4"
                 assert ref.frame_index == t
 
 
@@ -376,12 +376,12 @@ def test_chunk_directory_above_camera_folder(tmp_path):
 
     reader = LeRobotV3Reader()
     for ep in range(2):
-        frames = reader.read_episode(ds, ep, PyAVCodec()).load_frames()
+        frames = reader.read_episode(ds, ep).load_frames()
         assert len(frames) == 5
         for t, frame in enumerate(frames):
             assert len(frame.images) == 2
             for ref in frame.images.values():
-                assert ref.video_path.name == f"episode_{ep:06d}.mp4"
+                assert ref.path.name == f"episode_{ep:06d}.mp4"
                 assert ref.frame_index == t
 
 
@@ -391,7 +391,7 @@ def test_uncovered_index_raises(tmp_path):
     reader = LeRobotV3Reader()
     # ep1's global start (10) is past the single file's range 0-9.
     with pytest.raises(ValueError, match="not covered"):
-        reader.read_episode(ds, 1, PyAVCodec())
+        reader.read_episode(ds, 1)
 
 
 def test_episode_crossing_file_boundary_raises(tmp_path):
@@ -399,7 +399,7 @@ def test_episode_crossing_file_boundary_raises(tmp_path):
     ds = _write_dataset(tmp_path, n_files=2)
     reader = LeRobotV3Reader()
     with pytest.raises(ValueError, match="not covered"):
-        reader.read_episode(ds, 1, PyAVCodec())
+        reader.read_episode(ds, 1)
 
 
 def test_episode_meta_mapping_survives_video_parquet_drift(tmp_path):
@@ -415,18 +415,18 @@ def test_episode_meta_mapping_survives_video_parquet_drift(tmp_path):
     ds = _write_drifted_dataset(tmp_path)
     reader = LeRobotV3Reader()
 
-    frames0 = reader.read_episode(ds, 0, PyAVCodec()).load_frames()
-    frames1 = reader.read_episode(ds, 1, PyAVCodec()).load_frames()
+    frames0 = reader.read_episode(ds, 0).load_frames()
+    frames1 = reader.read_episode(ds, 1).load_frames()
     assert len(frames0) == 6
     assert len(frames1) == 6
 
     for g in range(6):
         ref = frames0[g].images["front"]
-        assert ref.video_path.name == "file-000.mp4"
+        assert ref.path.name == "file-000.mp4"
         assert ref.frame_index == g  # ep0 -> file-000 ordinals 0-5
     for i in range(6):
         ref = frames1[i].images["front"]
-        assert ref.video_path.name == "file-001.mp4"
+        assert ref.path.name == "file-001.mp4"
         assert ref.frame_index == i  # ep1 -> file-001 ordinals 0-5
 
     # Content: the videos encode their within-file ordinal in the pixels.

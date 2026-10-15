@@ -1,4 +1,4 @@
-"""TorchCodec-based video decoder — optional VideoCodec implementation.
+"""TorchCodec-based video-file image decoder.
 
 Uses PyTorch's ``torchcodec`` library (https://github.com/pytorch/torchcodec)
 for frame-accurate decoding. ``torchcodec`` is an optional dependency: it is
@@ -28,8 +28,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from ..data_schema import VideoRef
-from .base import CachedVideoCodec
+from ..data_schema import ImageRef, ImageStorage
+from .base import CachedImageDecoder
 from .registry import CodecRegistry
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ def _load_torchcodec() -> Any:
 
 
 @CodecRegistry.register("torchcodec")
-class TorchCodec(CachedVideoCodec):
+class TorchCodec(CachedImageDecoder):
     """Optional video codec — uses torchcodec to decode frames to numpy.
 
     Caching mirrors :class:`PyAVCodec`: a per-video-file cache of decoder
@@ -123,6 +123,8 @@ class TorchCodec(CachedVideoCodec):
     unbounded registry eventually exhausts fds. Native decoder resources
     are released when a cache is closed/dropped.
     """
+
+    supported_storages = frozenset({ImageStorage.VIDEO_FILE})
 
     def __init__(
         self,
@@ -138,10 +140,10 @@ class TorchCodec(CachedVideoCodec):
     def _open_decoder(self, video_path: Path) -> dict[str, Any]:
         return {"decoder": None}
 
-    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
+    def _decode_frame(self, decoder: dict[str, Any], ref: ImageRef) -> NDArray:
         if decoder["decoder"] is None:
             decoder["decoder"] = _load_torchcodec()(
-                source=str(ref.video_path), dimension_order="NHWC", device="cpu"
+                source=str(ref.path), dimension_order="NHWC", device="cpu"
             )
         image = decoder["decoder"].get_frame_at(index=ref.frame_index).data.cpu().numpy()
         if image.shape[:2] != (ref.height, ref.width):

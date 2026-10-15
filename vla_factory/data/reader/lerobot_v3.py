@@ -5,7 +5,7 @@ Handles:
   2. ``meta/stats.json`` → NormStats
   3. ``data/*.parquet`` → episode lengths / ranges
   4. ``videos/{cam_key}/chunk-*/episode_*.mp4`` or ``file-*.mp4`` → Episode with
-     VideoRef (dataset global ``index`` mapped to the correct video file + its
+     ImageRef (dataset global ``index`` mapped to the correct video file + its
      within-file offset via per-file cumulative global ranges)
 """
 
@@ -29,9 +29,10 @@ from ..data_schema import (
     Episode,
     FeatureStats,
     Frame,
+    ImageStorage,
+    ImageRef,
     NormStats,
     StateDim,
-    VideoRef,
 )
 from ..semantics import (
     DATA_INFERRED,
@@ -40,7 +41,6 @@ from ..semantics import (
     infer_action_mode,
     infer_camera_semantic,
 )
-from ..codec.base import VideoCodec
 from .registry import ReaderRegistry
 
 logger = logging.getLogger(__name__)
@@ -337,6 +337,7 @@ class LeRobotV3Reader:
                     key=cam_name,
                     resolution=size,
                     encoding=video_info.get("video.codec") or None,
+                    image_storage=ImageStorage.VIDEO_FILE,
                     semantic=semantic,
                     semantic_source=DATA_INFERRED if semantic else DATA_UNDECLARED,
                 ))
@@ -502,7 +503,7 @@ class LeRobotV3Reader:
         v3.0 spec, robust to video/parquet frame-count drift), else via the
         count-derived global spans (video frames == parquet rows assumed); an
         episode crossing a file boundary then fails fast rather than silently
-        decoding black/wrong frames. Codecs treat ``VideoRef.frame_index`` as
+        decoding black/wrong frames. Decoders treat ``ImageRef.frame_index`` as
         a 0-based within-file ordinal.
         """
         videos_dirs = _camera_video_dirs(dataset_path, cam_key)
@@ -573,10 +574,11 @@ class LeRobotV3Reader:
 
         return _multi_episode
 
-    def read_episode(
-        self, path: Path, episode_index: int, codec: VideoCodec
-    ) -> Episode:
-        """Read a single episode, building Frame objects with VideoRef."""
+    def read_episode(self, path: Path, episode_index: int) -> Episode:
+        """Read a single episode, building lazy image references.
+
+        Decoding belongs to the data pipeline, not the Reader.
+        """
         # Load info for camera metadata
         info = _load_json(path / "meta" / "info.json")
         features: dict[str, Any] = info.get("features", {})
@@ -636,19 +638,20 @@ class LeRobotV3Reader:
         # Build frame loader closure
         def frame_loader() -> Iterator[Frame]:
             for _, row in rows.iterrows():
-                images: dict[str, VideoRef] = {}
+                images: dict[str, ImageRef] = {}
                 for cam_key, meta in camera_keys.items():
                     cam_name = cam_key.split(".")[-1]
                     resolver = video_resolvers.get(cam_key)
                     if resolver is None:
                         continue
                     vpath, vid_frame_idx = resolver(row)
-                    images[cam_name] = VideoRef(
-                        video_path=vpath,
+                    images[cam_name] = ImageRef(
+                        path=vpath,
                         frame_index=vid_frame_idx,
                         height=meta["height"],
                         width=meta["width"],
                         channels=meta["channels"],
+                        storage=ImageStorage.VIDEO_FILE,
                     )
 
                 state = None

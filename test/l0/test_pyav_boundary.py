@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from vla_factory.data.codec.pyav import PyAVCodec
-from vla_factory.data.data_schema import VideoRef
+from vla_factory.data.data_schema import ImageRef
 
 DATASET_PATH = (
     Path(__file__).resolve().parents[2]
@@ -46,9 +46,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _ref(video_path: Path, frame_index: int, height: int = IMAGE_H, width: int = IMAGE_W) -> VideoRef:
-    return VideoRef(
-        video_path=video_path,
+def _ref(video_path: Path, frame_index: int, height: int = IMAGE_H, width: int = IMAGE_W) -> ImageRef:
+    return ImageRef(
+        path=video_path,
         frame_index=frame_index,
         height=height,
         width=width,

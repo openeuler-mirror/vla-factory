@@ -104,9 +104,21 @@ def test_parses_tfds_protobuf_json_features(tmp_path: Path):
     ]
     assert locate_root(root.parent.parent.parent) == root
     assert dataset_name(root) == "demo_robot"
-    assert isinstance(get_reader("auto", path=root), RldsReader)
+    reader = get_reader("auto", path=root)
+    assert isinstance(reader, RldsReader)
+    schema = reader.get_schema(root)
+    assert {camera.key: camera.image_storage.value for camera in schema.cameras_entries} == {
+        "image": "encoded_bytes",
+        "wrist_image": "encoded_bytes",
+    }
     assert (
-        resolve_codec("auto", "auto", source_format="rlds_tfrecord").name
+        resolve_codec(
+            "auto",
+            camera_storages={
+                camera.key: camera.image_storage for camera in schema.cameras_entries
+            },
+            dataset_format=schema.source_format,
+        ).name
         == "rlds_jpeg"
     )
 

@@ -24,7 +24,7 @@ _project_root = Path(__file__).resolve().parents[2]
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from vla_factory.data.data_schema import VideoRef
+from vla_factory.data.data_schema import ImageRef
 
 DATASET_PATH = Path(_project_root) / "test/data" / "lerobot_train_data_3_episodes"
 VIDEO_PATH = (
@@ -76,7 +76,7 @@ class TestPyAVDecoderCache(VideoDecoderCacheContract, unittest.TestCase):
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
         cache = codec._decoder_for(VIDEO_PATH)
-        codec.decode_frame(VideoRef(VIDEO_PATH, 0, 480, 640, 3))
+        codec.decode_image(ImageRef(VIDEO_PATH, 0, 480, 640, 3))
         self.assertIsNotNone(cache["container"])
         codec._decoder_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
@@ -100,7 +100,7 @@ class TestTorchCodecDecoderCache(VideoDecoderCacheContract, unittest.TestCase):
             self.skipTest("test video not found")
         codec = self.make_codec(max_open_videos=1)
         cache = codec._decoder_for(VIDEO_PATH)
-        codec.decode_frame(VideoRef(VIDEO_PATH, 0, 480, 640, 3))
+        codec.decode_image(ImageRef(VIDEO_PATH, 0, 480, 640, 3))
         self.assertIsNotNone(cache["decoder"])
         codec._decoder_for(VIDEO_PATH.with_name("other.mp4"))
         self.assertIsNone(
@@ -119,7 +119,7 @@ class TestVideoDecoderCache(unittest.TestCase):
     """Direct tests for the shared registry (complement the codec contracts)."""
 
     def make_cache(self, max_size=2):
-        from vla_factory.data.codec.base import VideoDecoderCache
+        from vla_factory.data.codec.base import ImageDecoderCache
 
         class Handle:
             def __init__(self, name):
@@ -129,7 +129,7 @@ class TestVideoDecoderCache(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        return VideoDecoderCache(max_size), Handle
+        return ImageDecoderCache(max_size), Handle
 
     def test_put_past_capacity_evicts_and_closes_lru(self):
         lru, Handle = self.make_cache(max_size=2)

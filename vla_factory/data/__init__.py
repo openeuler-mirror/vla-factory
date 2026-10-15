@@ -11,12 +11,20 @@ from .data_schema import (
     Episode,
     FeatureStats,
     Frame,
+    ImageStorage,
+    ImageRef,
     NormStats,
-    VideoRef,
     describe_dataset,
 )
 from .reader import FormatReader, ReaderRegistry, get_reader
-from .codec import CodecRegistry, VideoCodec, resolve_codec
+from .codec import (
+    CodecRegistry,
+    ImageDecoder,
+    ImageDecoderRegistry,
+    resolve_codec,
+    resolve_image_decoder,
+    validate_image_decoder,
+)
 
 __all__ = [
     "CodecRegistry",
@@ -25,11 +33,15 @@ __all__ = [
     "FeatureStats",
     "FormatReader",
     "Frame",
+    "ImageStorage",
+    "ImageDecoder",
+    "ImageDecoderRegistry",
+    "ImageRef",
     "NormStats",
     "ReaderRegistry",
-    "VideoRef",
-    "VideoCodec",
     "describe_dataset",
     "resolve_codec",
+    "resolve_image_decoder",
+    "validate_image_decoder",
     "get_reader",
 ]

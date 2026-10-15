@@ -9,31 +9,39 @@ from typing import Any, Callable, Hashable, Protocol, runtime_checkable
 
 from numpy.typing import NDArray
 
-from ..data_schema import VideoRef
+from ..data_schema import ImageRef, ImageStorage
 
 
 @runtime_checkable
-class VideoCodec(Protocol):
-    """Pluggable video decoding strategy."""
+class ImageDecoder(Protocol):
+    """Decode one image reference from a declared image storage type."""
 
     @property
     def name(self) -> str: ...
 
-    def decode_frame(self, ref: VideoRef) -> NDArray:
+    @property
+    def supported_storages(self) -> frozenset[ImageStorage]: ...
+
+    def decode_image(self, ref: ImageRef) -> NDArray:
         """Decode a single frame -> numpy HWC uint8."""
         ...
 
 
-class CachedVideoCodec(ABC):
-    """Shared per-file decoder and decoded-frame caches for video codecs."""
+class CachedImageDecoder(ABC):
+    """Shared storage-decoder and decoded-image caches.
+
+    The cache belongs to the decoder implementation. Its outer key is the
+    storage-neutral location, and each backend owns the lifecycle of
+    its opened storage handle.
+    """
 
     def __init__(self, max_cached_per_video: int = 32, max_open_videos: int = 32) -> None:
         self._max_cached = max_cached_per_video
-        self._decoders = VideoDecoderCache(max_open_videos, self._close_decoder)
+        self._decoders = ImageDecoderCache(max_open_videos, self._close_decoder)
 
-    def decode_frame(self, ref: VideoRef) -> NDArray:
+    def decode_image(self, ref: ImageRef) -> NDArray:
         """Return a cached frame or decode and cache it."""
-        decoder = self._decoder_for(ref.video_path)
+        decoder = self._decoder_for(ref.path)
         key = self._cache_key(ref)
         cached = decoder["_cache"].get(key)
         if cached is not None:
@@ -46,6 +54,10 @@ class CachedVideoCodec(ABC):
             decoder["_cache"].popitem(last=False)
         return image
 
+    def decode_frame(self, ref: ImageRef) -> NDArray:
+        """Deprecated method spelling; use :meth:`decode_image`."""
+        return self.decode_image(ref)
+
     def _decoder_for(self, video_path: Path) -> dict[str, Any]:
         decoder = self._decoders.get(video_path)
         if decoder is None:
@@ -55,7 +67,7 @@ class CachedVideoCodec(ABC):
             self._decoders.put(video_path, decoder)
         return decoder
 
-    def _cache_key(self, ref: VideoRef) -> Hashable:
+    def _cache_key(self, ref: ImageRef) -> Hashable:
         return ref.frame_index
 
     @abstractmethod
@@ -63,7 +75,7 @@ class CachedVideoCodec(ABC):
         """Create one backend-specific decoder state dictionary."""
 
     @abstractmethod
-    def _decode_frame(self, decoder: dict[str, Any], ref: VideoRef) -> NDArray:
+    def _decode_frame(self, decoder: dict[str, Any], ref: ImageRef) -> NDArray:
         """Decode one uncached frame using the backend-specific state."""
 
     def close(self) -> None:
@@ -77,8 +89,8 @@ class CachedVideoCodec(ABC):
         decoder["_cache"].clear()
 
 
-class VideoDecoderCache:
-    """Bounded LRU cache of per-file video decoders.
+class ImageDecoderCache:
+    """Bounded LRU cache of opened image-storage decoders.
 
     Works like a textbook LRU cache with one extra rule: values are
     per-file decoders (an fd plus decoder state) and **evicting an

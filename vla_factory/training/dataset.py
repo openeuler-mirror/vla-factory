@@ -38,7 +38,7 @@ import numpy as np
 import torch
 
 from vla_factory.assembly.transform.pipeline import TransformPipeline
-from vla_factory.data.codec.base import VideoCodec
+from vla_factory.data.codec.base import ImageDecoder
 from vla_factory.data.data_schema import Frame
 from vla_factory.data.reader.base import FormatReader
 from vla_factory.model.model_interface import Observation
@@ -119,7 +119,7 @@ def build_sample_windows(
 class VLADataset(torch.utils.data.Dataset):
     """PyTorch Dataset that yields VLA training samples as numpy arrays.
 
-    Internally uses a ``FormatReader`` + ``VideoCodec`` to load raw
+    Internally uses a ``FormatReader`` + ``ImageDecoder`` to load raw
     episodes as canonical ``Episode`` / ``Frame`` objects, then converts
     each ``SampleWindow`` into a flat dict of numpy arrays.
 
@@ -129,7 +129,7 @@ class VLADataset(torch.utils.data.Dataset):
         The already-split windows this dataset exposes.
     reader : FormatReader
         Dataset format reader (e.g. LeRobotV3Reader).
-    codec : VideoCodec
+    codec : ImageDecoder
         Video decoding strategy (e.g. PyAVCodec).
     path : Path
         Root directory of the dataset.
@@ -142,7 +142,7 @@ class VLADataset(torch.utils.data.Dataset):
         self,
         sample_windows: Sequence[SampleWindow],
         reader: FormatReader,
-        codec: VideoCodec,
+        codec: ImageDecoder,
         path: Path,
         transforms: TransformPipeline | list | None = None,
     ) -> None:
@@ -171,7 +171,7 @@ class VLADataset(torch.utils.data.Dataset):
     def _get_episode_frames(self, ep_idx: int) -> list[Frame]:
         """Load and cache frames for an episode."""
         if ep_idx not in self._episode_cache:
-            episode = self.reader.read_episode(self.path, ep_idx, self.codec)
+            episode = self.reader.read_episode(self.path, ep_idx)
             frames = episode.load_frames()
             self._episode_cache[ep_idx] = frames
             # Cache eviction: keep at most 64 episodes
@@ -219,13 +219,13 @@ class VLADataset(torch.utils.data.Dataset):
     def _observation_fields(self, frame: Frame) -> dict[str, Any]:
         """Frame-level fields for one observation frame, pre-transform.
 
-        Decode images via VideoCodec: VideoRef → numpy HWC uint8. Model-
+        Decode images via ImageDecoder: ImageRef → numpy HWC uint8. Model-
         specific transforms decide layout, scaling, resizing and
         normalisation; the dataset layer intentionally stays raw.
         """
         fields: dict[str, Any] = {}
         for cam_name, ref in frame.images.items():
-            img = self.codec.decode_frame(ref)  # numpy HWC uint8
+            img = self.codec.decode_image(ref)
             fields[f"images.{cam_name}"] = img
             fields[f"image_masks.{cam_name}"] = np.array(True, dtype=bool)
         if frame.state is not None:

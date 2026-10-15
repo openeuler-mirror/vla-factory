@@ -41,18 +41,17 @@ def train(
         override_batch_size=override_batch_size,
         override_output_dir=override_output_dir,
     )
-    # Resolve the composition before creating or deleting training output.
+    # Resolve every data/model/robot relationship before creating or deleting
+    # training output. The schema is also the authority for every camera's
+    # image storage type, so decoder selection never infers storage from a format.
     assembly = resolve_assembly(recipe)
-
-    # Resolve the video codec early so its concrete name (after "auto"
-    # -> torchcodec/pyav/hdf5_jpeg/rlds_jpeg selection) can be reported
-    # alongside the other recipe config. The resolved codec is reused by
-    # create_dataloader() to avoid repeating the selection/probe. The schema's
-    # source format makes this work even when the recipe says ``format: auto``.
     codec = resolve_codec(
         recipe.data.video_codec,
-        recipe.data.format,
-        source_format=assembly.schema.source_format,
+        camera_storages={
+            camera.key: camera.image_storage
+            for camera in assembly.schema.cameras_entries
+        },
+        dataset_format=assembly.schema.source_format,
     )
     logger.info(
         "Recipe: model=%s, strategy=%s, lr=%s, steps=%d, codec=%s%s",
@@ -64,6 +63,7 @@ def train(
         ", profile=on" if profile else "",
     )
 
+    # Downstream code executes this saved composition.
     entry = get_entry(recipe.model.name)
     metadata = entry.metadata
 

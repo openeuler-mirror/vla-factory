@@ -29,10 +29,11 @@ def infer_dataset_sample(
 
     data_path = Path(recipe.data.path)
     reader = get_reader(recipe.data.format, path=data_path)
+    schema = reader.get_schema(data_path)
     codec = resolve_codec(
         recipe.data.video_codec,
-        recipe.data.format,
-        source_format=reader.get_schema(data_path).source_format,
+        camera_storages={camera.key: camera.image_storage for camera in schema.cameras_entries},
+        dataset_format=schema.source_format,
     )
 
     episode_lengths = reader.get_episode_lengths(data_path)
@@ -49,7 +50,7 @@ def infer_dataset_sample(
     episode_index, frame_index = _map_index_to_episode_frame(
         sorted_episodes, dataset_index
     )
-    episode = reader.read_episode(data_path, episode_index, codec)
+    episode = reader.read_episode(data_path, episode_index)
     frames = episode.load_frames()
     observations = _trailing_window_observations(
         frames, frame_index, engine.camera_keys, codec, engine.n_obs_steps,
@@ -105,10 +106,11 @@ def evaluate_dataset(
     data_path = Path(dataset)
     engine = InferenceEngine(checkpoint_path=checkpoint, device=device)
     reader = get_reader(engine.recipe.data.format, path=data_path)
+    schema = reader.get_schema(data_path)
     codec = resolve_codec(
         engine.recipe.data.video_codec,
-        engine.recipe.data.format,
-        source_format=reader.get_schema(data_path).source_format,
+        camera_storages={camera.key: camera.image_storage for camera in schema.cameras_entries},
+        dataset_format=schema.source_format,
     )
     episode_lengths = reader.get_episode_lengths(data_path)
     selected = episode_indices or sorted(episode_lengths)
@@ -124,7 +126,7 @@ def evaluate_dataset(
         if episode_index not in episode_lengths:
             continue
         episode_length = episode_lengths[episode_index]
-        frames = reader.read_episode(data_path, episode_index, codec).load_frames()
+        frames = reader.read_episode(data_path, episode_index).load_frames()
         episode_l1 = 0.0
         evaluated_frames = 0
         frame_reports: list[dict[str, Any]] = []
@@ -208,7 +210,8 @@ def _frame_observation(frame, camera_keys: tuple[str, ...], codec) -> ObsDict:
                 f"Camera '{camera}' not found in dataset frame. "
                 f"Available: {list(frame.images)}"
             )
-        video[camera] = codec.decode_frame(reference)
+        decode = getattr(codec, "decode_image", None)
+        video[camera] = decode(reference) if decode is not None else codec.decode_image(reference)
     state = frame.state.astype(np.float32) if frame.state is not None else None
     return ObsDict(video=video, state=state, language=frame.language)
 

@@ -23,7 +23,7 @@ import cv2  # noqa: E402 — after skip guard; cv2 is a core dep
 
 from vla_factory.data.codec import resolve_codec  # noqa: E402
 from vla_factory.data.reader import get_reader, RoboTwinReader  # noqa: E402
-from vla_factory.data.data_schema import VideoRef  # noqa: E402
+from vla_factory.data.data_schema import ImageRef  # noqa: E402
 
 CAMERAS = ("head_camera", "left_camera", "right_camera")
 ARM_DIM = 6
@@ -133,7 +133,7 @@ def test_read_episode_state_action(dataset):
     root, qpos = dataset
     reader = RoboTwinReader()
     codec = resolve_codec("hdf5_jpeg")
-    episode = reader.read_episode(root, 1, codec)
+    episode = reader.read_episode(root, 1)
     frames = episode.load_frames()
 
     assert len(frames) == 7
@@ -148,7 +148,7 @@ def test_codec_decodes_frames(dataset):
     root, _ = dataset
     reader = RoboTwinReader()
     codec = resolve_codec("hdf5_jpeg")
-    frame = reader.read_episode(root, 0, codec).load_frames()[0]
+    frame = reader.read_episode(root, 0).load_frames()[0]
 
     assert set(frame.images.keys()) == set(CAMERAS)
     for cam, ref in frame.images.items():
@@ -172,11 +172,11 @@ def test_norm_stats(dataset):
 # ── Hdf5JpegCodec LRU ──────────────────────────────────────────────
 
 
-def _first_refs(root, episode: int) -> dict[str, VideoRef]:
+def _first_refs(root, episode: int) -> dict[str, ImageRef]:
     """Per-camera VideoRefs of the first frame of an episode."""
     reader = RoboTwinReader()
     codec = resolve_codec("hdf5_jpeg")
-    frame = reader.read_episode(root, episode, codec).load_frames()[0]
+    frame = reader.read_episode(root, episode).load_frames()[0]
     return frame.images
 
 
@@ -190,7 +190,7 @@ def test_lru_reuses_decoded_frame(dataset):
 
     first = codec.decode_frame(ref)
     # Served from the LRU, not a fresh JPEG decode
-    cache = codec._decoders[ref.video_path]["_cache"]
+    cache = codec._decoders[ref.path]["_cache"]
     assert (ref.stream, ref.frame_index) in cache
 
     second = codec.decode_frame(ref)
@@ -204,14 +204,14 @@ def test_lru_eviction(dataset):
     root, _ = dataset
     codec = Hdf5JpegCodec(max_cached_per_video=3)
     refs = [
-        RoboTwinReader().read_episode(root, 0, codec).load_frames()[t].images["head_camera"]
+        RoboTwinReader().read_episode(root, 0).load_frames()[t].images["head_camera"]
         for t in range(4)
     ]
 
     for ref in refs:
         codec.decode_frame(ref)
 
-    cache = codec._decoders[refs[0].video_path]["_cache"]
+    cache = codec._decoders[refs[0].path]["_cache"]
     assert len(cache) == 3
     # Oldest frame (index 0) was evicted; the newest three remain
     assert ("head_camera", 0) not in cache
@@ -229,7 +229,7 @@ def test_lru_key_includes_stream(dataset):
     for ref in refs.values():
         codec.decode_frame(ref)
 
-    cache = codec._decoders[next(iter(refs.values())).video_path]["_cache"]
+    cache = codec._decoders[next(iter(refs.values())).path]["_cache"]
     # Three distinct (stream, 0) keys coexist — same index, different cameras
     assert len(cache) == len(CAMERAS)
     for cam in CAMERAS:
@@ -255,7 +255,7 @@ def test_codec_default_max_cached(dataset, tmp_path):
     _make_episode(data_dir / "episode0.hdf5", T=12, seed=2)
 
     reader = RoboTwinReader()
-    episode = reader.read_episode(big_root, 0, codec).load_frames()
+    episode = reader.read_episode(big_root, 0).load_frames()
     assert len(episode) == 12
     for frame in episode:
         for ref in frame.images.values():
@@ -268,7 +268,7 @@ def test_codec_default_max_cached(dataset, tmp_path):
     # Decoding other episodes through the same codec still works and every
     # file-level cache stays within the default bound.
     for ep in range(2):  # fixture lengths 5 + 7 -> 15 / 21 keys per file
-        ep_frames = reader.read_episode(root, ep, codec).load_frames()
+        ep_frames = reader.read_episode(root, ep).load_frames()
         for frame in ep_frames:
             for ref in frame.images.values():
                 codec.decode_frame(ref)

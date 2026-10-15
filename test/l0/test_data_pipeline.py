@@ -134,7 +134,7 @@ class TestPyAVCodec(unittest.TestCase):
         if not DATASET_PATH.exists():
             raise unittest.SkipTest("Dataset not found")
         from vla_factory.data.codec.pyav import PyAVCodec
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         video_path = (
             DATASET_PATH
@@ -149,9 +149,9 @@ class TestPyAVCodec(unittest.TestCase):
         cls.video_path = video_path
 
     def test_decode_frame_shape(self):
-        from vla_factory.data.data_schema import VideoRef
-        ref = VideoRef(
-            video_path=self.video_path,
+        from vla_factory.data.data_schema import ImageRef
+        ref = ImageRef(
+            path=self.video_path,
             frame_index=0,
             height=IMAGE_H,
             width=IMAGE_W,
@@ -162,10 +162,10 @@ class TestPyAVCodec(unittest.TestCase):
         self.assertEqual(img.dtype, np.uint8)
 
     def test_decode_multiple_frames(self):
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
         for idx in [0, 100, 200]:
-            ref = VideoRef(
-                video_path=self.video_path,
+            ref = ImageRef(
+                path=self.video_path,
                 frame_index=idx,
                 height=IMAGE_H,
                 width=IMAGE_W,
@@ -185,14 +185,14 @@ class TestPyAVCodec(unittest.TestCase):
         expressed in the stream's time_base units.
         """
         from vla_factory.data.codec.pyav import PyAVCodec
-        from vla_factory.data.data_schema import VideoRef
+        from vla_factory.data.data_schema import ImageRef
 
         # isolates the decoder seek from .npy disk I/O.
         codec = PyAVCodec()
 
-        def ref(i: int) -> VideoRef:
-            return VideoRef(
-                video_path=self.video_path,
+        def ref(i: int) -> ImageRef:
+            return ImageRef(
+                path=self.video_path,
                 frame_index=i,
                 height=IMAGE_H,
                 width=IMAGE_W,
@@ -267,12 +267,12 @@ class TestEpisodeLoad(unittest.TestCase):
         cls.codec = PyAVCodec()
 
     def test_episode_structure(self):
-        episode = self.reader.read_episode(DATASET_PATH, 0, self.codec)
+        episode = self.reader.read_episode(DATASET_PATH, 0)
         self.assertEqual(episode.episode_index, 0)
         self.assertEqual(episode.num_frames, FRAMES_PER_EPISODE)
 
     def test_load_frames(self):
-        episode = self.reader.read_episode(DATASET_PATH, 0, self.codec)
+        episode = self.reader.read_episode(DATASET_PATH, 0)
         frames = episode.load_frames()
         self.assertEqual(len(frames), FRAMES_PER_EPISODE)
 
@@ -290,7 +290,7 @@ class TestEpisodeLoad(unittest.TestCase):
 
     def test_decode_episode_image(self):
         """Verify images from Episode frames can be decoded via codec."""
-        episode = self.reader.read_episode(DATASET_PATH, 0, self.codec)
+        episode = self.reader.read_episode(DATASET_PATH, 0)
         frames = episode.load_frames()
         frame = frames[0]
         for cam_name, ref in frame.images.items():

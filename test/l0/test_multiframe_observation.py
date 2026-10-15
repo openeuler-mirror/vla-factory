@@ -17,10 +17,12 @@ and shapes, not numerics (those are the L1 parity tests' job).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from vla_factory.data.data_schema import Episode, Frame, VideoRef
+from vla_factory.data.data_schema import Episode, Frame, ImageRef
 from vla_factory.training.dataset import (
     SampleWindow,
     VLADataset,
@@ -35,9 +37,9 @@ from vla_factory.training.dataset import (
 
 
 class _ArrayCodec:
-    """VideoCodec stand-in: each frame's image is its (unique) index array."""
+    """ImageDecoder stand-in: each frame's image is its unique index array."""
 
-    def decode_frame(self, ref: VideoRef) -> np.ndarray:
+    def decode_image(self, ref: ImageRef) -> np.ndarray:
         value = ref.frame_index % 256
         return np.full((4, 6, 3), value, dtype=np.uint8)
 
@@ -49,7 +51,7 @@ class _FakeReader:
         self._frames = frames
         self.read_count = 0
 
-    def read_episode(self, path, ep_idx, codec):
+    def read_episode(self, path, ep_idx):
         self.read_count += 1
         return Episode(
             episode_id="e0", episode_index=ep_idx, num_frames=len(self._frames),
@@ -61,8 +63,8 @@ def _synthetic_episode(n_frames: int, state_dim: int = 3, action_dim: int = 2):
     """Frames whose image pixel / state / action values encode their index."""
     frames = []
     for i in range(n_frames):
-        ref = VideoRef(
-            video_path=None, frame_index=i, height=4, width=6, channels=3,
+        ref = ImageRef(
+            path=Path("unused"), frame_index=i, height=4, width=6, channels=3,
         )
         frames.append(Frame(
             index=i,

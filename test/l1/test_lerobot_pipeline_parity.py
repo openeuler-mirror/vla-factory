@@ -526,5 +526,5 @@ def test_reader_surfaces_the_dataset_task():
     from vla_factory.data.codec.pyav import PyAVCodec
     from vla_factory.data.reader.lerobot_v3 import LeRobotV3Reader
 
-    episode = LeRobotV3Reader().read_episode(_DATASET, 0, PyAVCodec())
+    episode = LeRobotV3Reader().read_episode(_DATASET, 0)
     assert episode.load_frames()[0].language == _TASK
