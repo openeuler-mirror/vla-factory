@@ -1333,21 +1333,62 @@ def _run_logged(command: list[str], cwd: Path, log: Path, env: dict[str, str] | 
         raise RuntimeError(f"parity command failed; see {log}")
 
 
+PARITY_SAMPLE_COUNT = 6
+PARITY_NOISE_SEED = 42
+
+
 def _run_parity(
     job_dir: Path, manifest: JobManifest, reference_dir: Path, factory_dir: Path,
     reference_spec: dict[str, Any], factory_spec: dict[str, Any], dataset: Path, revision: str,
 ) -> dict[str, Any]:
-    artifacts = job_dir / "artifacts" / "parity"
+    """Require every Judge-owned case to pass; never average away a mismatch."""
+    cases = []
+    for sample_seed in range(PARITY_SAMPLE_COUNT):
+        result = _run_parity_case(
+            job_dir, manifest, reference_dir, factory_dir,
+            reference_spec, factory_spec, dataset, revision,
+            sample_seed=sample_seed, seed=PARITY_NOISE_SEED,
+        )
+        cases.append({"case_id": f"sample-{sample_seed}", **result})
+    statuses = [case["status"] for case in cases]
+    result = {
+        "kind": "parity", "format": "judge-parity-suite/v1",
+        "status": "FAIL" if "FAIL" in statuses else "PASS" if all(
+            status == "PASS" for status in statuses
+        ) else "INCOMPLETE",
+        "gates": list(PARITY_GATES), "cases": cases,
+        "progress_score": max(case["normalized_error"] for case in cases),
+        "progress_score_semantics": "max_reference_normalized_absolute_error",
+        "coverage": {
+            "sampling": "seeded_random_window",
+            "sample_count": PARITY_SAMPLE_COUNT,
+            "noise_seed": PARITY_NOISE_SEED,
+            "metric": "native_loss", "behavior_parity": "NOT_EVALUATED",
+            "intermediate_parity": "NOT_EVALUATED",
+            "independent_upstream_validation": "NOT_EVALUATED",
+        },
+    }
+    report = job_dir / "artifacts" / "parity" / "report.json"
+    write_json(report, result)
+    return {**result, "report": str(report)}
+
+
+def _run_parity_case(
+    job_dir: Path, manifest: JobManifest, reference_dir: Path, factory_dir: Path,
+    reference_spec: dict[str, Any], factory_spec: dict[str, Any], dataset: Path, revision: str,
+    *, sample_seed: int, seed: int,
+) -> dict[str, Any]:
+    artifacts = job_dir / "artifacts" / "parity" / f"sample-{sample_seed}"
     artifacts.mkdir(parents=True, exist_ok=True)
     bundle = factory_dir / factory_spec["factory_checkpoint"]
     benchmark = resolve_benchmark(manifest.benchmark_name)
     sample = {"dataset_path": str(dataset), "dataset_revision": revision,
-               "sample_index": 0, "seed": 42, "precision": "fp32", "mode": "eval"}
+               "sample_seed": sample_seed, "seed": seed, "precision": "fp32", "mode": "eval"}
     sample_path = artifacts / "sample.npz"
     sample_command = [
         factory_spec["judge_python"], str(JUDGE_ROOT / "parity" / "factory_parity_runner.py"), "sample", "--bundle", str(bundle),
         "--dataset-path", sample["dataset_path"], "--dataset-revision", sample["dataset_revision"],
-        "--sample-index", str(sample["sample_index"]), "--seed", str(sample["seed"]),
+        "--sample-seed", str(sample["sample_seed"]), "--seed", str(sample["seed"]),
         "--precision", sample["precision"], "--mode", sample["mode"], "--platform", benchmark.platform,
         "--output", str(sample_path),
     ]

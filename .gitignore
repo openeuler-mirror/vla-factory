@@ -21,9 +21,6 @@ outputs/
 # are large and machine-specific.
 runs/
 
-# Personal AI-chat research notes kept locally under agent/, not repo content.
-agent/ChatGPT-*.md
-
 # Environment variables
 .env
 

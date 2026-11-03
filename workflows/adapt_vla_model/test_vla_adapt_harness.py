@@ -16,7 +16,7 @@ import run as workflow_entry
 from adapt_vla_model.runtime import DEFAULT_OPENCODE_MODEL, OPENCODE_HEADLESS, OPENCODE_MODELS, require_outputs
 from adapt_vla_model.benchmarks import parity_dataset, resolve as resolve_benchmark
 from adapt_vla_model.benchmarks.robotwin.beat_block_hammer.run import _cuda_link_dir, _result_rate
-from adapt_vla_model.parity.parity_io import read_sample, write_sample
+from adapt_vla_model.parity.parity_io import compare_loss, read_sample, write_sample
 from adapt_vla_model.parity.factory_parity_runner import _codec_format
 from adapt_vla_model.contract import Policy
 from adapt_vla_model.benchmarks.robotwin.beat_block_hammer.run import _robotwin_python
@@ -927,7 +927,10 @@ class HarnessTest(unittest.TestCase):
                     rendezvous.wait(timeout=2)
                 elif log.name == "compare.log":
                     report = Path(command[command.index("--report") + 1])
-                    report.write_text('{"status": "PASS"}', encoding="utf-8")
+                    report.write_text(
+                        '{"status": "PASS", "normalized_error": 0.5}',
+                        encoding="utf-8",
+                    )
 
             manifest = harness.JobManifest(
                 "job", "repo", "model", "ckpt", "base",
@@ -946,7 +949,23 @@ class HarnessTest(unittest.TestCase):
                 )
 
         self.assertEqual("PASS", result["status"])
+        self.assertEqual(0.5, result["progress_score"])
         self.assertEqual({"reference.log", "factory.log"}, capture_logs)
+
+    def test_compare_loss_uses_reference_only_tolerance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.json"
+            factory = root / "factory.json"
+            report = root / "report.json"
+            reference.write_text('{"loss": 1.0}', encoding="utf-8")
+            factory.write_text('{"loss": 2.0}', encoding="utf-8")
+            # rtol=0.5 => tolerance = max(0, 0.5*|1.0|) = 0.5, never widened by the candidate 2.0
+            passed = compare_loss(reference, factory, report, atol=0.0, rtol=0.5)
+            result = json.loads(report.read_text(encoding="utf-8"))
+            self.assertFalse(passed)
+            self.assertEqual(2.0, result["normalized_error"])
+            self.assertEqual(0.5, result["reference_tolerance"])
 
     def test_judge_bootstrap_python_uses_explicit_judge_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -127,10 +127,20 @@ def compare_loss(reference: Path, factory: Path, report: Path, *, atol: float = 
     reference_loss = float(json.loads(reference.read_text(encoding="utf-8"))["loss"])
     factory_loss = float(json.loads(factory.read_text(encoding="utf-8"))["loss"])
     error = abs(reference_loss - factory_loss)
-    passed = math.isfinite(reference_loss) and math.isfinite(factory_loss) and math.isclose(
-        reference_loss, factory_loss, abs_tol=atol, rel_tol=rtol
-    )
+    if not math.isfinite(atol) or not math.isfinite(rtol) or atol < 0 or rtol < 0:
+        raise ValueError("loss tolerances must be finite and non-negative")
+    tolerance = max(atol, rtol * abs(reference_loss))
+    finite = math.isfinite(reference_loss) and math.isfinite(factory_loss)
+    if finite and tolerance > 0:
+        normalized_error = error / tolerance
+    elif finite and error == 0:
+        normalized_error = 0.0
+    else:
+        normalized_error = math.inf
+    passed = finite and normalized_error <= 1.0
     result = {"status": "PASS" if passed else "FAIL", "reference_loss": reference_loss,
-              "factory_loss": factory_loss, "abs_error": error, "atol": atol, "rtol": rtol}
+              "factory_loss": factory_loss, "abs_error": error,
+              "reference_tolerance": tolerance, "normalized_error": normalized_error,
+              "atol": atol, "rtol": rtol}
     report.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return passed
