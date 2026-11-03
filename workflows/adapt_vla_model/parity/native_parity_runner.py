@@ -41,6 +41,7 @@ def main() -> None:
     from parity_io import read_sample, write_loss
 
     observation, meta = read_sample(args.sample)
+    _seed(meta["seed"])
     policy = build(args.checkpoint)
     _seed(meta["seed"])
     write_loss(policy.compute_loss(observation), args.output)

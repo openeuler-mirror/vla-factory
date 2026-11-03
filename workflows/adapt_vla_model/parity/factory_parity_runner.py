@@ -42,6 +42,10 @@ def _sample(args: argparse.Namespace) -> None:
         episode_lengths=lengths, n_obs_steps=assembly.model_io_spec.n_obs_steps,
         action_horizon=assembly.model_io_spec.action_horizon,
     )
+    if len(windows) <= 0:
+        raise ValueError("parity dataset has no valid windows")
+    if args.sample_seed is not None:
+        args.sample_index = random.Random(args.sample_seed).randrange(len(windows))
     if args.sample_index < 0 or args.sample_index >= len(windows):
         raise ValueError(f"sample index {args.sample_index} outside {len(windows)} windows")
     sample = VLADataset(windows, reader, codec, Path(recipe.data.path))[args.sample_index]
@@ -79,6 +83,11 @@ def _sample(args: argparse.Namespace) -> None:
     observation["training"] = {"actions": sample["actions"], "action_is_pad": sample["action_is_pad"]}
     meta = {"dataset_path": args.dataset_path, "dataset_revision": args.dataset_revision,
             "sample_ids": [f"window:{args.sample_index}"],
+            "sample_index": args.sample_index, "window_count": len(windows),
+            "episode_index": windows[args.sample_index].episode_index,
+            "start_frame_index": windows[args.sample_index].start_frame_index,
+            "action_shape": list(sample["actions"].shape),
+            "padded_action_count": int(sample["action_is_pad"].sum()),
             "seed": args.seed, "precision": args.precision, "mode": args.mode}
     write_sample(observation, meta, args.output)
 
@@ -131,7 +140,9 @@ def main() -> None:
     sample.add_argument("--bundle", type=Path, required=True)
     sample.add_argument("--dataset-path", required=True)
     sample.add_argument("--dataset-revision", required=True)
-    sample.add_argument("--sample-index", type=int, default=0)
+    selection = sample.add_mutually_exclusive_group()
+    selection.add_argument("--sample-index", type=int, default=0)
+    selection.add_argument("--sample-seed", type=int)
     sample.add_argument("--seed", type=int, default=42)
     sample.add_argument("--precision", default="fp32")
     sample.add_argument("--mode", choices=("eval", "train"), default="eval")

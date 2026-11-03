@@ -1,8 +1,8 @@
 """VLA model adaptation workflow package.
 
 Functional boundary: everything the adaptation loop executes lives here.
-``run.py`` at the ``agent/`` root is the thin interactive entry;
-``python -m adapt_vla_model`` (run from ``agent/``) is the Judge CLI.
+``run.py`` at the ``workflows/`` root is the thin interactive entry;
+``python -m adapt_vla_model`` (run from ``workflows/``) is the Judge CLI.
 Layout, dependencies only pointing downward:
 
 - ``runtime``   — infrastructure: JobManifest, JSON io, OpenCode invocation,
@@ -20,7 +20,7 @@ Layout, dependencies only pointing downward:
   bundles as the benchmark-owned serving contract; ``factory_policy_server.py``
   wraps the Factory side. Both are path-executed standalones.
 - ``test_vla_adapt_harness.py`` — the harness test suite (run with
-  ``python -m unittest`` from ``agent/``)
+  ``python -m unittest`` from ``workflows/``)
 """
 
 from __future__ import annotations

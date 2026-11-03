@@ -33,7 +33,7 @@ and the workflow diagram in
 
 This is the first, intentionally small execution loop. It has no LLM Judge.
 Its verdict is native-loss parity between an upstream policy and a VLA-Factory
-bundle on a Judge-selected, recorded benchmark sample.
+bundle on a Judge-selected suite of recorded benchmark samples.
 
 ## Agent runner
 
@@ -56,9 +56,26 @@ the retained workspace for the failed role.
 
 Judge records Factory source compliance before running its installer. After
 that immutable checkpoint, Reference and Factory preflight run concurrently in
-their isolated runtimes. Judge then creates the one shared parity sample;
-Reference and Factory loss capture run concurrently against that sample, and
-comparison waits for both results. If parity diagnosis selects both roles, the
+their isolated runtimes. Judge selects the first, middle, and last valid dataset windows and evaluates
+each with seeds 42 and 123. For each case, Reference and Factory loss capture
+run concurrently against the same serialized sample; comparison waits for both
+results. All six comparisons must pass (no averaging). Each case retains its
+sample, metadata, capture logs, and comparison under
+`artifacts/parity/<position>-seed-<seed>/`; `artifacts/parity/report.json`
+contains the aggregate verdict and `progress_score`, the maximum case error
+normalized by `max(atol, rtol * abs(reference_loss))`. This same fixed,
+Reference-owned tolerance drives each case verdict, so the suite passes exactly
+when `progress_score <= 1`. Metadata records the actual window, episode,
+action shape, and padding count. Small datasets may reuse a window across
+positions. The last window exercises episode-tail padding when the configured
+action horizon permits it. This performs six captures per role, so evaluation
+is more expensive than the former single-sample check.
+
+This gate establishes native-loss agreement only. It does not yet verify
+intermediate tensors, action sequences/reset behavior, or agreement of the
+Agent-generated Reference with an independently trusted upstream execution.
+The report explicitly labels those dimensions `NOT_EVALUATED`; a PASS must
+not be interpreted as full semantic equivalence. If parity diagnosis selects both roles, the
 two role-local repairs also run concurrently and rejoin before the next Judge
 cycle.
 
@@ -70,7 +87,7 @@ candidate repair budget. If all four infrastructure attempts fail, the workflow
 ends as `INCOMPLETE` and records the provider failure separately instead of
 reporting an invalid candidate.
 
-All workflow code lives in the `adapt_vla_model/` package: `prompts.py` holds the role-local Agent boundaries (Reference / Adapter / Diagnosis), `runtime.py` the shared Manifest and OpenCode invocation code, and `judge.py` the Judge itself (`python -m adapt_vla_model`, run from `agent/`). `contract.py` is the Policy protocol copied into every bundle, `benchmarks/` holds Judge-owned benchmark discovery plus the benchmark data itself, and `parity/` holds the loss-capture scripts executed by path inside candidate venvs.
+All workflow code lives in the `adapt_vla_model/` package: `prompts.py` holds the role-local Agent boundaries (Reference / Adapter / Diagnosis), `runtime.py` the shared Manifest and OpenCode invocation code, and `judge.py` the Judge itself (`python -m adapt_vla_model`, run from `workflows/`). `contract.py` is the Policy protocol copied into every bundle, `benchmarks/` holds Judge-owned benchmark discovery plus the benchmark data itself, and `parity/` holds the loss-capture scripts executed by path inside candidate venvs.
 
 ## Judge-owned benchmark
 
@@ -121,7 +138,7 @@ export ROBOTWIN_PY=/path/to/robotwin-python       # Python from the RoboTwin env
 export VLA_FACTORY_PATH=/path/to/vla-factory      # optional; defaults to this repo's parent
 ```
 
-The Judge reads its fixed parity sample from `$ROBOTWIN_ROOT/data/`; it never
+The Judge reads its parity samples from `$ROBOTWIN_ROOT/data/`; it never
 copies benchmark data into an Agent workspace.
 
 `init` records the selected benchmark's installed revision in the Manifest. It

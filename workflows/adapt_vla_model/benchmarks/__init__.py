@@ -30,7 +30,7 @@ class BenchmarkSpec:
 
 
 def factory_root() -> Path:
-    # benchmarks/ -> adapt_vla_model/ -> agent/ -> vla-factory repository root.
+    # benchmarks/ -> adapt_vla_model/ -> workflows/ -> vla-factory repository root.
     root = Path(os.environ.get("VLA_FACTORY_PATH", Path(__file__).resolve().parents[3])).resolve()
     if not (root / "vla_factory" / "inference" / "connectors" / "robotwin.yml").is_file():
         raise ValueError(f"VLA_FACTORY_PATH has no RoboTwin connector: {root}")
